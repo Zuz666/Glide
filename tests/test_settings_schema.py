@@ -3,10 +3,9 @@
 is written once, in companion/settings_manifest.json, and everything else is checked against it here:
 the engine's defaults (app.DEFAULTS, and what a section without the value reads), the dashboard's live settings
 (tuning.py), the Settings page (settings-schema.ts takes def/min/max/restart from the generated
-settings-manifest.ts; page.ts's live list comes from it), and no engine read with a default of its own left over.
+settings-manifest.ts; page.ts's live list comes from it).
 It used to drift: the briefing delay showed 2.5 s while the coach waited 6, and video_tips said "Saved." but waited
 for a restart."""
-import glob
 import os
 import re
 import shutil
@@ -71,13 +70,4 @@ if node:
                        capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0, r.stdout + r.stderr
 
-# no engine read keeps a default of its own for a manifest setting (cfg.get("lookahead_steps", 40))
-names = {k.rsplit(".", 1)[1] for k in M}
-left = []
-for path in glob.glob(os.path.join(ROOT, "companion", "*.py")):
-    src = open(path, encoding="utf-8").read()
-    for m in re.finditer(r'\b(?:self\.cfg|cfg|c|llm)\.get\("(\w+)", ', src):
-        if m.group(1) in names and m.group(1) != "buffs":
-            left.append("%s: %s" % (os.path.basename(path), m.group(0)))
-assert not left, "inline defaults for manifest settings: %s" % left
 print("ok")

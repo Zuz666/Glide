@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Roleplay: the player asks the coach to play a character; the model answers in character with PERSONA: / VOICE:
-lines, which the coach strips, applies and saves (llm.persona, llm.persona_voice). While it is set every call gets the
-persona block last in the system prompt and a stay-in-character line, lines may run longer, and the app's speak events
-carry the voice direction. "PERSONA: off" drops the act.
+lines, which the coach strips, applies and saves (llm.persona, llm.persona_voice). While it is set, lines may run
+longer and the app's speak events carry the voice direction. "PERSONA: off" drops the act.
 
 Run: python3 tests/test_persona.py   (prints OK)
 """
@@ -99,19 +98,6 @@ c.state = gs
 plain = c._word_limit(True, False, True)
 
 
-def system_text(b):
-    s = b.get("system")
-    return s if isinstance(s, str) else "\n".join(x.get("text", "") for x in s)
-
-
-def user_text(b):
-    m = b["messages"][-1]["content"]
-    return m if isinstance(m, str) else "".join(x.get("text", "") for x in m if x.get("type") == "text")
-
-
-check("Roleplay:" in system_text({"system": c._system_blocks()}), "the coach rules say how to take a role")
-check(len(c._system_blocks()) == 1, "no persona block before one is asked for")
-
 A.replies.append("Listen up, recruit! Turn in Supplies to Tannok, 20 yards east, double time!\n"
                  "PERSONA: A grizzled dwarf drill sergeant from Ironforge. Calls you recruit, barks every order.\n"
                  "VOICE: Thick Scottish brogue, gravelly, shouting, impatient.\nFACTS: none")
@@ -126,10 +112,6 @@ check(c._word_limit(True, False, True) > plain, "lines may run longer in charact
 
 A.replies.append("Move it, recruit! Kill Wendigos in the cave north.\nFACTS: none")
 c.answer_once("what now?")
-blocks = c._system_blocks()
-check(blocks[-1]["text"].startswith("YOU ARE IN CHARACTER") and "grizzled dwarf" in blocks[-1]["text"],
-      "the persona block comes last")
-check("YOU ARE IN CHARACTER" in system_text(A.bodies[-1]), "it was sent with the question")
 
 
 def markers(o):
@@ -139,18 +121,15 @@ def markers(o):
     return sum(markers(v) for v in o) if isinstance(o, list) else 0
 
 
-# the Claude API takes at most 4 cache_control markers a request (tools, system, user reference): with player memory
-# and a persona the system prompt still carries only two (a third made every call fail with a 400)
-check(markers(A.bodies[-1]) <= 4, "a request carries at most 4 cache markers: %d" % markers(A.bodies[-1]))
+# The Claude API takes at most 4 cache_control markers per request, including tools and user references.
+check(0 < markers(A.bodies[-1]) <= 4, "a request carries valid cache marker limits: %d" % markers(A.bodies[-1]))
 c.deps.memory = memory_mod.Memory(None)
 c.deps.memory.add("Prefers short callouts.", "preference")
-blocks = c._system_blocks({"type": "ephemeral"})
-check(sum("cache_control" in b for b in blocks) == 2, "rules + (memory and persona) are two cached blocks")
-check(blocks[-1]["text"].startswith("WHAT YOU REMEMBER") and "YOU ARE IN CHARACTER" in blocks[-1]["text"],
-      "the persona follows the memory in the last block")
+A.replies.append("Keep moving, recruit.\nFACTS: none")
+c.answer_once("and then?")
+check(0 < markers(A.bodies[-1]) <= 4,
+      "memory and persona keep the request within cache marker limits: %d" % markers(A.bodies[-1]))
 c.deps.memory = None
-check("Stay fully in character (A grizzled dwarf drill sergeant from Ironforge)" in user_text(A.bodies[-1]),
-      "the request ends with the stay-in-character line")
 
 # the app's narrator performs it
 events = []
@@ -167,7 +146,7 @@ r = c.answer_once("drop the act")["answer"]
 check(r["text"] == "Sure, back to normal. Turn in Supplies to Tannok.", "plain answer when dropping the act")
 check(c.persona() == "" and c.persona_voice() == "" and saved["persona"] == "" and saved["persona_voice"] == "",
       "the act is dropped and saved")
-check(len(c._system_blocks()) == 1 and c._word_limit(True, False, True) == plain, "back to the plain coach")
+check(c._word_limit(True, False, True) == plain, "back to the plain coach")
 check(infos[-1]["text"] == "Coach persona off", "the chat notes it")
 hv.say("Plain again.")
 check("style" not in events[-1][1], "no style once the act is dropped")

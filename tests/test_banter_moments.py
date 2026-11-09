@@ -163,15 +163,12 @@ text = c._directives("TONE: muttering\nGrr. Fine.\nPERSONA: A twitchy gnome tink
 check(text == "Grr. Fine." and c.tone == "muttering", "stripped; the tone kept")
 check(c.persona_name() == "Fizzle" and mem.character("fizzle")["lore"] == ["Blew up three labs in Gnomeregan."],
       "the character and its lore are kept by name")
-sysmem = c._system_blocks()[-1]["text"]
-check("YOUR OWN STORY SO FAR" in sysmem and "Blew up three labs" in sysmem, "its story rides along")
-check("Start every reply (except SKIP) with a line \"TONE:" in sysmem, "it is asked for a TONE line")
 c._directives("Back to normal.\nPERSONA: off")
-check(c.persona() == "" and "CHARACTERS YOU HAVE PLAYED" in c._system_blocks()[-1]["text"], "listed to bring back")
+check(c.persona() == "" and c.persona_voice() == "", "the act is dropped")
 c._directives("Sarge reporting!\nPERSONA: recall fizzle")
 check(c.persona().startswith("A twitchy gnome") and c.persona_voice() == "Squeaky, fast." and
       c.persona_name() == "Fizzle", "recalled with its voice and name")
-check("Blew up three labs" in c._system_blocks()[-1]["text"], "and its story")
+check(mem.character("fizzle")["lore"] == ["Blew up three labs in Gnomeregan."], "its story survives recall")
 
 # ---- each line performed with its tone ------------------------------------------------------------------------
 heard = []

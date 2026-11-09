@@ -9,7 +9,10 @@ const SIZES = [[2560, 1440], [1920, 1080], [1150, 800]];
 const FROZEN = 1791300000000;      // every Date in the page reads this moment
 // port 0: Edge picks a free one and writes it to DevToolsActivePort. A fixed port collided with another headless
 // Edge still running (tests/test_dashboard_page.py, an earlier probe) and read that one's page instead.
+// Elevated Windows launches must remain our child; isolate profile services and ignore Edge's sign-in pages.
 const p = spawn(edge, ["--headless", "--disable-gpu", "--no-first-run", "--hide-scrollbars", "--force-prefers-reduced-motion",
+  "--do-not-de-elevate", "--disable-sync", "--disable-extensions", "--disable-background-networking",
+  "--lang=en-US", "--accept-lang=en-US", // Pin number/time formatting independently of the host locale.
   `--user-data-dir=${prof}`, "--remote-debugging-port=0", "about:blank"], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let ws;
@@ -17,7 +20,7 @@ for (let i = 0; i < 800 && !ws; i++) {
   await sleep(50);
   try {
     const port = fs.readFileSync(path.join(prof, "DevToolsActivePort"), "utf8").split("\n")[0].trim();
-    const t = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === "page");
+    const t = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === "page" && x.url === "about:blank");
     if (t) ws = new WebSocket(t.webSocketDebuggerUrl);
   } catch { /* not up yet */ }
 }

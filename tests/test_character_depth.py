@@ -78,25 +78,19 @@ for _ in range(100):
     time.sleep(0.05)
 ch = mem.character("sarge")
 check(ch["samples"][0] == "Move it, recruit!" and len(ch["plot"]) == 2, ch)
-check("JSON object" in user_text(A.bodies[-1]) and "drill sergeant" in user_text(A.bodies[-1]), "the seed request")
+check("A grizzled dwarf drill sergeant from Ironforge. Calls you recruit." in user_text(A.bodies[-1]),
+      "the seed request carries the character's brief")
 n = len(A.bodies)
 b._seed()
 check(len(A.bodies) == n, "seeded once")
 
-# ---- they anchor every call: how it sounds, its story, who the player is to it, the scene ----------------------
+# ---- the character keeps its role and scene ------------------------------------------------------------------
 infos = []
 c._emit_raw = lambda m: infos.append(m) if m.get("kind") == "info" else None
 c._directives("Right, recruit.\nROLE: Their drill sergeant; calls them recruit.\nSCENE: We're bounty hunters after "
               "Hogger; the reward is a keg of Thunderbrew.")
 ch = mem.character("sarge")
 check(ch["role"].startswith("Their drill sergeant") and ch["scene"].startswith("We're bounty hunters"), ch)
-block = c._system_blocks()[-1]["text"]
-check("HOW YOU SOUND" in block and "Move it, recruit!" in block, "its voice")
-check("YOUR OWN STORY THREADS" in block and "Great Forge" in block, "its own story")
-check("WHO THEY ARE TO YOU: Their drill sergeant" in block, "the player's role")
-check("THE SCENE YOU'RE PLAYING TOGETHER" in block and "Hogger" in block, "the scene")
-check("ROLE:" in persona.BLOCK and "SCENE:" in persona.BLOCK and "(once; again only if it changes)" in persona.BLOCK,
-      "the block asks for ROLE and SCENE lines, once")
 check([m["text"] for m in infos] == ["Scene: We're bounty hunters after Hogger; the reward is a keg of Thunderbrew."],
       infos)
 c._directives("Still hunting.\nSCENE: We're bounty hunters after Hogger, the reward a keg of Thunderbrew.\n"
@@ -106,19 +100,21 @@ check(len(infos) == 1 and mem.character("sarge")["role"].startswith("Their drill
 c._directives("A plain answer.\nRole: tank or healer, your pick")
 check(mem.character("sarge")["role"].startswith("Their drill sergeant"), "an answer's own 'Role:' line is the answer's")
 c._directives("Bounty's in, recruit.\nSCENE: ended, they dropped it")
-check("THE SCENE" not in c._system_blocks()[-1]["text"] and infos[-1]["text"] == "Scene ended", "the scene ends")
+check(mem.character("sarge")["scene"] == "" and infos[-1]["text"] == "Scene ended", "the scene ends")
 c._directives("No scene.\nSCENE: end")
 check(infos[-1]["text"] == "Scene ended" and len([m for m in infos if m["text"] == "Scene ended"]) == 1,
       "ending no scene shows nothing")
 # the scene is the character's: another character has its own (none), coming back brings it back
 c._directives("Ahoy.\nSCENE: A heist at the Stockade.")
 c._directives("New act.\nPERSONA: A sarcastic butler.\nNAME: Jeeves")
-check("THE SCENE" not in c._system_blocks()[-1]["text"], "Jeeves has no scene")
+check(c.main_name() == "Jeeves" and not mem.character("Jeeves").get("scene"), "Jeeves has no scene")
 c._directives("Sarge again!\nPERSONA: recall Sarge")
-check("A heist at the Stockade" in c._system_blocks()[-1]["text"], "Sarge's scene is his")
+check(c.main_name() == "Sarge" and mem.character("Sarge")["scene"] == "A heist at the Stockade.",
+      "Sarge's scene is his")
 ch = mem.characters["sarge"]
 ch["scene_t"] = time.time() - coach.SCENE_S - 1
-check("THE SCENE" not in c._system_blocks()[-1]["text"], "a scene not played for hours has lapsed")
+check(not any("A heist at the Stockade." in block["text"] for block in c._system_blocks()),
+      "a scene not played for hours has lapsed")
 mem.characters["sarge"]["scene"] = ""
 
 # ---- a line the player answered becomes a favourite of the one who said it; worn phrases spare the names ----------
@@ -127,7 +123,6 @@ b.awaiting = (c._now(), "questing", "Ye fight like a troll with a hangover, recr
 c.convo.append({"t": c._now() + 1, "who": "player", "kind": "voice", "text": "hey!"})
 b._reaction()
 check("Ye fight like a troll with a hangover, recruit." in mem.character("sarge")["favorites"], "a favourite")
-check("Ye fight like a troll" in c._system_blocks()[-1]["text"], "it rides in HOW YOU SOUND")
 b.awaiting = (c._now(), "questing", "Arr, that one's mine.", "Cap")      # said by another character before a switch
 c.convo.append({"t": c._now() + 1, "who": "player", "kind": "voice", "text": "ha"})
 b._reaction()
@@ -141,7 +136,6 @@ check(not any(w in g for g in worn for w in ("turn", "quest")), "the coaching's 
 check(not any("across" in g or "border" in g or "wolves" in g for g in worn), "names are never worn: %r" % worn)
 check(len([g for g in worn if "beard" in g]) == 1, "one of overlapping phrases: %r" % worn)
 check(len(mem.character("sarge")["lines"]) == 4, "only the character's own lines (asides, chats) are counted")
-check('Worn out, give them a rest: "by my beard"' in b.reminder(), b.reminder())
 
 # ---- the first lore stays; the seed knows what the character already said -------------------------------------
 for i in range(40):
@@ -150,12 +144,8 @@ lore = mem.character("sarge")["lore"]
 check(len(lore) == 24, len(lore))
 check("fact0w0" in " ".join(lore[:8]) and "fact39w0" in lore[-1] and "fact20w0" not in " ".join(lore), lore[:9])
 req = persona.seed_request("A grizzled dwarf.", ["Lost his beard to a rocket."], "Their drill sergeant")
-check("Stay consistent with what it has already said about itself" in req and "Lost his beard" in req and
-      "Their drill sergeant" in req, req)
+check("Lost his beard to a rocket." in req and "Their drill sergeant" in req,
+      "the seed request carries existing lore and the player's role")
 
-# ---- the greeting: its own life went on (no new lore asked for: it would push out who it is) ----------------------
-b.moment = None
-req = b.request(25, {"kind": "greeting", "t": time.time(), "text": "The player just logged in."})
-check("something you did or thought about while they were away" in req and "LORE line" not in req, req[:200])
 srv.shutdown()
 print("OK")

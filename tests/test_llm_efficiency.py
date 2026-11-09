@@ -108,19 +108,25 @@ print("early speech OK")
 # ---- the app says only what wasn't said yet ---------------------------------------------------------------------
 import app  # noqa: E402
 voice_said = []
-fake = types.SimpleNamespace(_hist_lock=threading.Lock(), msg_history=[], hub=types.SimpleNamespace(publish=lambda *a: None),
-                             write_log=lambda o: None, _flags={"voice": True}, overlay=None,
-                             voice=types.SimpleNamespace(say=lambda t, interrupt=False, tone="", first=True: voice_said.append((t, interrupt))))
-app.App.on_message(fake, {"kind": "answer", "text": "Go east.\nKill boars there.", "speak": True, "urgent": True,
-                          "spoken": "Go east."})
-app.App.on_message(fake, {"kind": "answer", "text": "Go east.", "speak": True, "spoken": "Go east."})
-app.App.on_message(fake, {"kind": "answer", "text": "Something else.", "speak": True, "spoken": "Let me check."})
-app.App.on_message(fake, {"kind": "callout", "text": "Rebuff.", "speak": True, "urgent": True})
+# Bypass startup: exercise real delivery without reading player config or starting services.
+fake = app.App.__new__(app.App)
+fake.coach, fake.overlay, fake._ptt_down = None, None, False
+fake._hist_lock, fake.msg_history, fake._held = threading.Lock(), [], []
+fake.hub = types.SimpleNamespace(publish=lambda *a: None)
+fake.write_log = lambda o: None
+fake._flags = {"voice": True}
+fake.voice = types.SimpleNamespace(
+    say=lambda t, interrupt=False, tone="", first=True: voice_said.append((t, interrupt)))
+fake.on_message({"kind": "answer", "text": "Go east.\nKill boars there.", "speak": True, "urgent": True,
+                 "spoken": "Go east."})
+fake.on_message({"kind": "answer", "text": "Go east.", "speak": True, "spoken": "Go east."})
+fake.on_message({"kind": "answer", "text": "Something else.", "speak": True, "spoken": "Let me check."})
+fake.on_message({"kind": "callout", "text": "Rebuff.", "speak": True, "urgent": True})
 assert voice_said == [("Kill boars there.", False), ("Something else.", False), ("Rebuff.", True)], voice_said
 fake._flags = {"voice": False}                        # /coach voice off: early speech too, except answers
 voice_said.clear()
-app.App.speak_early(fake, "Rebuff.", "callout")
-app.App.speak_early(fake, "Ten yards.", "answer", True)
+fake.speak_early("Rebuff.", "callout")
+fake.speak_early("Ten yards.", "answer", True)
 assert voice_said == [("Ten yards.", True)], voice_said
 print("app speech OK")
 

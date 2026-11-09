@@ -237,7 +237,7 @@ class LocalizationTests(unittest.TestCase):
                 else:
                     narrator = voice.Voice.__new__(voice.Voice)
                     narrator.cfg, narrator.enabled = {"announce": True}, True
-                narrator.say = lambda text: (said.append(text), done.set())
+                narrator.say = lambda text, said=said, done=done: (said.append(text), done.set())
                 narrator.announce(coach.localize_text)
                 if output == "hub":
                     self.assertEqual(said, [])
