@@ -19,6 +19,9 @@ import { Obj, SpeechSettings } from "./types.js";
 interface Line {
   text: string;
   audio: Promise<Blob | null>;
+  provider: string;           // snapshot: settings may change while this request is pending
+  voiceLabel: string;
+  requestId?: string;         // retained from a failed IPC request for its fallback log
   tag?: string;               // a tagged line (speakAndWait); the coach's lines have none
   done?: () => void;          // resolves its speakAndWait
   cancelled?: boolean;        // cancel(tag) while it was the line being spoken
@@ -103,10 +106,15 @@ class Narrator {
   /** Give speechSynthesis an utterance, kept in `handed` until it ends (or fails), then resolve. */
   private handOver(u: SpeechSynthesisUtterance, tag: string, resolve: () => void): void {
     const h: Handed = { u, tag, resolve };
-    u.onend = u.onerror = () => {
+    const finish = () => {
       this.handed = this.handed.filter((x) => x !== h);
       resolve();
       this.pump();
+    };
+    u.onend = finish;
+    u.onerror = (event) => {
+      call("app:note", `[voice] Windows speech failed code=${event.error}`);
+      finish();
     };
     this.handed.push(h);
     speechSynthesis.speak(u);
@@ -211,16 +219,18 @@ class Narrator {
 
   private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = ""): void {
     const args: [string, string?, string?] = tone ? [text, style, tone] : style ? [text, style] : [text];
-    const audio = glide.invoke("tts:synth", ...args)
-      .then((r) => new Blob([r.data as BlobPart], { type: r.mime }))
-      .catch((e) => {
-        if (Date.now() - this.lastError > 60_000) {             // say why once a minute, not on every line
-          this.lastError = Date.now();
-          toast(`Voice (${this.provider}) failed, using the Windows voice: ${ipcError(e)}`, true, 9000);
-        }
-        return null;
-      });
-    this.queue.push({ text, audio, tag, done });
+    const line: Line = { text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done,
+      audio: glide.invoke("tts:synth", ...args)
+        .then((r) => new Blob([r.data as BlobPart], { type: r.mime }))
+        .catch((e) => {
+          line.requestId = /\bTTS #(\d+):/.exec(ipcError(e))?.[1];
+          if (Date.now() - this.lastError > 60_000) {           // toast once a minute; main logs every failure
+            this.lastError = Date.now();
+            toast(`Voice (${line.provider}) failed, using the Windows voice: ${ipcError(e)}`, true, 9000);
+          }
+          return null;
+        }) };
+    this.queue.push(line);
     if (this.queue.length === 1 && !this.playing) this.next();
   }
 
@@ -232,25 +242,39 @@ class Narrator {
     const blob = await line.audio;
     if (gen !== this.gen) return;
     if (line.cancelled) { /* cancelled while its audio was coming */ }
-    else if (!blob) await this.windowsSay(line.text, line.tag);
-    else { this.playingLine = line; await this.play(blob); this.playingLine = null; }
+    else if (!blob) {
+      call("app:note", `[voice] TTS #${line.requestId || "unknown"} fallback from=${line.provider} to=windows requested_voice=${JSON.stringify(this.voiceName || "default")}`);
+      await this.windowsSay(line.text, line.tag);
+    }
+    else { this.playingLine = line; await this.play(blob, line); this.playingLine = null; }
     if (gen !== this.gen) return;
     line.done?.();
     this.queue.shift();
     this.next();
   }
 
-  private async play(blob: Blob): Promise<void> {
+  private async play(blob: Blob, line: Line): Promise<void> {
     const url = URL.createObjectURL(blob);
     const a = new Audio(url);
     a.volume = Math.max(0, Math.min(1, this.volume));
     a.playbackRate = this.rate;
     a.preservesPitch = true;
-    this.noteVoice(`${this.provider === "edge" ? this.onlineLabel : this.provider} (online voice)`);
+    this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`);
     this.playing = a;
+    call("app:note", `[voice] playback start provider=${line.provider} audio_bytes=${blob.size}`);
     await new Promise<void>((resolve) => {
-      a.onended = a.onerror = a.onpause = () => resolve();
-      a.play().catch(() => resolve());
+      let finished = false;
+      const finish = (result: string) => {
+        if (finished) return;
+        finished = true;
+        call("app:note", `[voice] playback ${result} provider=${line.provider}`);
+        resolve();
+      };
+      a.onended = () => finish("ended");
+      a.onerror = () => finish(`failed media_code=${a.error?.code || 0}`);
+      a.onpause = () => finish("paused");
+      a.play().catch((e: unknown) => finish(`rejected reason=${e instanceof Error
+        && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`));
     });
     URL.revokeObjectURL(url);
     this.playing = null;

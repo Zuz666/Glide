@@ -7,6 +7,17 @@ import type { Voice } from "../shared/ipc";
 
 const runPython = promisify(execFile);
 
+/** Safe diagnostic fields only: never retain Python's traceback or a service URL with its query tokens. */
+export class EdgeTtsError extends Error {
+  constructor(message: string, readonly reason: string, readonly audioBytes: number,
+              readonly exitCode?: string | number, readonly httpStatus?: number) {
+    super(`Edge TTS: ${message}`);
+    this.name = "EdgeTtsError";
+  }
+}
+
+const PYTHON_FAILURE = /(?:^|\n)(?:[\w.]+\.)?(NoAudioReceived|WSServerHandshakeError|ClientConnectorCertificateError|ClientConnectorDNSError|ClientConnectorError|ServerDisconnectedError|ClientConnectionError|ClientPayloadError|TimeoutError|ConnectionResetError|UnexpectedResponse|UnknownResponse|WebSocketError):/g;
+
 function pythonContext() {
   const py = pythonCommand();
   const env: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", PYTHONNOUSERSITE: "1" };
@@ -36,10 +47,12 @@ export async function edgeVoices(signal: AbortSignal): Promise<Voice[]> {
 }
 
 export async function edgeSynth(text: string, voice: string, signal: AbortSignal): Promise<Buffer> {
-  if (!voice) throw new Error("Edge TTS: choose a voice in Settings > Voice");
+  if (!voice) throw new EdgeTtsError("choose a voice in Settings > Voice", "VoiceMissing", 0);
   const { py, env } = pythonContext();
   const request = runPython(py.cmd, [...py.args, "-m", "edge_tts", "--file", "-", "--voice", voice, "--write-media", "-"],
     { env, windowsHide: true, encoding: "buffer", signal, timeout: 15000, killSignal: "SIGKILL", maxBuffer: 16 * 1024 * 1024 });
+  let audioBytes = 0;
+  request.child.stdout?.on("data", (chunk: Buffer) => { audioBytes += chunk.length; });
   let inputError: Error | undefined;
   request.child.stdin?.on("error", (error: Error) => { inputError = error; });
   request.child.stdin?.end(text, "utf8");
@@ -47,17 +60,30 @@ export async function edgeSynth(text: string, voice: string, signal: AbortSignal
   try {
     ({ stdout } = await request);
   } catch (error) {
-    // Don't forward Python's traceback: it can contain request data. Keep actionable failures for the UI.
+    // Extract only known exception classes and numeric HTTP status. Tracebacks may contain text and tokens.
     const failure = error as Error & { code?: string | number; killed?: boolean; stderr?: Buffer };
-    if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error("Edge TTS: audio output exceeded the size limit");
-    if (signal.aborted || failure.killed) throw new Error("Edge TTS: synthesis timed out");
-    if (failure.code === "ENOENT") throw new Error("Edge TTS: Python runtime not found");
-    if (failure.stderr?.includes("No module named edge_tts")) {
-      throw new Error("Edge TTS: install edge-tts==7.3.1 in the Python runtime");
+    const exitCode = typeof failure.code === "number" ? failure.code
+      : /^(?:E[A-Z_]+|ABORT_ERR)$/.test(failure.code || "") ? failure.code : undefined;
+    if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      throw new EdgeTtsError("audio output exceeded the size limit", "OutputLimit", audioBytes, exitCode);
     }
-    throw new Error(`Edge TTS: synthesis failed (${failure.code || "process error"}); check the internet connection and Python runtime`);
+    if (signal.aborted || failure.killed) {
+      throw new EdgeTtsError("synthesis timed out", "Timeout", audioBytes, exitCode);
+    }
+    if (failure.code === "ENOENT") throw new EdgeTtsError("Python runtime not found", "PythonMissing", audioBytes, exitCode);
+    const stderr = failure.stderr?.toString("utf8") || "";
+    if (stderr.includes("No module named edge_tts")) {
+      throw new EdgeTtsError("install edge-tts==7.3.1 in the Python runtime", "ModuleMissing", audioBytes, exitCode);
+    }
+    const reason = [...stderr.matchAll(PYTHON_FAILURE)].at(-1)?.[1] || "ProcessError";
+    const status = stderr.match(/WSServerHandshakeError:\s*([1-5]\d{2})\b/);
+    const httpStatus = status ? Number(status[1]) : undefined;
+    const message = reason === "NoAudioReceived" ? "service returned no audio (NoAudioReceived)"
+      : httpStatus ? `WebSocket connection rejected (HTTP ${httpStatus})`
+      : `synthesis failed (${reason}${exitCode === undefined ? "" : `, exit ${exitCode}`})`;
+    throw new EdgeTtsError(message, reason, audioBytes, exitCode, httpStatus);
   }
-  if (inputError) throw new Error("Edge TTS: could not send text to Python");
-  if (!stdout.length) throw new Error("Edge TTS: no audio in the answer");
+  if (inputError) throw new EdgeTtsError("could not send text to Python", "InputError", audioBytes);
+  if (!stdout.length) throw new EdgeTtsError("no audio in the answer", "EmptyAudio", 0);
   return stdout;
 }

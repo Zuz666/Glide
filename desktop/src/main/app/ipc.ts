@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import * as addon from "../addon";
 import { Engine } from "../engine";
+import { EdgeTtsError } from "../edge-tts";
 import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } from "../paths";
 import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
@@ -128,10 +129,29 @@ function appChannels(d: IpcDeps): void {
     const env = TTS_KEYS[provider as keyof typeof TTS_KEYS];
     return env ? keyValue(env) : "";
   };
+  let ttsSequence = 0, ttsActive = 0;
   handle("tts:synth", async (text: string, style?: string, tone?: string) => {
-    const s = settings.current.speech || {};
-    return { mime: "audio/mpeg", data: await synth(s, String(text || "").slice(0, 4000), ttsKey(s.provider),
-                                                   String(style || "").slice(0, 1000), String(tone || "").slice(0, 200)) };
+    const s = settings.current.speech || {}, id = ++ttsSequence, started = performance.now();
+    const input = String(text || "").slice(0, 4000), provider = s.provider || "unknown";
+    const voice = provider === "edge" ? s.edge?.voice : provider === "openai" ? s.openai?.voice
+      : provider === "azure" ? s.azure?.voice : provider === "google" ? s.google?.voice : s.elevenlabs?.voiceId;
+    ttsActive++;
+    engine.note(`[voice] TTS #${id} start provider=${provider} voice=${JSON.stringify(String(voice || "default").slice(0, 120))} chars=${input.length} active=${ttsActive}`);
+    try {
+      const data = await synth(s, input, ttsKey(s.provider),
+        String(style || "").slice(0, 1000), String(tone || "").slice(0, 200));
+      engine.note(`[voice] TTS #${id} ready elapsed_ms=${Math.round(performance.now() - started)} audio_bytes=${data.length}`);
+      return { mime: "audio/mpeg", data };
+    } catch (error) {
+      const detail = error instanceof EdgeTtsError
+        ? { reason: error.reason, audio_bytes: error.audioBytes, exit_code: error.exitCode, http_status: error.httpStatus }
+        : { reason: "ProviderError" };
+      engine.note(`[voice] TTS #${id} failed elapsed_ms=${Math.round(performance.now() - started)} ${JSON.stringify(detail)}`);
+      // Electron only transports the message; keep its request id for the renderer's fallback log.
+      throw new Error(`TTS #${id}: ${error instanceof Error ? error.message : "synthesis failed"}`);
+    } finally {
+      ttsActive--;
+    }
   });
   handle("tts:voices", (provider) => ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region));
 
