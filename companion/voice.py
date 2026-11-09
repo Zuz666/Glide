@@ -12,6 +12,7 @@ from typing import Callable
 
 import settings
 import log as console
+from localization import TEXT_RESOURCES
 
 PS = r"""
 $ErrorActionPreference = 'Continue'
@@ -36,6 +37,16 @@ while ($true) {
 """
 
 
+def _announce(voice, localize=None):
+    def say():
+        text = TEXT_RESOURCES["voice.ready"]
+        voice.say(localize(text) if localize is not None else text)
+    if localize is None:
+        say()
+    else:
+        threading.Thread(target=say, daemon=True, name="voice-announcement").start()
+
+
 class HubVoice:
     """Speech done by the desktop app: each line goes out as a "speak" event ({text, interrupt, style?, tone?}) on the
     dashboard's event stream, and the app speaks it with the voice picked in its settings (voice "output": "app").
@@ -49,13 +60,17 @@ class HubVoice:
         """The voice settings, read through settings_manifest.json (defaults, ranges)."""
         return settings.Settings("voice", self.cfg)
 
-    def __init__(self, cfg, hub):
+    def __init__(self, cfg, hub, *, announce=True):
         self.cfg, self.hub = cfg, hub
         self.enabled = self.opt.get("enabled")
         self.muted = False
+        if announce:
+            self.announce()
+
+    def announce(self, localize=None):
         if self.enabled and self.opt.get("announce"):
-            # said once the app is listening: a "speak" sent before anyone is connected is lost
-            hub.on_first_client(lambda: self.say("Glide voice ready."))
+            # Translation runs off the hub's client hook; no network while it holds its client lock.
+            self.hub.on_first_client(lambda: _announce(self, localize))
 
     def set_muted(self, muted):
         """Muted, nothing goes out (the app's narrator also drops what it gets while the app is muted)."""
@@ -90,7 +105,7 @@ class Voice:
         """The voice settings, read through settings_manifest.json (defaults, ranges)."""
         return settings.Settings("voice", self.cfg)
 
-    def __init__(self, cfg, log_dir=None):
+    def __init__(self, cfg, log_dir=None, *, announce=True):
         self.cfg = cfg
         self.proc = None
         self.muted = False
@@ -99,8 +114,12 @@ class Voice:
         self.enabled = self.opt.get("enabled") and sys.platform == "win32"
         if self.enabled:
             self._start()
-            if self.opt.get("announce"):
-                self.say("Glide voice ready.")
+            if announce:
+                self.announce()
+
+    def announce(self, localize=None):
+        if self.enabled and self.opt.get("announce"):
+            _announce(self, localize)
 
     def _start(self):
         try:

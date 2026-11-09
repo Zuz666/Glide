@@ -6,6 +6,7 @@ import { $, esc, icon, toast } from "../dom.js";
 import { currentPage, show } from "../nav.js";
 import { MANIFEST } from "../settings-manifest.js";
 import { Field, Group, SCHEMA } from "../settings-schema.js";
+import { languageCode } from "../speech-language.js";
 import { enginePost, JSON_HEADERS, live } from "../state.js";
 import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
@@ -15,7 +16,7 @@ import { highlightSearch, queryWords, searchQuery, searchSchema, setSearchQuery 
 export type Panel = (g: Group, host: HTMLElement) => void | Promise<void>;
 
 const TAB_ICON: Record<string, string> = { general: "settings", models: "key-round", coach: "sparkles", buffs: "swords",
-                                          voice: "volume-2", overlay: "maximize", capture: "server" };
+                                          language: "globe", voice: "volume-2", overlay: "maximize", capture: "server" };
 const LLM = "companion.llm.";
 // live-tunable without a restart (the dashboard's Coach context / Models settings): "live" in the engine's manifest
 const LIVE = new Set(Object.entries(MANIFEST).filter(([k, e]) => e.live && k.startsWith("llm.")).map(([k]) => k.slice(4)));
@@ -56,9 +57,19 @@ export async function renderSettings(): Promise<void> {
     fields.forEach(bindField);
     if (g.special) panels[g.special]?.(g, $(`grp_${i}`));
   });
+  body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
+    renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
+  });
   if (searching) highlightSearch(body);
   body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = async () => {
     const key = b.dataset.reset!;
+    if (key === "companion.voice.language") {
+      const f = allFields().find((f) => f.key === key)!;
+      if (getPath(live.config, key) === f.def) edits.delete(key);
+      else edits.set(key, f.def);
+      renderSettings();
+      return;
+    }
     edits.delete(key);
     await call("config:set", patchFor(key, null));
     toast(`${key.split(".").pop()} reset to its default`);
@@ -93,8 +104,23 @@ async function saveSettings(restart: boolean): Promise<void> {
       if (key.startsWith(LLM) && LIVE.has(leaf)) tunable[leaf] = v;
     }
   }
+  if (getPath(cfgPatch, "companion.voice.language") !== undefined && live.appSettings.speech?.provider === "edge") {
+    const language = languageCode(getPath(cfgPatch, "companion.voice.language"));
+    const voice = getPath(appPatch, "speech.edge.voice") ?? live.appSettings.speech.edge?.voice;
+    if (typeof voice !== "string" || !voice.startsWith(`${language}-`)) {
+      const catalogue = await call("tts:voices", "edge");
+      if (!catalogue) return;
+      const next = catalogue.find((v) => v.id.startsWith(`${language}-`));
+      if (!next) { toast("No Edge-TTS voices for the selected speech language."); return; }
+      appPatch = merge(appPatch, { speech: { edge: { voice: next.id } } });
+    }
+  }
   // not saved (config.json unreadable): the error toast says why, and the edits stay for another try
-  if (Object.keys(cfgPatch).length && !(await call("config:set", cfgPatch))) return;
+  if (Object.keys(cfgPatch).length) {
+    const saved = await call("config:set", cfgPatch);
+    if (!saved) return;
+    live.config = saved; // includes the backend's language-compatible Whisper model
+  }
   if (Object.keys(appPatch).length) applyAppSettings((await call("app:settings:set", appPatch)) || live.appSettings);
   edits.clear();
   if (restart) {

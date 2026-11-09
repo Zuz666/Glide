@@ -5,6 +5,7 @@ import { taskBar } from "../activity.js";
 import { call, glide } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
 import { Group } from "../settings-schema.js";
+import { speechLanguage } from "../speech-language.js";
 import { live } from "../state.js";
 import { refreshStatus } from "../status.js";
 import { SpeechStatus, WhisperModel } from "../types.js";
@@ -15,10 +16,14 @@ let lastSpeechState = "";
 
 function speechLine(s: Partial<SpeechStatus>): string {
   const st = s.state;
-  if (st === "ready") return `<span class="ok">Ready: Whisper ${esc(s.modelName)}${s.version ? ` (faster-whisper ${esc(s.version)})` : ""}</span>`;
+  if (st === "ready") {
+    if (speechLanguage() !== "en" && s.modelName?.endsWith(".en"))
+      return `<span class="warn">Whisper ${esc(s.modelName)} is English-only. Select a multilingual model, save and restart the coach.</span>`;
+    return `<span class="ok">Ready: Whisper ${esc(s.modelName)}${s.version ? ` (faster-whisper ${esc(s.version)})` : ""}</span>`;
+  }
   if (st === "off") return `<span class="dim">${esc(s.detail || "not used")}</span>`;
   if (st === "downloading")
-    return `<span class="warn">Downloading ${esc(s.fetching || s.modelName)}${s.totalMB ? `: ${s.gotMB || 0} of ${s.totalMB} MB` : ""}</span> <span class="dim">Push-to-talk uses Windows speech until it's done.</span>`;
+    return `<span class="warn">Downloading ${esc(s.fetching || s.modelName)}${s.totalMB ? `: ${s.gotMB || 0} of ${s.totalMB} MB` : ""}</span> <span class="dim">The downloading model is not ready for offline recognition. Configured online recognition can still work; Windows fallback needs the speech language installed.</span>`;
   if (st === "installing" || st === "checking")
     return `<span class="warn">${esc(s.detail || "Checking…")}</span> <span class="dim">Runs by itself; progress is in Logs.</span>`;
   return `<span class="bad">${esc(s.detail || "not available")}</span>`;
@@ -26,7 +31,7 @@ function speechLine(s: Partial<SpeechStatus>): string {
 
 export function renderSpeechInstall(_g: Group, host: HTMLElement): void {
   const sp = live.speech;
-  host.innerHTML = `<div class="field"><div class="lab">Whisper<small>Turns push-to-talk questions into text on your PC, offline, in about a second, and gets game names right far more often than the Windows recognizer. The model is downloaded once, by itself, the first time push-to-talk needs it (small.en is about 480 MB) and kept across updates. Until then push-to-talk uses Windows speech. Pick another model above and it's downloaded the same way.</small></div>
+  host.innerHTML = `<div class="field"><div class="lab">Whisper<small>Turns push-to-talk questions into text on your PC, offline. Non-English recognition requires a multilingual model such as small (about 464 MB); .en models recognize English only. Whisper does not support every language offered by speech providers. The selected model downloads when needed and is kept across updates. Offline recognition is unavailable until its model is ready. Online recognition can still work; Windows fallback needs a matching installed recognizer. Save language or model changes, then restart the coach.</small></div>
     <div class="ctl"><span id="sp-msg">${speechLine(sp)}</span><button class="btn" id="sp-install">${sp.state === "error" && sp.package && !sp.model ? "Download now" : "Check and repair"}</button></div></div>
     <div class="field"><div class="lab">Models on this PC<small>Download a model ahead of time to try it later, or delete ones you don't use to free disk space. Pick the one push-to-talk uses in "Whisper model" above.</small></div>
     <div class="ctl wide-ctl" id="sp-models"></div></div>`;

@@ -1,5 +1,5 @@
 # Builds the Python runtime bundled with the app (desktop\build\python): the official Windows embeddable
-# Python, pip, numpy (maps, geometry) and the MSVC runtime DLLs. Run once before `npm run dist`: npm run python.
+# Python, pip, numpy (maps, geometry), edge-tts (free online speech) and the MSVC runtime DLLs. Run once before `npm run dist`: npm run python.
 # Offline push-to-talk (faster-whisper and its ~200 MB of dependencies) isn't shipped: the app installs it into
 # userData\pylib the first time push-to-talk needs it (main/speech.ts). -Packages adds packages for a dev build.
 # The Whisper speech model isn't shipped either (the app downloads it on first use); -Models small.en puts one in
@@ -15,7 +15,7 @@
 # download the file once and put its SHA-256 (Get-FileHash) here.
 param(
   [string]$Version = "3.12.10",
-  [string[]]$Packages = @("numpy==2.5.4"),
+  [string[]]$Packages = @("numpy==2.5.4", "edge-tts==7.3.1"),
   [string[]]$Models = @()
 )
 $ErrorActionPreference = "Stop"
@@ -61,8 +61,11 @@ New-Item -ItemType Directory -Force (Join-Path $out "Lib\site-packages") | Out-N
 
 $py = Join-Path $out "python.exe"
 $env:PYTHONNOUSERSITE = "1"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+# Pin the embedded runtime's standard library instead of another Python registered on the build machine.
+$env:PYTHONHOME = $out
 
 # a pip wheel is importable as it is, so pip runs from it (on PYTHONPATH, as `-m pip`: pip refuses to replace
 # itself any other way on Windows) and installs itself without get-pip.py

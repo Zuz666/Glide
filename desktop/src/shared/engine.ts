@@ -208,7 +208,8 @@ export interface NavBuild { state: "waiting" | "checking" | "building" | "done" 
   tile: number; tiles: number; maps_done: number; started: number | null; finished: number | null; force: boolean;
   outdated: number[]; built: number[] }
 export interface Models { fast: string | null; deep: string | null; fast_name: string | null; deep_name: string | null;
-  listen: string; listen_fallback: string | null }
+  listen: string; listen_fallback: string | null;
+  translation?: { language: string; available: boolean } }
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;
   tool_calls: number; cited: number; unsupported: number; uncached_in_tokens: number; cache_read_tokens: number;
   cache_write_tokens: number; cost_usd: number; web_searches?: number }

@@ -18,6 +18,7 @@ import { renderCaptureCheck } from "./settings/capture.js";
 import { renderDataHome } from "./settings/data-home.js";
 import { renderEndpoints } from "./settings/endpoints.js";
 import { renderKeys } from "./settings/keys.js";
+import { renderLanguage } from "./settings/language.js";
 import { renderModelPicker } from "./settings/model-picker.js";
 import { renderOverlayUnlock } from "./settings/overlay-position.js";
 import { renderSetupAgain } from "./settings/setup-again.js";
@@ -37,6 +38,7 @@ registerPanels({
   keys: renderKeys,
   "model-picker": renderModelPicker,          // the coach's /models list, with prices
   endpoints: renderEndpoints,
+  language: renderLanguage,
   voices: renderVoices,
   "speech-install": renderSpeechInstall,
   "capture-check": renderCaptureCheck,

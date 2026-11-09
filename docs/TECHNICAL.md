@@ -252,16 +252,30 @@ Hold **F8** while WoW is focused, ask your question out loud, and release.
 
 Questions typed on the coach screen still use the deep model.
 
-- **Better recognition (recommended):** the app installs `faster-whisper` and its speech model the first time push-to-talk needs it (Settings > Voice). From the command line, run `setup-voice.cmd` once. It installs `faster-whisper` and downloads the `small.en` speech model (about 480 MB). After that, recognition runs offline on your CPU in about a second. Without it, the engine uses Windows' built-in recognizer, which is less accurate with game names.
+- **Better recognition (recommended):** the app installs `faster-whisper` and its speech model the first time push-to-talk needs it (Settings > Voice). English defaults to `small.en`; other selected languages use multilingual `small` instead of English-only weights. Both are about 480 MB. From the command line, `setup-voice.cmd` installs `faster-whisper` and `small.en`. Recognition then runs offline on your CPU. Without Whisper, the engine uses an installed Windows recognizer for the selected language.
 - **Name hints:** your current zone, target, and quest names are passed to the recognizer so it spells them right.
 - **Settings:** under `config.json` → `"companion"` → `"ptt"` (in the app: Settings > Voice):
   - `key`: `F8`, `MOUSE4`, `MOUSE5`, `CTRL+Q`, and so on.
   - `engine`: `auto` (whisper if installed, else Windows), `whisper`, `windows`, or an online one: `openai`, `groq` or `deepgram`, each with its own API key. An online engine that fails falls back to the local one for that question.
-  - `whisper_model`: `small.en` (the default) is more accurate; `base.en` is faster.
+  - `whisper_model`: `small.en` is the English default; `base.en` is faster. Selecting a non-English language replaces missing or English-only models with multilingual `small`, retaining an already selected multilingual model.
   - `only_when_wow_focused` (default on), `beep` (default on).
 - **Off for one run:** `--no-ptt`.
 
 The key is read passively. Nothing is sent to the game, but WoW also sees the key, so pick one you haven't bound in game.
+
+### Language and speech
+
+Settings > **Language** selects the coach and speech language (`companion.voice.language`). The picker covers the WoW client languages: Chinese, English, French, German, Italian, Korean, Portuguese, Russian and Spanish. **Interface language** is separate: English only, disabled and marked WIP.
+
+- Connected AI models answer in the selected language. Deterministic coach messages use the configured **fast model** for translation; model-generated answers are not translated a second time. Disabled or unavailable translation leaves the original English text.
+- The startup announcement is the first named text resource, `voice.ready` ("Glide Voice is running!"), and uses that same translation path.
+- Recognition receives the selected language. Whisper uses multilingual weights for non-English speech; Windows needs a matching installed recognizer. Online recognition still requires its provider's API key and may incur charges.
+- **Edge-TTS** is a free, online, unofficial Microsoft speech service, without an API key. Its live voice catalogue is filtered by the selected language; **Show all voice languages** exposes the full catalogue. Language changes retain a compatible voice or select one from the catalogue. Narration text is sent to the service; availability and rate limits are outside Glide's control.
+- Windows narration uses installed voices. OpenAI TTS supports multiple languages, with voices optimized for English; ElevenLabs support depends on its model and voice. Glide's Azure and Google voice pickers currently list English voices, although those services support other languages.
+- In the provider help, **Windows speech → Open Windows speech settings** opens Windows' voice selection and voice-package management page. Settings links beneath the selected model/service names navigate to the corresponding Glide section.
+- The Language panel shows the selected translation, recognition and narration tools, links to their settings, and a **Language support** popup with setup guidance. Save language changes and restart the coach.
+- **Translate news and community notes** is a separate disabled **Off / WIP** control. Community-feed news, tips, data and mechanics remain in their original language; no translation requests are made for this feature yet.
+- The footer's **AI → language** indicator shows when the running engine can use its fast model for coach-message translation. Its tooltip names the model and explains costs and English fallback; clicking it opens Language settings. An unavailable model shows **AI off · language**. The indicator is hidden for English or a stopped coach. Provider language help opens from the circular **i** button beside **Speech output**.
 
 ### Options
 

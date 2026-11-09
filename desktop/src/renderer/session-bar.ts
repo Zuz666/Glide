@@ -19,6 +19,7 @@ export function sessionBar(d: LiteState | null): void {
     for (const id of ["sb-time", "sb-cost", "sb-calls", "sb-cache", "sb-fast", "sb-deep", "sb-listen", "sb-mode"]) $(id).textContent = "–";
     $("sb-mode").className = "";
     live.refresh = null;
+    $("sb-translation").hidden = true;
     live.game = null;
     if (currentPage() === "guides") liveGameChanged();
     taskBar();
@@ -35,6 +36,7 @@ export function sessionBar(d: LiteState | null): void {
   if (currentPage() === "guides") liveGameChanged();
   showUsage(d.session_minutes, d.coach || {});
   showModels(d.models || {});
+  showTranslation(d.models || {});
   showMode(String((d.coach || {}).mode || ""));
 }
 
@@ -58,6 +60,21 @@ function showModels(m: Partial<Models>): void {
   $("sb-listen-wrap").title = `Speech-to-text for push-to-talk: ${$("sb-listen").textContent}${fb ? `, falls back to ${cap(fb)}` : ""}`;
 }
 
+function showTranslation(m: Partial<Models>): void {
+  const button = $("sb-translation"), translation = m.translation;
+  button.hidden = !translation || translation.language === "en";
+  if (button.hidden || !translation) return;
+  const language = translation.language.toUpperCase();
+  const label = `${translation.available ? "AI translation" : "Translation off"} · ${language}`;
+  $("sb-translation-label").textContent = translation.available ? `AI → ${language}` : `AI off · ${language}`;
+  button.classList.toggle("off", !translation.available);
+  button.setAttribute("aria-label", label);
+  button.title = `Coach message translation → ${language}\nModel: ${m.fast_name || m.fast || "not configured"} (${m.fast || "none"})\n`
+    + (translation.available ? "Uses the AI model; translation calls are included in AI cost. Individual failures leave the original English text."
+      : "The translation model is unavailable or disabled; deterministic messages stay in English.")
+    + "\nClick to open Language settings. News and community notes are not translated.";
+}
+
 /** AI live, paused (and why) or offline with rules only. */
 function showMode(mode: string): void {
   $("sb-mode").textContent = mode.startsWith("offline:") ? `Paused: ${mode.slice(8).trim()}` : mode === "offline" ? "Offline, rules only" : mode ? "AI live" : "–";
@@ -70,5 +87,6 @@ function showMode(mode: string): void {
 
 export function wireSessionBar(): void {
   $("sb-models").onclick = () => openSettingsTab("models");
+  $("sb-translation").onclick = () => openSettingsTab("language");
   wireSessionBarOrder();
 }

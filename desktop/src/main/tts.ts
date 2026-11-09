@@ -1,10 +1,11 @@
-// Online text-to-speech for the coach's voice: OpenAI, ElevenLabs, Azure Speech and Google Cloud. The window asks
+// Online text-to-speech for the coach's voice: Edge, OpenAI, ElevenLabs, Azure Speech and Google Cloud. The window asks
 // for audio (tts:synth) and plays it; Windows voices are spoken in the window itself (speechSynthesis). Keys come from
 // the encrypted key store or the environment and never reach the window.
 
 import type { SpeechSettings, TtsProvider, Voice } from "../shared/ipc";
 
-export const TTS_KEYS: Record<Exclude<TtsProvider, "windows">, string> = {
+type KeyProvider = Exclude<TtsProvider, "windows" | "edge">;
+export const TTS_KEYS: Record<KeyProvider, string> = {
   openai: "OPENAI_API_KEY", elevenlabs: "ELEVENLABS_API_KEY", azure: "AZURE_SPEECH_KEY", google: "GOOGLE_TTS_API_KEY",
 };
 
@@ -49,6 +50,11 @@ type Synth = (s: SpeechSettings, text: string, key: string, signal: AbortSignal,
 type VoiceList = (key: string, signal: AbortSignal, region?: string) => Promise<Voice[]>;
 
 const SYNTH: Record<Online, Synth> = {
+  async edge(s, text, _key, signal) {
+    // The Python paths depend on Electron; other providers and their Node-only tests don't need that runtime.
+    const { edgeSynth } = await import("./edge-tts.js");
+    return edgeSynth(text, s.edge?.voice || "", signal);
+  },
   async openai(s, text, key, signal, style) {
     const o = s.openai || {};
     const model = o.model || "gpt-4o-mini-tts";
@@ -91,8 +97,8 @@ const SYNTH: Record<Online, Synth> = {
   },
 };
 
-// OpenAI's voices are a fixed list (voices() answers it without a key); the others are asked for theirs
-const VOICE_LISTS: Record<Exclude<Online, "openai">, VoiceList> = {
+// OpenAI offers a fixed list; the other providers are asked for theirs.
+const VOICE_LISTS: Record<Exclude<KeyProvider, "openai">, VoiceList> = {
   async elevenlabs(key, signal) {
     const d = await json<{ voices?: { voice_id: string; name: string; labels?: Record<string, string> }[] }>(
       "https://api.elevenlabs.io/v1/voices", "ElevenLabs", { signal, headers: { "xi-api-key": key } });
@@ -115,17 +121,23 @@ const VOICE_LISTS: Record<Exclude<Online, "openai">, VoiceList> = {
  * `tone` = how to deliver this one line (in character; an audio tag for ElevenLabs v3, the others don't use it). */
 export async function synth(s: SpeechSettings, text: string, key: string, style = "", tone = ""): Promise<Buffer> {
   const p = s.provider;
-  if (!key) throw new Error(`${p}: no ${TTS_KEYS[p as Online]} (Settings > AI models & keys)`);
+  if (p && Object.hasOwn(TTS_KEYS, p) && !key) {
+    throw new Error(`${p}: no ${TTS_KEYS[p as KeyProvider]} (Settings > AI models & keys)`);
+  }
   const signal = AbortSignal.timeout(TIMEOUT);
   if (p && Object.hasOwn(SYNTH, p)) return SYNTH[p as Online](s, text, key, signal, style, tone);
   throw new Error(`unknown voice provider ${p}`);
 }
 
-/** The voices a provider offers: [{id, name}] (OpenAI: its fixed list). */
+/** The voices a provider offers: [{id, name}]. */
 export async function voices(provider: TtsProvider, key: string, region?: string): Promise<Voice[]> {
   const signal = AbortSignal.timeout(TIMEOUT);
   if (provider === "openai") return OPENAI_VOICES.map((v) => ({ id: v, name: v }));
-  if (!key) throw new Error(`no ${TTS_KEYS[provider as Online]} set`);
+  if (provider === "edge") {
+    const { edgeVoices } = await import("./edge-tts.js");
+    return edgeVoices(signal);
+  }
+  if (Object.hasOwn(TTS_KEYS, provider) && !key) throw new Error(`no ${TTS_KEYS[provider as KeyProvider]} set`);
   if (Object.hasOwn(VOICE_LISTS, provider)) return VOICE_LISTS[provider as keyof typeof VOICE_LISTS](key, signal, region);
   return [];
 }

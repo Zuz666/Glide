@@ -4,6 +4,7 @@
 // companion/settings_manifest.json (settings-manifest.ts, generated at build), so here it has only its label, help
 // and place; the app's own settings carry theirs here.
 import { MANIFEST } from "./settings-manifest.js";
+import { LANGUAGE_OPTIONS } from "./speech-language.js";
 
 export type FieldType = "bool" | "number" | "range" | "text" | "select" | "list" | "folder";
 
@@ -196,7 +197,7 @@ export const SCHEMA: Tab[] = [
         { key: "companion.voice.enabled", label: "Speak callouts and answers", type: "bool" },
         { key: "companion.voice.output", label: "Spoken by", type: "select",
           options: [["app", "this app (Windows or online voices, below)"], ["windows", "the coach's own Windows speech process"]] },
-        { key: "companion.voice.announce", label: "Say \"Glide voice ready\" at start", type: "bool" },
+        { key: "companion.voice.announce", label: "Announce readiness at startup", type: "bool" },
       ] },
       { title: "Coach voice", special: "voices" },
       { title: "Windows speech process", intro: "Only used when \"Spoken by\" is the coach's own process.", fields: [
@@ -215,7 +216,7 @@ export const SCHEMA: Tab[] = [
         { key: "companion.ptt.online_model", label: "Online recognition model", type: "text",
           help: "Empty: gpt-4o-mini-transcribe (OpenAI), whisper-large-v3-turbo (Groq), nova-3 (Deepgram)." },
         { key: "companion.ptt.whisper_model", label: "Whisper model", type: "select",
-          help: "Downloaded the first time it's needed; until then push-to-talk uses Windows speech.",
+          help: "Non-English speech needs multilingual small, not an English-only .en model. Downloads when needed; offline recognition is unavailable until the model is ready. Online recognition can still work; Windows fallback needs a recognizer for the selected language.",
           options: [["tiny.en", "tiny.en: fastest, 74 MB"], ["base.en", "base.en: fast, 141 MB"], ["distil-small.en", "distil-small.en: 320 MB"],
                     ["small.en", "small.en: recommended, 464 MB"], ["distil-medium.en", "distil-medium.en: 755 MB"],
                     ["medium.en", "medium.en: most accurate, 1.4 GB"], ["small", "small: multilingual, 464 MB"]] },
@@ -248,6 +249,15 @@ export const SCHEMA: Tab[] = [
           help: "The capture grows by itself to fit the strip (a bigger /glide cell, for example); this is the least it reads." },
         { key: "companion.capture.height", label: "Smallest capture height (px)", type: "number" },
       ] },
+    ],
+  },
+  {
+    id: "language", title: "Language", groups: [
+      { title: "Coach language", fields: [
+        { key: "companion.voice.language", label: "Coach and speech language", type: "select", options: LANGUAGE_OPTIONS,
+          help: "AI-generated text and translated messages use this language when an LLM is available; otherwise text stays English. Also controls recognition and voice filtering. Save and restart the coach. Language support varies by speech provider." },
+      ] },
+      { title: "Language tools and models", special: "language" },
     ],
   },
 ];

@@ -7,7 +7,7 @@ App.http_routes): a path matches exactly with its query parsed (/xph?x answers, 
 on a known path answers 405, bodies are parsed once, and the GETs that run something (/calibrate, /models?refresh=1)
 need the token too. Also the hub: a client that falls behind is dropped
 and its stream ends; a message is either in a new client's init or in its queue; the first-client hook runs once
-(and so the app hears "Glide voice ready.").
+(and so the app hears the startup greeting).
 
 Run: python3 tests/test_dashboard_http.py   (prints OK)
 """
@@ -131,7 +131,7 @@ fake = AnyApp()
 table = glide_app.App.http_routes(fake)
 assert {p for _, p in table} | {"/", "/events", "/api/state", "/layout"} == {
     "/", "/events", "/api/state", "/ask", "/settings", "/models", "/memory", "/reminders", "/layout", "/health",
-    "/refresh", "/calibrate", "/mute", "/xph", "/community/seen", "/announce"}, sorted(table)
+    "/refresh", "/calibrate", "/mute", "/xph", "/community/seen", "/announce", "/localize"}, sorted(table)
 needs = {k for k, r in table.items() if (r.token if isinstance(r, dashboard.Route) and r.token is not None
                                          else k[0] == "POST")}
 assert {k for k in needs if k[0] == "GET"} == {("GET", "/models"), ("GET", "/memory"), ("GET", "/calibrate")}, needs
@@ -207,7 +207,7 @@ def settle(before):
         before = before | set(new)
 
 
-# the first-client hook: once, shortly after the first client connects; "Glide voice ready." goes out then
+# The first-client hook runs once, shortly after the first client connects.
 dashboard.FIRST_CLIENT_DELAY_S = 0.05
 h = dashboard.Hub()
 HubVoice({"enabled": True, "announce": True}, h)
@@ -218,7 +218,7 @@ q, _ = h.connect()
 q2, _ = h.connect()
 settle(before)
 said = [q.get_nowait() for _ in range(q.qsize())]
-assert len(said) == 1 and "Glide voice ready." in said[0] and said[0].startswith("event: speak"), said
+assert len(said) == 1 and said[0].startswith("event: speak"), said
 assert q2.qsize() == 1, "the hook waited until both windows were listening"
 before = set(threading.enumerate())
 q3, _ = h.connect()

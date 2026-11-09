@@ -77,6 +77,12 @@ they don't spell out.
 
 ## Recorded changes
 
+- **Windows speech settings link:** `shell:open` now allows exactly `ms-settings:speech` on Windows, in addition to its existing web-page and local-directory targets. Other URI schemes, other Settings pages and parameterized variants remain rejected. The Language help popup uses this fixed destination to open Windows voice management ([Microsoft URI reference](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings)).
+
+- **Translation status and community WIP:** the optional `models.translation` status contains `{language, available}`, computed from the running coach's language and fast-model eligibility (enabled, key, suspension, backoff and configured provider). The footer uses it rather than unsaved settings; it makes no model requests. News/community translation is a disabled UI-only WIP control, with no persisted setting or translation implementation.
+
+- **Multilingual coach and speech:** `companion.voice.language` selects the coach/recognition language; non-English selections migrate English-only Whisper weights to multilingual `small`. Edge-TTS uses its live voice catalogue, with a language filter and no named voice default. Authenticated `POST /localize` accepts `{text}` and returns `{ok, text, language}`; unavailable translation preserves English. Translated messages may carry `original_text`; generated answers are marked to avoid duplicate translation. The named startup resource is `voice.ready`. Interface language remains English (WIP). Recognition/localization tests cover language boundaries, fallback and delivery; the desktop golden retains IPC/settings behavior but no longer copies internal exports or UI wording.
+
 - **R1, knowledge golden** (`knowledge` probe re-recorded): stored step briefs are built with RestedXP's SSF and
   group quests off (meta `step_brief_rxp`); a player with other RestedXP options now gets a brief computed for
   their own route instead of the stored one, and every route and knowledge-pack cache keys on those options. The

@@ -46,3 +46,22 @@ data/feed-preview/
 
 # the community scan's machine-specific runbook (where the project lives, how the scheduled run reaches it)
 knowledge/community/RUNBOOK.local.md
+
+# Independent private workspace and local agent instructions
+/.local/
+/AGENTS.md
+/.agents/
+
+# Workstation inputs and credentials stay outside public history
+/raw/
+/secrets/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+Thumbs.db
+Desktop.ini

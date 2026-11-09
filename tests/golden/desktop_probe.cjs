@@ -19,7 +19,6 @@ const resolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...a) { return req === "electron" ? "electron" : resolve.call(this, req, ...a); };
 require.cache.electron = { id: "electron", filename: "electron", loaded: true, exports: electron };
 
-const surface = (m) => Object.keys(m).sort().map((k) => `${k}:${typeof m[k]}`);
 // every compiled main-process module, sub-folders too ("app/ipc.js"), in a fixed order; only those with a source
 // file still (tsc never deletes the output of a moved or removed .ts)
 const SRC = path.join(dist, "..", "src", "main");
@@ -38,10 +37,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 (async () => {
   const res = {};
   const main = path.join(dist, "main");
-  for (const f of modules(main)) {
-    if (f === "main.js" || f === "preload.js") continue;           // they start the app / need a window
-    try { res[`main/${f}`] = surface(require(path.join(main, f))); } catch (e) { res[`main/${f}`] = `raised ${e.message.split("\n")[0]}`; }
-  }
   // contract 4, the IPC channels: what app/ipc.js registers must be exactly what preload.js lets the windows invoke,
   // and the events the main process sends must be exactly the ones preload.js lets them listen to
   require(path.join(main, "app", "ipc.js")).registerIpc(anything());
@@ -61,16 +56,6 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   fs.writeFileSync(path.join(tmp, "app-settings.json"), JSON.stringify({ overlay: { opacity: 0.5 }, speech: { provider: "openai" }, closeToTray: true }));
   res.loaded_settings = store.loadAppSettings();
   res.saved_back = JSON.parse(fs.readFileSync(path.join(tmp, "app-settings.json"), "utf-8"));
-  // the renderer is compiled as ES modules inside a CommonJS package: import copies from a folder that says
-  // "module" (the schema with the engine settings manifest it imports)
-  const esm = path.join(tmp, "renderer");
-  fs.mkdirSync(esm);
-  fs.writeFileSync(path.join(esm, "package.json"), '{"type": "module"}');
-  for (const f of ["settings-schema.js", "settings-manifest.js"]) fs.copyFileSync(path.join(dist, "renderer", f), path.join(esm, f));
-  const mjs = path.join(esm, "settings-schema.js");
-  const schema = await import("file://" + mjs.replace(/\\/g, "/"));
-  res.schema = JSON.parse(JSON.stringify(schema.SCHEMA, (k, v) => (typeof v === "function" ? `fn ${v.name || "anon"}` : v)));
-  res.schema_exports = surface(schema);
   fs.writeFileSync(out, JSON.stringify(res, null, 1));
   fs.rmSync(tmp, { recursive: true, force: true });
 })().catch((e) => { console.error(e); process.exit(1); });

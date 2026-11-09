@@ -161,7 +161,7 @@ function ensureSpeech(force = false): Promise<void> {
       engine.note("[speech] restarting the coach so push-to-talk uses the new speech model");
       engine.restart(engineOptions());
     }
-  }, force);
+  }, force, companionSection("voice").language);
 }
 
 // ---- lifecycle --------------------------------------------------------------------------------------------

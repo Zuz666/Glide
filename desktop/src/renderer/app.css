@@ -133,6 +133,16 @@ main { flex: 1; min-width: 0; position: relative; display: block; }
 .reset { background: none; border: 0; color: var(--ink-3); cursor: pointer; font: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; padding: 0; }
 .reset:hover { color: var(--gold); }
 .rangeval { min-width: 48px; font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 650; }
+/* On-demand language-provider help: native popover handles Escape, outside click and focus return. */
+.field .ctl.language-tool { flex-direction: column; align-items: flex-start; }
+.language-help-trigger { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 5px; padding: 0; vertical-align: super; border: 1px solid var(--edge); border-radius: 50%; background: transparent; color: var(--ink-3); font: 600 11px Georgia, serif; cursor: pointer; }
+.language-help-trigger:hover { color: var(--ink); border-color: var(--gold); }
+.language-help-trigger:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.language-help-popup { width: min(640px, calc(100vw - 48px)); max-height: 75vh; overflow: auto; padding: 20px; color: var(--ink); background: var(--tip); border: 1px solid var(--edge); border-radius: var(--radius-l); box-shadow: var(--tip-shadow); }
+.language-help-popup header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.language-help-popup h3 { margin: 0; color: var(--gold); }
+.language-help-popup dt { margin-top: 14px; font-weight: 600; }
+.language-help-popup dd { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.5; }
 .dirty { color: var(--warn); font-size: 14px; font-weight: 600; }
 
 .keyrow { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--edge-soft); }
@@ -210,6 +220,7 @@ main { flex: 1; min-width: 0; position: relative; display: block; }
    about the models; a system that is off reads quieter than a live one */
 #sb-listen-wrap { padding-left: 14px; border-left: 1px solid var(--edge-soft); }
 #sessionbar .sb-item.off b { color: var(--ink-3); font-weight: 500; }
+#sessionbar .sb-translation:not(.off) .icon { color: var(--gold); }
 @media (max-width: 1200px) {
   #sessionbar { gap: 16px; }
   #sessionbar .sb-opt { display: none; }

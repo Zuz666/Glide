@@ -24,6 +24,7 @@ import uuid
 
 import settings
 from log import log, log_once
+from speech_language import language_code
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -100,7 +101,12 @@ class ModelNotDownloaded(Exception):
 
 
 class WhisperSTT:
-    def __init__(self, model_name):
+    def __init__(self, model_name, *, language="en"):
+        selected_language = language_code(language)
+        self.language = {"fil": "tl", "jv": "jw", "nb": "no"}.get(selected_language, selected_language)
+        model_name = model_name or ("small" if self.language != "en" else settings.default("ptt.whisper_model"))
+        if self.language != "en" and model_name.endswith(".en"):
+            model_name = "small"
         # optional: installed by the app at runtime, not in the dev or CI environment
         from faster_whisper import WhisperModel  # pyright: ignore[reportMissingImports]  (ImportError if missing)
         path = whisper_model_path(model_name)
@@ -112,6 +118,10 @@ class WhisperSTT:
                 raise ModelNotDownloaded(model_name) from None
         self.model = WhisperModel(path, device="cpu", compute_type="int8",
                                   cpu_threads=max(2, (os.cpu_count() or 4) // 2))
+        # faster-whisper silently substitutes English for an English-only model.
+        # Check the loaded model too, including custom paths without a .en suffix.
+        if self.language not in self.model.supported_languages:
+            raise ValueError("Whisper model %s does not support language %s" % (model_name, selected_language))
         self.name = "whisper " + model_name
 
     @staticmethod
@@ -138,31 +148,55 @@ class WhisperSTT:
 
     def transcribe(self, path, prompt=""):
         audio = self.load_wav(path)
-        segs, _ = self.model.transcribe(audio, language="en", beam_size=1, vad_filter=True,
+        segs, _ = self.model.transcribe(audio, language=self.language, beam_size=1, vad_filter=True,
                                         initial_prompt=prompt[:600] or None)
         return " ".join(s.text.strip() for s in segs).strip()
 
 
 PS_STT = r"""
-Add-Type -AssemblyName System.Speech
-$r = New-Object System.Speech.Recognition.SpeechRecognitionEngine
-$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
-$r.SetInputToWaveFile($env:GLIDE_PTT_WAV)
-$res = $r.Recognize()
-if ($res) { [Console]::Out.Write($res.Text) }
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+try {
+  Add-Type -AssemblyName System.Speech
+  $languages = $env:GLIDE_PTT_RECOGNIZER_LANGUAGES -split ';'
+  $recognizer = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
+    Where-Object {
+      $languages -contains $_.Culture.TwoLetterISOLanguageName -or
+      $languages -contains ($_.Culture.Name -split '-')[0]
+    } | Sort-Object { $_.Culture.Name } | Select-Object -First 1
+  if ($null -eq $recognizer) {
+    throw ("No Windows speech recognizer installed for " + $env:GLIDE_PTT_LANGUAGE + ".")
+  }
+  $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine -ArgumentList $recognizer.Id
+  $r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
+  $r.SetInputToWaveFile($env:GLIDE_PTT_WAV)
+  $res = $r.Recognize()
+  if ($res) { [Console]::Out.Write($res.Text) }
+} catch {
+  [Console]::Error.WriteLine($_.Exception.Message)
+  exit 1
+}
 """
 
 
 class WindowsSTT:
     name = "windows speech"
 
+    def __init__(self, *, language="en"):
+        self.language = language_code(language)
+        alias = {"fil": "tl", "tl": "fil", "nb": "no", "no": "nb", "jv": "jw", "jw": "jv"}.get(self.language)
+        self.recognizer_languages = ";".join([self.language, alias] if alias else [self.language])
+
     def transcribe(self, path, prompt=""):
         # the recording's path goes in the environment: -Command joins its arguments into the script's text, so a
         # path argument would have run as code (and the recognizer got no file)
         out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", PS_STT],
-                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
-                             env=dict(os.environ, GLIDE_PTT_WAV=path),
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30,
+                             env=dict(os.environ, GLIDE_PTT_WAV=path, GLIDE_PTT_LANGUAGE=self.language,
+                                      GLIDE_PTT_RECOGNIZER_LANGUAGES=self.recognizer_languages),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if out.returncode:
+            raise RuntimeError((out.stderr or "").strip() or "Windows speech recognition failed")
         return (out.stdout or "").strip()
 
 
@@ -192,9 +226,12 @@ ONLINE = {
 class OnlineSTT:
     """Speech-to-text through an online API (see ONLINE). Raises on failure so the caller can fall back."""
 
-    def __init__(self, engine, model=None, timeout=15):
+    def __init__(self, engine, model=None, timeout=15, *, language="en"):
         label, self.url, env, default = ONLINE[engine]
         self.engine, self.model = engine, model or default
+        selected_language = language_code(language)
+        # The online APIs use ISO Javanese jv; local Whisper uses its legacy jw token.
+        self.language = {"fil": "tl", "jw": "jv", "nb": "no"}.get(selected_language, selected_language)
         self.key = os.environ.get(env, "").strip()
         if not self.key:
             raise ValueError("%s isn't set (Settings > AI models & keys)" % env)
@@ -204,7 +241,7 @@ class OnlineSTT:
     def transcribe(self, path, prompt=""):
         if self.engine == "deepgram":
             from urllib.parse import urlencode
-            q = [("model", self.model), ("language", "en"), ("smart_format", "true")]
+            q = [("model", self.model), ("language", self.language), ("smart_format", "true")]
             # nova-3 keyterm prompting: the game names most likely to come up
             names = [n.strip() for n in (prompt.split("Names:", 1)[-1] if "Names:" in prompt else "").split(",")]
             q += [("keyterm", n) for n in names if n][:30]
@@ -212,11 +249,15 @@ class OnlineSTT:
                 req = urllib.request.Request(self.url + "?" + urlencode(q), data=fh.read(), method="POST",
                                              headers={"authorization": "Token " + self.key,
                                                       "content-type": "audio/wav"})
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                d = json.loads(r.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    d = json.loads(r.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                raise RuntimeError("%s (%s) %s: %s" % (
+                    self.name, self.language, e.code, e.read().decode("utf-8", "replace")[:200])) from e
             alts = ((d.get("results") or {}).get("channels") or [{}])[0].get("alternatives") or [{}]
             return (alts[0].get("transcript") or "").strip()
-        body, ctype = _multipart({"model": self.model, "language": "en", "response_format": "json",
+        body, ctype = _multipart({"model": self.model, "language": self.language, "response_format": "json",
                                   "prompt": prompt[:800]}, "file", path)
         req = urllib.request.Request(self.url, data=body, method="POST",
                                      headers={"authorization": "Bearer " + self.key, "content-type": ctype})
@@ -224,7 +265,8 @@ class OnlineSTT:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return (json.loads(r.read().decode("utf-8")).get("text") or "").strip()
         except urllib.error.HTTPError as e:
-            raise RuntimeError("%s %s: %s" % (self.name, e.code, e.read().decode("utf-8", "replace")[:200])) from e
+            raise RuntimeError("%s (%s) %s: %s" % (
+                self.name, self.language, e.code, e.read().decode("utf-8", "replace")[:200])) from e
 
 
 def beep(freq, ms):
@@ -246,6 +288,7 @@ class PushToTalk:
 
     def __init__(self, cfg, on_question, on_status, prompt_fn, focus_check=None, on_state=None):
         self.cfg = cfg
+        self.language = language_code(cfg.get("language"))
         self.on_question = on_question          # callback(text)
         self.on_status = on_status              # callback(message dict)
         self.prompt_fn = prompt_fn              # -> vocabulary hint string
@@ -267,7 +310,7 @@ class PushToTalk:
         """The local engine: whisper when installed (auto / whisper), else Windows speech."""
         if engine in ("auto", "whisper") or engine in ONLINE:
             try:
-                return WhisperSTT(self.opt.get("whisper_model"))
+                return WhisperSTT(self.opt.get("whisper_model"), language=self.language)
             except ModelNotDownloaded:
                 self.on_status({"kind": "info", "text": "push-to-talk: the offline speech model is still downloading; "
                                 "using Windows speech until it's ready", "speak": False})
@@ -278,13 +321,13 @@ class PushToTalk:
             except Exception as e:
                 self.on_status({"kind": "error", "text": "push-to-talk: whisper failed to load (%s); "
                                 "using Windows speech" % e, "speak": False})
-        return WindowsSTT()
+        return WindowsSTT(language=self.language)
 
     def _load_stt(self):
         engine = self.opt.get("engine")
         if engine in ONLINE:
             try:
-                online = OnlineSTT(engine, self.cfg.get("online_model") or None)
+                online = OnlineSTT(engine, self.cfg.get("online_model") or None, language=self.language)
             except ValueError as e:
                 self.on_status({"kind": "error", "text": "push-to-talk: %s; using local speech-to-text" % e,
                                 "speak": False})
