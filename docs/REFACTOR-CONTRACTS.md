@@ -77,6 +77,8 @@ they don't spell out.
 
 ## Recorded changes
 
+- **Voice failure diagnostics (contracts 4 and 8; additive):** online `tts:synth` requests now write request-correlated start/result records to the existing Logs stream and daily file. Edge failures retain safe classification, partial byte counts, exit code and HTTP handshake status without raw Python stderr or token-bearing URLs. IPC errors include a session-local request id, used by the renderer's actual Windows-fallback record; successful IPC payloads are unchanged. Playback errors and pauses are logged separately. Request deadlines, provider endpoints, retry policy and fallback behavior are unchanged. `tests/test_edge_tts.py` covers failure classification, partial/empty audio rejection and secret/text non-disclosure.
+
 - **Windows speech settings link:** `shell:open` now allows exactly `ms-settings:speech` on Windows, in addition to its existing web-page and local-directory targets. Other URI schemes, other Settings pages and parameterized variants remain rejected. The Language help popup uses this fixed destination to open Windows voice management ([Microsoft URI reference](https://learn.microsoft.com/en-us/windows/apps/develop/launch/launch-settings)).
 
 - **Translation status and community WIP:** the optional `models.translation` status contains `{language, available}`, computed from the running coach's language and fast-model eligibility (enabled, key, suspension, backoff and configured provider). The footer uses it rather than unsaved settings; it makes no model requests. News/community translation is a disabled UI-only WIP control, with no persisted setting or translation implementation.
