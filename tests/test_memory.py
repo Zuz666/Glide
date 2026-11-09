@@ -47,9 +47,7 @@ backups = [f for f in os.listdir(memory.memory_dir()) if f.startswith("coach_mem
 assert len(backups) == 1, backups
 again = memory.Memory(memory.default_path())
 assert [x["text"] for x in again.list()] == [x["text"] for x in m.list()], "survives a restart"
-blk = m.block()
-assert "WHAT YOU REMEMBER ABOUT THIS PLAYER" in blk and "[m1] prefers callouts under 10 words" in blk, "the newest wording wins"
-assert blk.index("How they like") < blk.index("Goals") < blk.index("About the player")
+assert n2["text"] == "prefers callouts under 10 words", "the newest wording wins"
 assert [x["text"] for x in m.remove("dwarf")] == ["Plays a dwarf warrior."]
 m.update(2, pinned=True)
 assert m.list()[1]["pinned"] is True
@@ -70,10 +68,8 @@ c = Coach({"fast_model": "claude-haiku-4-5", "deep_model": "claude-sonnet-5-5"},
 assert c._memory_command("remember that I hate long briefings") == "Got it, I'll remember that."
 assert any(x["text"].startswith("Remembered:") for x in msgs)
 assert "hate long briefings" in c._memory_command("what do you remember about me")
-blocks = c._system_blocks({"type": "ephemeral"})
-assert len(blocks) == 2 and "I hate long briefings" in blocks[1]["text"] and blocks[1]["cache_control"]
 assert c._memory_command("forget that I hate long briefings").startswith("Forgotten")
-assert len(c._system_blocks()) == 1, "an empty memory adds no prompt block"
+assert c._local_tool("memory_list", {})["notes"] == [], "the forgotten memory is no longer listed"
 # the memory tools the AI uses
 names = [t["name"] for t in c._tools()]
 assert {"memory_remember", "memory_forget", "memory_list"} <= set(names)

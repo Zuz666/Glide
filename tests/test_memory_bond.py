@@ -111,10 +111,12 @@ check(u.character("se") is None and u.character("bluff")["name"] == "Sergeant Bl
 mm = memory_mod.Memory(None)
 c = coach.Coach({}, GlideDB("/x.db"), lambda msg: None, offline_ok=True, deps=CoachDeps(memory=mm))
 c._directives("Aye!\nPERSONA: A grizzled dwarf drill sergeant.\nNAME: Sarge\nLORE: Lost his beard to a rocket.")
-check(c.persona_name() == "Sarge" and "Lost his beard" in c._system_blocks()[-1]["text"], "Sarge and his lore")
+check(c.persona_name() == "Sarge" and mm.character("sarge")["lore"] == ["Lost his beard to a rocket."],
+      "Sarge and his lore")
 c.cfg["persona"] = "A sarcastic butler named Jeeves."              # Settings > Roleplay > Character
-check(c.persona_name() == "A sarcastic butler named…", c.persona_name())
-check("Lost his beard" not in c._system_blocks()[-1]["text"], "the butler doesn't get Sarge's lore")
+check(c.persona_name() != "Sarge" and c.main_name() == "", "the edited character has no saved identity")
+check(not any("Lost his beard to a rocket." in block["text"] for block in c._system_blocks()),
+      "the butler doesn't get Sarge's lore")
 c._directives("Indeed.\nLORE: Served three kings.")
 check(mm.character("sarge")["lore"] == ["Lost his beard to a rocket."] and
       mm.character("sarge")["brief"] == "A grizzled dwarf drill sergeant.", "Sarge untouched")

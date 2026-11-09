@@ -11,7 +11,9 @@ import readline from "readline";
 
 const [edge, prof, url] = process.argv.slice(2);
 // port 0: Edge picks a free one and writes it to DevToolsActivePort (no fixed port shared with other runs)
+// Keep an elevated Windows browser attached to this test, with sync/extensions disabled in its fresh profile.
 const p = spawn(edge, ["--headless", "--disable-gpu", "--no-first-run", "--hide-scrollbars", "--force-prefers-reduced-motion",
+  "--do-not-de-elevate", "--disable-sync", "--disable-extensions", "--disable-background-networking",
   `--user-data-dir=${prof}`, "--remote-debugging-port=0", "about:blank"], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lines = readline.createInterface({ input: process.stdin });
@@ -27,10 +29,11 @@ try {
     await sleep(50);
     try {
       const port = fs.readFileSync(path.join(prof, "DevToolsActivePort"), "utf8").split("\n")[0].trim();
-      const t = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === "page");
+      const t = (await (await fetch(`http://127.0.0.1:${port}/json`)).json()).find((x) => x.type === "page" && x.url === "about:blank");
       if (t) ws = new WebSocket(t.webSocketDebuggerUrl);
     } catch { /* not up yet */ }
   }
+  if (!ws) throw new Error("headless Edge did not expose the test page in 20 s");
   await new Promise((r) => ws.addEventListener("open", r));
   let id = 0; const wait = {}; const errors = [];
   ws.addEventListener("message", (m) => {

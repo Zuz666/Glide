@@ -164,7 +164,9 @@ if kc.pack is not None:
     assert abs(kc.stats["cost_usd"] - (0.0021 + (1500 * 0.3 + 25 * 2.5 + 8000 * 0.075) / 1e6)) < 1e-9, kc.stats["cost_usd"]
     assert kc.path_stats["deep"]["calls"] == 2 and kc.path_stats["deep"]["cache_read"] == 8000, kc.path_stats
 # caching via OpenRouter: Google models get the system marker without the Anthropic-only 1-hour TTL
-assert first["messages"][0]["content"][-1]["cache_control"] == {"type": "ephemeral"}, first["messages"][0]
+cache_markers = [block["cache_control"] for message in first["messages"] if message["role"] == "system"
+                 for block in message["content"] if "cache_control" in block]
+assert cache_markers and all(marker == {"type": "ephemeral"} for marker in cache_markers), first["messages"][0]
 assert kc.llm.caching("google/gemini-2.5-flash") == "explicit" and kc.llm.caching("openai/gpt-5") == "implicit"
 assert kc.llm.cache_marker("anthropic/claude-sonnet-5-5", True) == {"type": "ephemeral", "ttl": "1h"}
 assert kc.llm.cache_marker("gemini:gemini-2.5-flash", True) is None and kc.llm.cache_marker("claude-haiku-4-5", False) == \
