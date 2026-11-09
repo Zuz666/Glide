@@ -9,7 +9,7 @@ import { $, esc, icon, toast } from "./dom.js";
 import { speech } from "./narrator.js";
 import { show } from "./nav.js";
 import { live } from "./state.js";
-import { speechLanguage as language, voiceSample } from "./speech-language.js";
+import { filterEdgeVoices, speechLanguage as language, voiceSample } from "./speech-language.js";
 import { AddonStatus, KeyStatus, KnownKey, Obj, TtsProvider, WowClient } from "./types.js";
 
 type Ai = "anthropic" | "gemini" | "openai" | "openrouter" | "none";
@@ -268,7 +268,9 @@ function drawVoice(host: HTMLElement): void {
         ${[["edge", "Edge-TTS (free, no key)"], ["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"], ["azure", "Azure Speech (free tier)"], ["google", "Google Cloud"]].map(([v, l]) => `<option value="${v}" ${v === pick.tts ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         ${pick.tts === "edge" ? `<p class="help">Free online, no API key. Text is sent to Microsoft. This unofficial service may fail or limit usage; the Windows voice remains the fallback.</p>
           <div class="row"><span class="help">Voice</span><select id="su-edge-voice" aria-label="Edge-TTS voice"><option value="${esc(pick.edgeVoice)}">${esc(pick.edgeVoice || "Choose a voice")}</option></select></div>
-          <div class="row"><span class="help">Show all voice languages</span><label class="switch"><input type="checkbox" id="su-edge-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label></div>` : keyBox(TTS_KEY[pick.tts])}
+          <div class="row"><span class="help">Show all voice languages</span><label class="switch"><input type="checkbox" id="su-edge-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label></div>
+          <div class="row"><span class="help">Multilingual voices only</span><label class="switch"><input type="checkbox" id="su-edge-multilingual-only" aria-label="Multilingual voices only"><span class="track"></span><span class="state">Off</span></label></div>
+          <p class="help">Multilingual voices are shown regardless of locale. Language support varies by voice; the current voice stays visible.</p>` : keyBox(TTS_KEY[pick.tts])}
         ${pick.tts === "azure" ? `<p class="help">Azure also needs your resource's region: it starts as eastus; change it in Settings &gt; Voice.</p>` : ""}</div>` : "")
     + choice("su-voice", "off", pick.voice, "Text only", "The coach writes in its chat and on the overlay, without speaking.")
     + `</div>`
@@ -285,14 +287,17 @@ function drawVoice(host: HTMLElement): void {
       if (!voices || !ev.isConnected) return;
       if (!pick.edgeVoice) pick.edgeVoice = voices.find((v) => v.id.startsWith(`${language()}-`))?.id || "";
       const all = $<HTMLInputElement>("su-edge-all-languages");
+      const multilingual = $<HTMLInputElement>("su-edge-multilingual-only");
       const draw = () => {
-        const visible = all.checked ? voices : voices.filter((v) => v.id === pick.edgeVoice || v.id.startsWith(`${language()}-`));
+        const visible = filterEdgeVoices(voices, language(), all.checked, multilingual.checked);
         const saved = pick.edgeVoice && !visible.some((v) => v.id === pick.edgeVoice)
           ? `<option value="${esc(pick.edgeVoice)}" selected>${esc(pick.edgeVoice)} (saved)</option>` : "";
-        ev.innerHTML = saved + visible.map((v) => `<option value="${esc(v.id)}" ${v.id === pick.edgeVoice ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+        ev.innerHTML = saved + visible.map((v) => `<option value="${esc(v.id)}" ${v.id === pick.edgeVoice ? "selected" : ""}>${esc(v.name)}</option>`).join("")
+          + (visible.length ? "" : `<option value="" disabled>No matching voices</option>`);
       };
-      all.onchange = () => {
-        all.parentElement!.querySelector(".state")!.textContent = all.checked ? "On" : "Off";
+      for (const toggle of [all, multilingual]) toggle.onchange = () => {
+        toggle.parentElement!.querySelector(".state")!.textContent = toggle.checked ? "On" : "Off";
+        all.disabled = multilingual.checked;
         draw();
       };
       draw();
