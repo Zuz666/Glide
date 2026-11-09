@@ -5,7 +5,7 @@ import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
 import { speech, voiceLastLine } from "../narrator.js";
 import { Group } from "../settings-schema.js";
-import { speechLanguage as language, voiceSample } from "../speech-language.js";
+import { filterEdgeVoices, speechLanguage as language, voiceSample } from "../speech-language.js";
 import { live } from "../state.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
@@ -40,7 +40,8 @@ function providerFields(prov: string, sp: SpeechSettings): string {
   if (prov === "edge") {
     const voice = edgeVoice(sp);
     return voiceList("Filtered by the saved speech language; the current voice stays visible. Free online, no API key; text is sent to Microsoft. This unofficial service may fail or limit usage; the Windows voice is used if it fails.", voice, voice || "Choose a voice")
-      + field("Show all voice languages", "Off: filter by the selected coach language.", `<label class="switch"><input type="checkbox" id="sv-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label>`);
+      + field("Show all voice languages", "Off: filter by the selected coach language.", `<label class="switch"><input type="checkbox" id="sv-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label>`)
+      + field("Multilingual voices only", "Show voices marked Multilingual, regardless of locale. Language support varies by voice.", `<label class="switch"><input type="checkbox" id="sv-multilingual-only" aria-label="Multilingual voices only"><span class="track"></span><span class="state">Off</span></label>`);
   }
   if (prov === "openai") {
     const o = sp.openai || {};
@@ -116,13 +117,15 @@ function bindVoiceList(prov: string, sp: Obj, save: (patch: Obj) => Promise<void
   $("sv-voicelist").onchange = (e) => save({ [section]: { ...(sp[section] || {}), [k]: (e.target as HTMLSelectElement).value } });
   const select = $<HTMLSelectElement>("sv-voicelist");
   const allLanguages = document.getElementById("sv-all-languages") as HTMLInputElement | null;
+  const multilingualOnly = document.getElementById("sv-multilingual-only") as HTMLInputElement | null;
   let catalogue: Voice[] = [];
   const draw = () => {
     const cur = prov === "edge" ? edgeVoice(live.appSettings.speech || {}) : (sp[section] || {})[k] || "";
-    const voices = prov === "edge" && !allLanguages?.checked
-      ? catalogue.filter((v) => v.id === cur || v.id.startsWith(`${language()}-`)) : catalogue;
+    const voices = prov === "edge"
+      ? filterEdgeVoices(catalogue, language(), !!allLanguages?.checked, !!multilingualOnly?.checked) : catalogue;
     const saved = cur && !voices.some((v) => v.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (saved)</option>` : "";
-    select.innerHTML = saved + voices.map((v) => `<option value="${esc(v.id)}" ${v.id === cur ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+    select.innerHTML = saved + voices.map((v) => `<option value="${esc(v.id)}" ${v.id === cur ? "selected" : ""}>${esc(v.name)}</option>`).join("")
+      + (voices.length ? "" : `<option value="" disabled>No matching voices</option>`);
   };
   const load = async (notify: boolean) => {
     const vs = await call("tts:voices", prov as TtsProvider);
@@ -135,8 +138,9 @@ function bindVoiceList(prov: string, sp: Obj, save: (patch: Obj) => Promise<void
     draw();
     if (notify) toast(`${catalogue.length} voices loaded`);
   };
-  if (allLanguages) allLanguages.onchange = () => {
-    allLanguages.parentElement!.querySelector(".state")!.textContent = allLanguages.checked ? "On" : "Off";
+  for (const toggle of [allLanguages, multilingualOnly]) if (toggle) toggle.onchange = () => {
+    toggle.parentElement!.querySelector(".state")!.textContent = toggle.checked ? "On" : "Off";
+    if (allLanguages) allLanguages.disabled = !!multilingualOnly?.checked;
     draw();
   };
   $("sv-load").onclick = () => load(true);

@@ -1,6 +1,7 @@
 // Language-neutral labels and voice samples shared by Settings and first-run setup.
 import { toast } from "./dom.js";
 import { coachRunning, enginePost, JSON_HEADERS, live } from "./state.js";
+import type { Voice } from "./types.js";
 
 export function languageCode(value: unknown): string {
   const tag = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -8,6 +9,12 @@ export function languageCode(value: unknown): string {
 }
 
 export const speechLanguage = () => languageCode(live.config.companion?.voice?.language);
+
+/** Multilingual catalogue names describe a voice's capability, not its locale prefix. */
+export function filterEdgeVoices(voices: Voice[], language: string, allLanguages: boolean, multilingualOnly: boolean): Voice[] {
+  if (multilingualOnly) return voices.filter((v) => /multilingual/i.test(v.id));
+  return allLanguages ? voices : voices.filter((v) => v.id.startsWith(`${language}-`));
+}
 
 // WoW client languages. Regional variants remain choices in the voice catalogue.
 // Names come from platform locale data; the same language set can support future interface localization.
