@@ -14,12 +14,14 @@ import time
 import glideconfig
 import models
 import settings
+import reasoning
 
 # what the dashboard (and push-to-talk) may change: the live settings in settings_manifest.json
 _LIVE = {k: settings.ENTRIES["llm." + k] for k in settings.live_keys()}
 SETTINGS = {k: (e["default"], e["min"], e["max"]) for k, e in _LIVE.items() if e["kind"] == "int"}  # (default, min, max)
 TOGGLES = {k: e["default"] for k, e in _LIVE.items() if e["kind"] == "bool"}       # on/off features
 MODEL_KEYS = ("fast_model", "deep_model")
+REASONING_KEYS = ("fast_reasoning_effort", "deep_reasoning_effort")
 TEXTS = {k for k, e in _LIVE.items() if e["kind"] == "text" and k not in MODEL_KEYS}  # free text (the persona)
 MAX_TEXT = 600
 DEFAULT_TOKENS_PER_STEP = 52.0     # measured on Dun Morogh steps (knowledge layer route_steps)
@@ -131,9 +133,18 @@ def _inputs(coach, review_minutes):
             convo[-1].get("t") if convo else None, id(getattr(coach, "catalog", None)))
 
 
-def apply(cfg, changes, config_path=None):
+def apply(cfg, changes, config_path=None, catalog=None):
     """Apply dashboard changes to the live coach config (cfg = the coach's "llm" dict) and save them in config.json
     under companion.llm, keeping everything else in the file. Returns the values applied."""
+    changes = dict(changes or {})
+    prospective = dict(cfg, **changes)
+    for model_key, effort_key in zip(MODEL_KEYS, REASONING_KEYS):
+        model = str(prospective.get(model_key) or settings.default("llm." + model_key)).strip()
+        if effort_key in changes:
+            reasoning.validate(model, prospective, changes[effort_key], catalog.get(model) if catalog is not None else None)
+        elif model_key in changes and model != cfg.get(model_key, settings.default("llm." + model_key)):
+            if cfg.get(effort_key, "auto") != "auto":
+                changes[effort_key] = "auto"     # the previous role override belonged to another model
     applied = {}
     for k, v in (changes or {}).items():
         if k in SETTINGS:

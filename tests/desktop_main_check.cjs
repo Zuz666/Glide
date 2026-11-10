@@ -144,7 +144,7 @@ async function engineChecks() {
   await within(ok.stop(), 1000, "stop()");
 }
 
-function configChecks() {
+async function configChecks() {
   const h = home("config");
   fs.mkdirSync(h, { recursive: true });
   settings.current = { engineHome: h };
@@ -176,11 +176,28 @@ function configChecks() {
   write(p, "\uFEFF" + JSON.stringify({ wow_dir: "C:/WoW", companion: { llm: { fast_model: "x" } } }));
   config.updateConfig({ companion: { voice: { rate: 2 } } });
   assert.deepStrictEqual(JSON.parse(read(p)), { wow_dir: "C:/WoW", companion: { llm: { fast_model: "x" }, voice: { rate: 2 } } });
+
+  // Model ids -> Save and restart while stopped writes locally, without the engine's /settings handler.
+  write(p, JSON.stringify({ companion: { llm: {
+    fast_model: "ep:openai:gpt-6-luna", fast_reasoning_effort: "none",
+    deep_model: "ep:openai:gpt-6-luna", deep_reasoning_effort: "low",
+  } } }));
+  const stopped = { state: "stopped", url: null, token: "" };
+  await config.saveConfig({ companion: { llm: { fast_model: "ep:openai:gpt-6.1-sol" } } }, stopped);
+  const restarted = config.readConfig().companion.llm;
+  assert.strictEqual(restarted.fast_model, "ep:openai:gpt-6.1-sol");
+  assert.strictEqual(restarted.fast_reasoning_effort ?? "auto", "auto");
+  assert.strictEqual(restarted.deep_reasoning_effort, "low");
+  await config.saveConfig({ companion: { llm: {
+    fast_model: "ep:openai:gpt-6-luna", fast_reasoning_effort: "low",
+  } } }, stopped);
+  await config.saveConfig({ companion: { voice: { volume: 80 } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.fast_reasoning_effort, "low");
 }
 
 (async () => {
   syncChecks();
   await engineChecks();
-  configChecks();
+  await configChecks();
   console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });

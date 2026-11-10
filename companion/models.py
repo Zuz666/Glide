@@ -123,7 +123,8 @@ def fetch_anthropic(key, base=ANTHROPIC_MODELS, getter=_get):
                 continue
             out.append({"id": m["id"], "provider": "anthropic", "name": m.get("display_name") or m["id"],
                         "context": m.get("max_input_tokens"), "tools": True, "created": m.get("created_at"),
-                        "deprecated": m.get("lifecycle") == "deprecated", "price": anthropic_price(m["id"])})
+                        "deprecated": m.get("lifecycle") == "deprecated", "price": anthropic_price(m["id"]),
+                        "capabilities": m.get("capabilities")})
         if not d.get("has_more") or not d.get("last_id"):
             break
         after = d["last_id"]
@@ -154,7 +155,8 @@ def fetch_openrouter(key=None, url=OPENROUTER_MODELS, getter=_get):
             continue                                   # image/audio generators can't coach
         out.append({"id": m["id"], "provider": "openrouter", "name": m.get("name") or m["id"],
                     "context": m.get("context_length"), "created": m.get("created"),
-                    "tools": ("tools" in params) if isinstance(params, list) else None, "price": price})
+                    "tools": ("tools" in params) if isinstance(params, list) else None, "price": price,
+                    "reasoning": m.get("reasoning")})
     return out
 
 

@@ -22,6 +22,18 @@ function speechModelPatch(config: Obj): Obj | undefined {
   if (model !== effective) return { companion: { ptt: { whisper_model: effective } } };
 }
 
+/** An implicit effort belongs to the previous model; an effort supplied with the new model is intentional. */
+function resetModelEfforts(current: Obj, next: Obj, patch: Obj): void {
+  const before = (current.companion as Obj | undefined)?.llm as Obj | undefined;
+  const after = (next.companion as Obj | undefined)?.llm as Obj | undefined;
+  const changes = (patch.companion as Obj | undefined)?.llm as Obj | undefined;
+  if (!before || !after) return;
+  for (const role of ["fast", "deep"]) {
+    const model = `${role}_model`, effort = `${role}_reasoning_effort`;
+    if (before[model] !== after[model] && changes?.[effort] === undefined) delete after[effort];
+  }
+}
+
 /** Merge a patch into config.json, re-read first, when no coach is running (saveConfig otherwise; the first start's
  * WoW folder, before the coach starts). Returns the new config. Throws, leaving the file alone, when config.json is
  * there but unreadable. */
@@ -33,6 +45,7 @@ export function updateConfig(patch: Obj): Obj {
     throw new Error(unreadableMessage(p, cur.bad, keepBadCopy(p), "this change wasn't saved") + ", then try again.");
   }
   let next = deepMerge(cur.value, patch);
+  resetModelEfforts(cur.value, next, patch);
   const speechPatch = speechModelPatch(next);
   if (speechPatch) next = deepMerge(next, speechPatch);
   writeJson(p, next);

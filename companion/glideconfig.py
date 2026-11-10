@@ -102,6 +102,12 @@ def merge(base, changes):
     return base
 
 
+def _llm(config):
+    companion = config.get("companion")
+    llm = companion.get("llm") if isinstance(companion, dict) else None
+    return llm if isinstance(llm, dict) else {}
+
+
 def patch(section, values, root=None):
     """Merge `values` into config.json under `section` (a tuple of keys; () for the whole file) and save it,
     keeping everything else. Re-reads the file first (the desktop app may have written it); raises ValueError,
@@ -112,11 +118,22 @@ def patch(section, values, root=None):
         if bad:
             raise ValueError("%s can't be read (%s), so the change wasn't saved and the file was left as it is"
                              % (p, bad))
+        old_llm = _llm(data)
+        old_models = {role: old_llm.get(role + "_model") for role in ("fast", "deep")}
+        root_changes = values
+        for name in reversed(section):
+            root_changes = {name: root_changes}
         node = data
         for k in section:
             if not isinstance(node.get(k), dict):
                 node[k] = {}
             node = node[k]
         merge(node, values)
+        # Save-and-restart bypasses live tuning; never carry the old model's implicit effort into the new one.
+        next_llm, requested = _llm(data), _llm(root_changes)
+        for role, previous in old_models.items():
+            effort = role + "_reasoning_effort"
+            if previous != next_llm.get(role + "_model") and effort not in requested:
+                next_llm.pop(effort, None)
         jsonfile.write_atomic(p, data, end="\n", indent=2)
         return data
