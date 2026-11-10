@@ -406,7 +406,7 @@ class App:
             self._flags = flags
         return flags
 
-    def on_models(self, refresh=False):
+    def on_models(self, refresh=False, reasoning_model=None):
         """Dashboard model selector: the catalog (Anthropic + OpenRouter), the current choices and the token profile
         used for the $/hour estimates."""
         import tuning
@@ -415,6 +415,9 @@ class App:
         import reasoning
         llm = self.coach.cfg
         opt = settings.Settings("llm", llm)
+        if reasoning_model is not None:
+            return {"model": reasoning_model,
+                    "reasoning": reasoning.describe(reasoning_model, llm, self.catalog.get(reasoning_model))}
         return {"status": self.catalog.status(), "models": self.catalog.entries(),
                 "selected": {path + suffix: opt.get(path + suffix)
                              for path in ("fast", "deep") for suffix in ("_model", "_reasoning_effort")},
@@ -891,7 +894,7 @@ class App:
         need the run's token; so do the GETs that run something (/calibrate, /models?refresh=1 rebuilds the model
         list) or show the player's notes (/memory)."""
         def models(q):
-            return self.on_models(refresh=q.get("refresh") == "1")
+            return self.on_models(refresh=q.get("refresh") == "1", reasoning_model=q.get("reasoning_model"))
 
         def refresh(body):
             return self.nav_rebuild() if body.get("nav") else self.refresh_now(bool(body.get("force")))

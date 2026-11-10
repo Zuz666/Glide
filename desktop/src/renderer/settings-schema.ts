@@ -65,8 +65,12 @@ export const SCHEMA: Tab[] = [
         fields: [
           { key: L + "fast_model", label: "Fast model", type: "text", wide: true,
             help: "Live callouts, spoken questions and quest briefings." },
+          { key: L + "fast_reasoning_effort", label: "Fast reasoning effort", type: "select",
+            options: [["auto", "Auto"]], help: "Supported levels for the fast model above. Save to apply." },
           { key: L + "deep_model", label: "Deep model", type: "text", wide: true,
             help: "Typed questions and pace reviews." },
+          { key: L + "deep_reasoning_effort", label: "Deep reasoning effort", type: "select",
+            options: [["auto", "Auto"]], help: "Supported levels for the deep model above. Save to apply." },
           { key: L + "voice_question_model", label: "Spoken questions use", type: "select",
             options: [["fast", "the fast model"], ["deep", "the deep model"]] },
           { key: L + "enabled", label: "AI coach on", type: "bool",
