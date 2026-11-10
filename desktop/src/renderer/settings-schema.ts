@@ -60,7 +60,7 @@ export const SCHEMA: Tab[] = [
       { title: "API keys", special: "keys",
         intro: "Keys are encrypted with your Windows account and passed to the coach when it starts. They are never written to config.json. Changes apply on the next coach restart." },
       { title: "Choose models", special: "model-picker",
-        intro: "Every model your keys and endpoints can use, cheapest first within each provider, with what it would cost an hour at your usage. A change applies to the next call." },
+        intro: "Every model your keys and endpoints can use, cheapest first within each provider, with what it would cost an hour at your usage. Choose reasoning effort separately for each role; changes apply to the next call." },
       { title: "Model ids", intro: "Or type an id: claude-… (Anthropic), gemini:<id> (Gemini API), vendor/model (OpenRouter), ep:<endpoint>:<model> (custom endpoint).",
         fields: [
           { key: L + "fast_model", label: "Fast model", type: "text", wide: true,
@@ -77,7 +77,8 @@ export const SCHEMA: Tab[] = [
       { title: "Requests", fields: [
         { key: L + "timeout", label: "Request timeout (s)", type: "number" },
         { key: L + "busy_retry_s", label: "Retry a busy model after (s)", type: "number", step: 0.5 },
-        { key: L + "tune_thinking", label: "Turn Gemini thinking down for callouts", type: "bool" },
+        { key: L + "tune_thinking", label: "Automatic thinking tuning", type: "bool",
+          help: "When reasoning effort is Auto, keep fast Claude and Gemini calls lightweight. Explicit effort selections take priority." },
       ] },
       { title: "Prompt caching", fields: [
         { key: L + "prompt_cache", label: "Prompt caching", type: "bool",

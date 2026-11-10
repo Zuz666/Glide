@@ -412,9 +412,14 @@ class App:
         import tuning
         if refresh:
             self.catalog.refresh()
+        import reasoning
         llm = self.coach.cfg
+        opt = settings.Settings("llm", llm)
         return {"status": self.catalog.status(), "models": self.catalog.entries(),
-                "selected": {"fast_model": llm.get("fast_model"), "deep_model": llm.get("deep_model")},
+                "selected": {path + suffix: opt.get(path + suffix)
+                             for path in ("fast", "deep") for suffix in ("_model", "_reasoning_effort")},
+                "reasoning": {path: reasoning.describe(opt.get(path + "_model"), llm,
+                                                      self.catalog.get(opt.get(path + "_model"))) for path in ("fast", "deep")},
                 "profile": tuning.profile(self.coach), "spent_usd": round(self.coach.stats.get("cost_usd", 0.0), 4)}
 
     def on_new_knowledge(self, glide_path, kb_path):
@@ -533,7 +538,7 @@ class App:
             if not isinstance(save, dict):
                 raise ValueError("save takes an object (a patch of config.json)")
             glideconfig.patch((), save, ROOT)        # the app's saves land even in sim, as when it wrote them itself
-        applied = tuning.apply(self.coach.cfg, changes, path)
+        applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)
         switched = {k: (before[k], applied[k]) for k in tuning.MODEL_KEYS if k in applied and applied[k] != before[k]}
         if switched:
             self.coach.announce_models(switched)

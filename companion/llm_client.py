@@ -18,6 +18,7 @@ from typing import Any, Callable
 import models as models_mod
 import openai_compat
 import providers
+import reasoning
 import settings
 import websearch
 from log import log_once
@@ -190,7 +191,7 @@ class LLMClient:
                 opts["thinking"] = {"type": "between_tools"}
         return opts
 
-    def post(self, body, opts, path, on_text=None):
+    def post(self, body, opts, path, on_text=None, effort=None):
         """One API request under the billing guard, for model path `path` ("fast" | "deep": its cost split and, on
         Gemini, its reasoning effort). Tuning options (`opts`) first; if the API rejects them (400), the next
         option set (Gemini: minimal -> low -> none), then plain; the set a Gemini model accepted is remembered. A
@@ -206,7 +207,14 @@ class LLMClient:
                        % (openai_compat.split_endpoint(model)[0], model), "speak": False})
             return None, {}
         label = p.label
-        attempts = p.option_sets(model, opts, path == "deep")
+        effort = self.opt.get(path + "_reasoning_effort") if effort is None else effort
+        try:
+            reasoning.validate(model, self.cfg, effort, self.catalog.get(model) if self.catalog is not None else None)
+        except ValueError as e:
+            self.stats["errors"] += 1
+            self.emit({"kind": "error", "text": str(e), "speak": False})
+            return None, opts
+        attempts = p.option_sets(model, opts, path == "deep", effort)
         i, retried = 0, False
         while i < len(attempts):            # if the API rejects the tuning options, the next set
             attempt = attempts[i]
@@ -245,7 +253,8 @@ class LLMClient:
                 self.emit({"kind": "error", "text": "%s unreachable (%.0fs): %s" % (label, time.time() - t0, e),
                            "speak": False})
                 return None, attempt
-            p.accepted(model, attempt)
+            if effort == "auto":
+                p.accepted(model, attempt, path == "deep")
             self._recovered(p.name, label)
             self._account(model, body, data.get("usage") or {}, path)
             return data, attempt
@@ -360,8 +369,9 @@ class LLMClient:
                 "system": [{"type": "text", "text": instruction}],
                 "messages": [{"role": "user", "content": json.dumps({"text": text}, ensure_ascii=False)}]}
         opts = self.model_options(model, False) if self.opt.get("tune_thinking") else {}
-        data, opts = self.post(body, opts, "fast")
-        data = self._retry_empty(body, opts, data, "fast")
+        effort = self.opt.get("fast_reasoning_effort")
+        data, opts = self.post(body, opts, "fast", effort=effort)
+        data = self._retry_empty(body, opts, data, "fast", effort=effort)
         return self._answer_text(data) if data else None
 
     # ------------------------------------------------------------------------------------------
@@ -427,6 +437,7 @@ class LLMClient:
         -> (text, meta)."""
         meta: dict[str, Any] = {"tool_calls": 0, "tools": [], "sources": []}
         path = path_of(deep)
+        effort = self.opt.get(path + "_reasoning_effort")
         self.last_usage = {}
         opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
         if schema and models_mod.provider(model) == "anthropic" and self.opt.get("structured_outputs"):
@@ -438,14 +449,14 @@ class LLMClient:
         if tools:
             body["tools"] = [dict(t) for t in tools]
             body["tool_choice"] = {"type": "none"}
-        data, opts = self.post(body, opts, path, on_text=on_text)
-        data = self._retry_empty(body, opts, data, path)
+        data, opts = self.post(body, opts, path, on_text=on_text, effort=effort)
+        data = self._retry_empty(body, opts, data, path, effort=effort)
         self.last_latency = time.time() - t0
         if data is None:
             return None, meta
         return self._answer_text(data), meta
 
-    def _retry_empty(self, body, opts, data, path):
+    def _retry_empty(self, body, opts, data, path, effort=None):
         """An answer cut off at max_tokens before any text (a model that spent the budget thinking): ask once more
         with four times the room (at least 2,400 tokens) instead of showing an empty answer."""
         if not data or data.get("stop_reason") != "max_tokens" or any(
@@ -457,7 +468,7 @@ class LLMClient:
             retry["tool_choice"] = {"type": "none"}        # just the answer this time
         self.emit({"kind": "info", "speak": False, "text": "The answer ran out of room (%s, %d tokens); asking once more "
                    "with %d" % (body.get("model"), body.get("max_tokens") or 0, retry["max_tokens"])})
-        again, _ = self.post(retry, opts, path)
+        again, _ = self.post(retry, opts, path, effort=effort)
         return again if again is not None else data
 
     def call_tools(self, model, messages, tools, max_calls, deadline_s, ctx=None, max_tokens=600, deep=False,
@@ -469,6 +480,7 @@ class LLMClient:
         are the same as for one-shot calls. -> (text or None, {"tool_calls", "tools", "sources", "rounds"})."""
         meta: dict[str, Any] = {"tool_calls": 0, "tools": [], "sources": [], "rounds": 0}
         path = path_of(deep)
+        effort = self.opt.get(path + "_reasoning_effort")
         self.last_usage = {}
         opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
         tools = [dict(t) for t in tools or ()]
@@ -490,7 +502,7 @@ class LLMClient:
             if tools:
                 body["tools"] = tools
                 body["tool_choice"] = {"type": "none" if force else "auto"}
-            data, opts = self.post(body, opts, path, on_text=on_text)
+            data, opts = self.post(body, opts, path, on_text=on_text, effort=effort)
             meta["rounds"] += 1
             if data is None:
                 self.last_latency = time.time() - t0
@@ -514,7 +526,7 @@ class LLMClient:
             messages.append({"role": "user", "content": results})
             if meta["tool_calls"] >= max_calls or time.time() - t0 >= deadline_s:
                 force = True
-        data = self._retry_empty(body, opts, data, path)
+        data = self._retry_empty(body, opts, data, path, effort=effort)
         self.last_latency = time.time() - t0
         return self._answer_text(data or {}), meta
 

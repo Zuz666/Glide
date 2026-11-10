@@ -46,10 +46,18 @@ function roleHtml([path, key, label, help]: [string, string, string, string], fi
       return `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(mlabel(m))}${c != null ? `, about $${per(c)} an hour` : ""}</option>`;
     }).join("")}</optgroup>`).join("");
   const c = mcost(path, cur), m = all.find((x) => x.id === cur);
+  const effortKey = `${path}_reasoning_effort`, effort = sel[effortKey] || "auto", info = MODELS!.reasoning?.[path];
+  const levels: string[] = info?.levels || [];
+  const reasoning = info ? `<label class="help" for="mp-effort-${path}">Reasoning effort</label>
+        <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>
+          <option value="auto" ${effort === "auto" ? "selected" : ""}>Auto</option>
+          ${effort !== "auto" && !levels.includes(effort) ? `<option value="${esc(effort)}" selected disabled>${esc(effort)} (not supported)</option>` : ""}
+          ${levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level === "none" ? "None (no reasoning)" : level)}</option>`).join("")}
+        </select><div class="mcost">${esc(info.note)}${levels.length ? " Higher effort can take longer and use more output tokens." : ""}</div>` : "";
   return `<div class="field"><div class="lab">${esc(label)}<small>${esc(help)}</small></div><div class="ctl mpick" style="display:grid;width:100%">
         <input type="text" data-filter="${path}" value="${esc(filter)}" placeholder="Filter: claude, gemini, flash, ollama…" aria-label="Filter models">
         <select data-pick="${key}" aria-label="${esc(label)}">${opts}</select>
-        <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(MODELS!.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div></div></div>`;
+        <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(MODELS!.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div>${reasoning}</div></div>`;
 }
 
 /** How many models, when listed, what failed, and Refresh. */
@@ -65,7 +73,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
     $("mp-start").onclick = () => call("engine:start");
     return;
   }
-  if (!MODELS) await loadModels();
+  await loadModels();
   const filters: Record<string, string> = { fast: "", deep: "" };
   const draw = () => {
     if (!MODELS || MODELS.error) {
@@ -87,11 +95,29 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
       try {
         const r = await (await enginePost("/settings", { [key]: v })).json();
         if (!r.ok) throw new Error(r.error || "not applied");
-        MODELS!.selected[key] = v;
+        const reset = Object.entries(r.applied || {}).some(([k, value]) => k.endsWith("_reasoning_effort") && value === "auto");
+        await loadModels();
         toast(`${key === "fast_model" ? "Callouts and voice" : "Typed questions"} now use ${v}. Saved.`);
+        if (reset) toast("Reasoning reset to Auto for the new model.");
         draw();
       } catch (e) {
         toast(`Couldn't switch the model: ${(e as Error).message}`, true);
+        s.value = MODELS?.selected?.[key] || "";
+      }
+    }));
+    host.querySelectorAll<HTMLSelectElement>("[data-effort]").forEach((s) => (s.onchange = async () => {
+      const key = s.dataset.effort!, value = s.value;
+      s.disabled = true;
+      try {
+        const r = await (await enginePost("/settings", { [key]: value })).json();
+        if (!r.ok || r.applied?.[key] !== value) throw new Error(r.error || "not applied");
+        await loadModels();
+        toast(`Reasoning effort saved: ${value}. Applies to the next call.`);
+        draw();
+      } catch (e) {
+        s.value = MODELS?.selected?.[key] || "auto";
+        s.disabled = false;
+        toast(`Couldn't change reasoning effort: ${(e as Error).message}`, true);
       }
     }));
     $("mp-refresh").onclick = async () => { $("mp-refresh").textContent = "Refreshing…"; await loadModels(true); draw(); };

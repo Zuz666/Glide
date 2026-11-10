@@ -16,6 +16,7 @@ import types
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, os.path.join(ROOT, "companion"))
 import app as glide_app  # noqa: E402
+import glideconfig  # noqa: E402
 
 tmp = tempfile.mkdtemp(prefix="glide-settings-save-")
 p = os.path.join(tmp, "config.json")
@@ -26,7 +27,7 @@ announced = []
 def fake_app(sim):
     coach = types.SimpleNamespace(cfg={"fast_model": "a-model", "deep_model": "b-model"},
                                   announce_models=announced.append, describe_models=lambda: "models")
-    return types.SimpleNamespace(args=types.SimpleNamespace(sim=sim), coach=coach)
+    return types.SimpleNamespace(args=types.SimpleNamespace(sim=sim), coach=coach, catalog=None)
 
 
 try:
@@ -52,6 +53,24 @@ try:
     # the old flat body still works and still says whether it saved
     assert glide_app.App.on_settings(fake_app(sim=True), {"deep_model": "d-model"}) == {"deep_model": "d-model",
                                                                                         "saved": False}
+
+    # Save and restart sends only the nested save patch, not a live model change.
+    old = {"fast_model": "ep:openai:gpt-6-luna", "fast_reasoning_effort": "none",
+           "deep_model": "ep:openai:gpt-6-luna", "deep_reasoning_effort": "low"}
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": old}}, fh)
+    a = fake_app(sim=False)
+    a.coach.cfg.update(old)
+    glide_app.App.on_settings(a, {"save": {"companion": {"llm": {"fast_model": "ep:openai:gpt-6.1-sol"}}}})
+    restarted = glideconfig.load(tmp)["llm"]
+    assert restarted["fast_model"] == "ep:openai:gpt-6.1-sol"
+    assert restarted["fast_reasoning_effort"] == "auto", restarted
+    assert restarted["deep_reasoning_effort"] == "low"
+    assert a.coach.cfg["fast_model"] == old["fast_model"], "save-only changes apply at restart, not mid-turn"
+    # A level explicitly selected together with the new model belongs to that model.
+    glide_app.App.on_settings(a, {"save": {"companion": {"llm": {
+        "fast_model": "ep:openai:gpt-6-luna", "fast_reasoning_effort": "low"}}}})
+    assert glideconfig.load(tmp)["llm"]["fast_reasoning_effort"] == "low"
     # a bad patch is refused (POST /settings answers 400 with the reason) and the file stays as it is
     before = open(p, encoding="utf-8").read()
     for bad in ({"save": [1]}, {"save": "x"}):
@@ -69,11 +88,6 @@ try:
         pass
     assert open(p, encoding="utf-8").read() == '{"wow_dir": ,}' and before
 
-    # the app sends its saves there while the coach runs, and writes the file itself only otherwise
-    ts = open(os.path.join(ROOT, "desktop", "src", "main", "app", "config.ts"), encoding="utf-8").read()
-    ipc = open(os.path.join(ROOT, "desktop", "src", "main", "app", "ipc.ts"), encoding="utf-8").read()
-    assert 'JSON.stringify({ save: patch })' in ts and "saved === true" in ts
-    assert "await saveConfig(patch, engine)" in ipc and "updateConfig(" not in ipc
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 print("OK")

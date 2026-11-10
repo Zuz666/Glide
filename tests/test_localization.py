@@ -37,7 +37,7 @@ class Provider:
         self.bodies = []
         self.failure = None
 
-    def option_sets(self, model, opts, deep):
+    def option_sets(self, model, opts, deep, effort="auto"):
         return [{}]
 
     def caching(self, model):
@@ -61,7 +61,7 @@ class Provider:
     def parse(self, data):
         return data
 
-    def accepted(self, model, attempt):
+    def accepted(self, model, attempt, deep=False):
         pass
 
 

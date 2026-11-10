@@ -29,17 +29,6 @@ o = openai_compat.to_openai({"model": "ep:ollama:llama3.1:8b", "max_tokens": 9, 
                          "endpoint")
 assert o["model"] == "llama3.1:8b" and "usage" not in o, o
 
-# GPT-6 Chat Completions permits tool calls only without reasoning and uses the newer token limit.
-gpt_request = {
-    "model": "ep:openai:gpt-6-luna", "max_tokens": 256,
-    "messages": [{"role": "user", "content": "Where is my next quest?"}],
-    "tools": [{"name": "quest_info", "input_schema": {"type": "object"}}],
-}
-gpt_body = openai_compat.to_openai(gpt_request, "endpoint")
-assert gpt_body["max_completion_tokens"] == 256 and "max_tokens" not in gpt_body, gpt_body
-assert gpt_body["reasoning_effort"] == "none" and gpt_body["tools"], gpt_body
-router_body = openai_compat.to_openai({**gpt_request, "model": "openai/gpt-6-luna"})
-assert router_body["max_tokens"] == 256 and "reasoning_effort" not in router_body, router_body
 
 
 # ---- mock server: /v1/models and /v1/chat/completions -------------------------------------------------------

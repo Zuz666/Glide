@@ -11,6 +11,8 @@ import urllib.request
 from typing import Protocol
 
 import openai_compat
+import openai_responses
+import reasoning
 import settings
 from log import log_once
 
@@ -91,7 +93,7 @@ class Provider(Protocol):
     label: str
     quiet_fallback: bool
 
-    def option_sets(self, model, opts, deep) -> list: ...
+    def option_sets(self, model, opts, deep, effort="auto") -> list: ...
 
     def request(self, body, attempt, on_text) -> tuple: ...
 
@@ -103,7 +105,7 @@ class Provider(Protocol):
 
     def caching(self, model) -> str: ...
 
-    def accepted(self, model, attempt) -> None: ...
+    def accepted(self, model, attempt, deep=False) -> None: ...
 
 
 def _json_request(url, body, headers):
@@ -125,12 +127,23 @@ class AnthropicProvider(_HTTP):
     def __init__(self, cfg, key):
         self.cfg, self.key = cfg, key
 
-    def option_sets(self, model, opts, deep):
-        """`opts` first, then plain."""
+    def option_sets(self, model, opts, deep, effort="auto"):
+        """Explicit effort overrides automatic tuning, never the reply's structured-output schema."""
+        if effort != "auto":
+            selected = {k: v for k, v in opts.items() if k != "thinking"}
+            selected["output_config"] = dict(opts.get("output_config") or {}, effort=effort)
+            return [selected]
         return [opts, {}] if opts else [{}]
 
     def request(self, body, attempt, on_text):
         """-> (urllib Request, whether the reply is streamed)."""
+        messages = body.get("messages") or []
+        private = (openai_compat.META_BLOCK, openai_responses.META_BLOCK)
+        if any(isinstance(m.get("content"), list) and any(b.get("type") in private for b in m["content"]
+                                                        if isinstance(b, dict)) for m in messages):
+            body = dict(body, messages=[dict(m, content=[b for b in m["content"]
+                                       if not isinstance(b, dict) or b.get("type") not in private])
+                                       if isinstance(m.get("content"), list) else m for m in messages])
         stream = bool(on_text) and settings.Settings("llm", self.cfg).get("stream_speech")
         return _json_request(self.cfg.get("api_url", ANTHROPIC_URL),
                              dict({**body, **attempt}, **({"stream": True} if stream else {})),
@@ -155,7 +168,7 @@ class AnthropicProvider(_HTTP):
     def caching(self, model):
         return "explicit"
 
-    def accepted(self, model, attempt):
+    def accepted(self, model, attempt, deep=False):
         pass
 
 
@@ -169,15 +182,16 @@ class OpenAICompatProvider(_HTTP):
         self.cfg, self.key, self.url = cfg, key, url
         self.label = label or API_LABEL[flavor]
         self.quiet_fallback = flavor == "gemini"
-        self.effort_ok = {}                   # Gemini model -> the reasoning_effort option it accepted
+        self.effort_ok = {}                   # (Gemini model, path) -> accepted automatic tuning
 
-    def option_sets(self, model, opts, deep):
-        """OpenRouter and custom endpoints none; Gemini its reasoning effort (the one it accepted before, else the
-        lowest it may take, then low, then none)."""
-        if self.flavor != "gemini":
+    def option_sets(self, model, opts, deep, effort="auto"):
+        """An explicit level has no fallback; Auto keeps Gemini's existing low-latency tuning."""
+        if effort != "auto":
+            return [{"reasoning": {"effort": effort}}] if self.flavor == "openrouter" else [{"reasoning_effort": effort}]
+        if self.flavor != "gemini" or not settings.Settings("llm", self.cfg).get("tune_thinking"):
             return [{}]
-        if model in self.effort_ok:
-            return [self.effort_ok[model]]
+        if (model, deep) in self.effort_ok:
+            return [self.effort_ok[model, deep]]
         first = openai_compat.gemini_effort(model, deep)
         attempts = [first]
         if first.get("reasoning_effort") in ("minimal", "none"):
@@ -192,15 +206,25 @@ class OpenAICompatProvider(_HTTP):
                                  {**openai_compat.to_openai(body, "gemini"), **attempt},
                                  {"authorization": "Bearer " + self.key, "content-type": "application/json"}), False
         if self.flavor == "openrouter":
-            return _json_request(self.cfg.get("openrouter_url", openai_compat.URL), openai_compat.to_openai(body),
+            return _json_request(self.cfg.get("openrouter_url", openai_compat.URL), {**openai_compat.to_openai(body), **attempt},
                                  {"authorization": "Bearer " + self.key, "content-type": "application/json",
                                   "x-title": "Glide coach"}), False
         headers = {"content-type": "application/json"}
         if self.key:
             headers["authorization"] = "Bearer " + self.key
-        return _json_request(self.url, openai_compat.to_openai(body, "endpoint"), headers), False
+        profile = reasoning.describe(body["model"], self.cfg)
+        if profile["transport"] == "responses":
+            assert self.url is not None
+            url = self.url.removesuffix("/chat/completions") + "/responses"
+            return _json_request(url, openai_responses.to_responses(body, attempt.get("reasoning_effort")), headers), False
+        converted = openai_compat.to_openai(body, "endpoint")
+        if profile["known"] and profile["levels"]:
+            converted["max_completion_tokens"] = converted.pop("max_tokens")
+        return _json_request(self.url, {**converted, **attempt}, headers), False
 
     def parse(self, data):
+        if self.flavor == "endpoint" and data.get("object") == "response":
+            return openai_responses.from_responses(data)
         return openai_compat.from_openai(data)
 
     def fatal_reason(self, code, detail):
@@ -214,6 +238,6 @@ class OpenAICompatProvider(_HTTP):
             return "explicit"
         return "implicit"
 
-    def accepted(self, model, attempt):
+    def accepted(self, model, attempt, deep=False):
         if self.flavor == "gemini":
-            self.effort_ok[model] = attempt
+            self.effort_ok[model, deep] = attempt

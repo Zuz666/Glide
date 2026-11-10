@@ -23,7 +23,7 @@ class FakeProvider:
     def __init__(self, replies, before=None):
         self.replies, self.sent, self.before = list(replies), [], before
 
-    def option_sets(self, model, opts, deep):
+    def option_sets(self, model, opts, deep, effort="auto"):
         return [opts, {}] if opts else [{}]
 
     def request(self, body, attempt, on_text):
@@ -46,7 +46,7 @@ class FakeProvider:
     def caching(self, model):
         return "explicit"
 
-    def accepted(self, model, attempt):
+    def accepted(self, model, attempt, deep=False):
         pass
 
 

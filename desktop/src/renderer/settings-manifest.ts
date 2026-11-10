@@ -22,6 +22,8 @@ export const MANIFEST: Record<string, ManifestEntry> = {
   "llm.api_key_env": {"default":"ANTHROPIC_API_KEY","kind":"text"},
   "llm.fast_model": {"default":"claude-haiku-4-5-20251001","kind":"text","live":true},
   "llm.deep_model": {"default":"claude-sonnet-5-5","kind":"text","live":true},
+  "llm.fast_reasoning_effort": {"default":"auto","kind":"text","live":true},
+  "llm.deep_reasoning_effort": {"default":"auto","kind":"text","live":true},
   "llm.voice_question_model": {"default":"fast","kind":"text"},
   "llm.min_interval": {"default":20,"min":0,"max":600,"kind":"number"},
   "llm.timeout": {"default":25,"min":5,"max":120,"kind":"number"},
