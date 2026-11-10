@@ -24,6 +24,7 @@ export function onEngine(s: EngineStatus): void {
     if (live.engineUrl) showDashboard(live.engineUrl);
     else hideDashboard();
   }
+  document.dispatchEvent(new Event("engine-connection-changed"));
 }
 
 /** The footer's coach control and the Coach page's placeholder text. */

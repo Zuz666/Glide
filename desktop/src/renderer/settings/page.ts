@@ -3,7 +3,7 @@
 import { applyAppSettings } from "../app-settings.js";
 import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
-import { currentPage, show } from "../nav.js";
+import { currentPage, show, whenShown } from "../nav.js";
 import { MANIFEST } from "../settings-manifest.js";
 import { Field, Group, SCHEMA } from "../settings-schema.js";
 import { languageCode } from "../speech-language.js";
@@ -24,6 +24,31 @@ const LIVE = new Set(Object.entries(MANIFEST).filter(([k, e]) => e.live && k.sta
 
 let tab = "general";
 let panels: Record<string, Panel> = {};
+let renderRevision = 0;
+let renderedView = "";
+let viewAbort: AbortController | undefined;
+
+/** Keep the same visible field while asynchronous panels above it acquire their height. */
+function preserveView(body: HTMLElement, enabled: boolean): () => void {
+  viewAbort?.abort();
+  const abort = viewAbort = new AbortController();
+  let active = true;
+  for (const event of ["wheel", "touchmove", "pointerdown", "keydown"])
+    body.addEventListener(event, () => { active = false; }, { signal: abort.signal, passive: true });
+  const top = body.getBoundingClientRect().top, scroll = enabled ? body.scrollTop : 0;
+  const candidates = [...body.querySelectorAll<HTMLElement>("[data-key], [data-pick], h2")];
+  const anchor = enabled ? candidates.find((el) => el.getBoundingClientRect().top >= top
+    && el.getBoundingClientRect().top < top + body.clientHeight) : undefined;
+  const selector = anchor?.dataset.key ? `[data-key="${CSS.escape(anchor.dataset.key)}"]`
+    : anchor?.dataset.pick ? `[data-pick="${CSS.escape(anchor.dataset.pick)}"]`
+    : anchor ? `[data-group="${CSS.escape(anchor.parentElement!.dataset.group!)}"] > h2` : undefined;
+  const offset = anchor ? anchor.getBoundingClientRect().top - top : 0;
+  return () => {
+    if (abort.signal.aborted || !active) return;
+    const next = selector ? body.querySelector<HTMLElement>(selector) : null;
+    body.scrollTop = next ? body.scrollTop + next.getBoundingClientRect().top - body.getBoundingClientRect().top - offset : scroll;
+  };
+}
 const allFields = () => SCHEMA.flatMap((t) => t.groups.flatMap((g) => g.fields || []));
 
 /** The custom panels, by the name settings-schema.ts gives them. */
@@ -35,41 +60,68 @@ export function registerPanels(p: Record<string, Panel>): void {
 export function openSettingsTab(id: string): void {
   tab = id;
   show("settings");
-  renderSettings();
 }
 
 export async function renderSettings(): Promise<void> {
-  live.config = (await call("config:get")) || {};
-  applyAppSettings((await call("app:settings:get")) || {});
+  const revision = ++renderRevision;
+  const [config, appSettings] = await Promise.all([call("config:get"), call("app:settings:get")]);
+  if (revision !== renderRevision || currentPage() !== "settings") return;
+  live.config = config || {};
+  applyAppSettings(appSettings || {});
   const searching = queryWords().length > 0;
   const hits = searching ? searchSchema() : [];
   const perTab = new Map<string, number>();
   for (const h of hits) perTab.set(h.t.id, (perTab.get(h.t.id) || 0) + (h.fields.length || 1));
   renderTabs(searching, perTab);
   const body = $("set-body");
+  const view = `${tab}\n${searchQuery()}`, sameView = renderedView === view;
+  const restoreView = preserveView(body, sameView);
+  const focused = body.contains(document.activeElement) ? document.activeElement as HTMLInputElement : null;
+  const focusSelector = focused?.id ? `#${CSS.escape(focused.id)}`
+    : focused?.dataset.pick ? `[data-pick="${CSS.escape(focused.dataset.pick)}"]`
+    : focused?.dataset.filter ? `[data-filter="${CSS.escape(focused.dataset.filter)}"]`
+    : focused?.dataset.effort ? `[data-effort="${CSS.escape(focused.dataset.effort)}"]` : null;
+  const selection = focused instanceof HTMLInputElement && ["text", "search"].includes(focused.type)
+    ? [focused.selectionStart, focused.selectionEnd] : null;
+  const heights = new Map([...body.querySelectorAll<HTMLElement>("[data-special]")].map((el) => [el.dataset.special!, el.offsetHeight]));
+  renderedView = view;
+  body.style.overflowAnchor = "none";
   const shown: { g: Group; fields: Field[]; crumb?: string }[] = searching
     ? hits.map((h) => ({ g: h.g, fields: h.fields, crumb: h.t.title }))
     : SCHEMA.find((x) => x.id === tab)!.groups.map((g) => ({ g, fields: g.fields || [] }));
   body.innerHTML = searching && !shown.length
     ? `<div class="set-nohit">${icon("search")}<b>No settings match “${esc(searchQuery().trim())}”</b><span>Try another word, or press Esc to see every section.</span></div>`
-    : shown.map(({ g, fields, crumb }, i) => `<div class="sgroup"><h2>${crumb ? `<span class="crumb">${esc(crumb)} ›</span> ` : ""}${esc(g.title)}</h2>${g.intro && (!searching || g.special) ? `<p>${esc(g.intro)}</p>` : ""}
-    <div class="fields" id="grp_${i}">${fields.map(fieldHtml).join("")}</div></div>`).join("");
+    : shown.map(({ g, fields, crumb }, i) => `<div class="sgroup" data-group="${esc(`${crumb || tab}:${g.title}`)}"><h2>${crumb ? `<span class="crumb">${esc(crumb)} ›</span> ` : ""}${esc(g.title)}</h2>${g.intro && (!searching || g.special) ? `<p>${esc(g.intro)}</p>` : ""}
+    <div class="fields" id="grp_${i}"${g.special ? ` data-special="${esc(g.special)}"` : ""}>${fields.map(fieldHtml).join("")}</div></div>`).join("");
+  const pending: Promise<unknown>[] = [];
   shown.forEach(({ g, fields }, i) => {
     fields.forEach(bindField);
-    if (g.special) panels[g.special]?.(g, $(`grp_${i}`));
+    if (g.special) {
+      const host = $(`grp_${i}`);
+      if (sameView) host.style.minHeight = `${heights.get(g.special) || 0}px`;
+      pending.push(Promise.resolve(panels[g.special]?.(g, host)).finally(() => {
+        host.style.minHeight = "";
+        if (revision === renderRevision) restoreView();
+      }));
+    }
   });
-  bindModelReasoning(body);
+  pending.push(Promise.resolve(bindModelReasoning(body)).then(restoreView));
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
     renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
   });
   if (searching) highlightSearch(body);
   body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = async () => {
     const key = b.dataset.reset!;
-    if (key === "companion.voice.language" || key.endsWith("_reasoning_effort")) {
-      const f = allFields().find((f) => f.key === key)!;
-      if (getPath(live.config, key) === f.def) edits.delete(key);
-      else edits.set(key, f.def);
-      renderSettings();
+    if (key === "companion.voice.language" || key.endsWith("_reasoning_effort")
+        || key === LLM + "fast_model" || key === LLM + "deep_model") {
+      if (getPath(live.config, key) === undefined) edits.delete(key);
+      else edits.set(key, null);
+      if (key === LLM + "fast_model" || key === LLM + "deep_model") {
+        const effort = key.replace(/_model$/, "_reasoning_effort");
+        if (getPath(live.config, effort) === undefined) edits.delete(effort);
+        else edits.set(effort, null);
+      }
+      void renderSettings();
       return;
     }
     edits.delete(key);
@@ -78,6 +130,21 @@ export async function renderSettings(): Promise<void> {
     renderSettings();
   }));
   updateDirty();
+  restoreView();
+  const restoreFocus = () => {
+    if (!sameView || !focusSelector || document.activeElement !== document.body) return;
+    const next = body.querySelector<HTMLInputElement>(focusSelector);
+    next?.focus({ preventScroll: true });
+    if (selection && next) next.setSelectionRange(selection[0], selection[1]);
+  };
+  restoreFocus();
+  await Promise.allSettled(pending);
+  if (revision === renderRevision) {
+    restoreView();
+    restoreFocus();
+    viewAbort?.abort();
+    body.style.overflowAnchor = "";
+  }
 }
 
 /** The section tabs; while searching, each shows how many matches it has (and dims without any). */
@@ -94,16 +161,17 @@ function renderTabs(searching: boolean, perTab: Map<string, number>): void {
  * once, or restarts. */
 async function saveSettings(restart: boolean): Promise<void> {
   let cfgPatch: Obj = {}, appPatch: Obj = {};
+  const submitted = new Map(edits);
   const tunable: Obj = {};
   const byKey = new Map(allFields().map((f) => [f.key, f]));
-  for (const [key, shown] of edits) {
+  for (const [key, shown] of submitted) {
     const f = byKey.get(key);
     const v = f ? toStore(f, shown) : shown;
     if (isApp(key)) appPatch = merge(appPatch, patchFor(key.slice(4), v));
     else {
       cfgPatch = merge(cfgPatch, patchFor(key, v));
       const leaf = key.slice(LLM.length);
-      if (key.startsWith(LLM) && LIVE.has(leaf)) tunable[leaf] = v;
+      if (key.startsWith(LLM) && LIVE.has(leaf)) tunable[leaf] = v === null ? f!.def : v;
     }
   }
   if (getPath(cfgPatch, "companion.voice.language") !== undefined && live.appSettings.speech?.provider === "edge") {
@@ -117,25 +185,38 @@ async function saveSettings(restart: boolean): Promise<void> {
       appPatch = merge(appPatch, { speech: { edge: { voice: next.id } } });
     }
   }
-  // not saved (config.json unreadable): the error toast says why, and the edits stay for another try
+  // The running engine validates, persists and applies live fields in one request.
+  // Never discard drafts or claim success after an HTTP error or failed local write.
   if (Object.keys(cfgPatch).length) {
-    const saved = await call("config:set", cfgPatch);
-    if (!saved) return;
-    live.config = saved; // includes the backend's language-compatible Whisper model
+    if (!restart && live.engineUrl && live.engineState === "running" && Object.keys(tunable).length) {
+      try {
+        const response = await enginePost("/settings", { save: cfgPatch, ...tunable }, JSON_HEADERS);
+        const result = await response.json();
+        if (!response.ok || !result.ok || !result.applied?.saved) throw new Error(result.error || "Settings were not applied");
+        live.config = (await call("config:get")) || live.config;
+      } catch (e) {
+        toast(`Couldn't save and apply settings: ${(e as Error).message}. Your edits are kept.`, true);
+        return;
+      }
+    } else {
+      const saved = await call("config:set", cfgPatch);
+      if (!saved) return;
+      live.config = saved;
+    }
   }
-  if (Object.keys(appPatch).length) applyAppSettings((await call("app:settings:set", appPatch)) || live.appSettings);
-  edits.clear();
+  if (Object.keys(appPatch).length) {
+    const saved = await call("app:settings:set", appPatch);
+    if (!saved) return;
+    applyAppSettings(saved);
+  }
+  for (const [key, value] of submitted) if (edits.get(key) === value) edits.delete(key);
   if (restart) {
     await call("engine:restart");
     toast("Saved. Restarting the coach…");
   } else {
-    if (live.engineUrl && Object.keys(tunable).length) {
-      try {
-        await enginePost("/settings", tunable, JSON_HEADERS);
-      } catch { /* the coach picks them up at its next start */ }
-    }
-    const needs = allFields().some((f) => f.restart && getPath(cfgPatch, f.key) !== undefined);
-    toast(needs ? "Saved. Some changes apply when the coach restarts (↻)." : "Saved.");
+    const needs = [...submitted.keys()].some((key) => byKey.get(key)?.restart);
+    toast(needs ? "Saved. Changes marked ↻ apply when the coach restarts." :
+      live.engineState === "running" ? "Saved. Applies to the next call." : "Saved. Applies when the coach starts.");
   }
   renderSettings();
 }
@@ -149,11 +230,20 @@ function setQuery(q: string): void {
 }
 
 export function wireSettings(): void {
+  whenShown("settings", () => { void renderSettings(); });
   $("set-save").onclick = () => saveSettings(false);
   $("set-save-restart").onclick = () => saveSettings(true);
   $("set-revert").onclick = () => { edits.clear(); renderSettings(); };
   document.addEventListener("model-settings-saved", () => {
     if (currentPage() === "settings") renderSettings();
+  });
+  // onEngine owns live connection state; this listener runs after that writer.
+  let connection = `${live.engineState}|${live.engineUrl}|${live.engineToken}`;
+  document.addEventListener("engine-connection-changed", () => {
+    const next = `${live.engineState}|${live.engineUrl}|${live.engineToken}`;
+    if (next === connection) return;
+    connection = next;
+    if (currentPage() === "settings") void renderSettings();
   });
   let searchTimer: number | undefined;
   $("set-search").addEventListener("input", (e) => {

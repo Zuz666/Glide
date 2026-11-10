@@ -22,7 +22,7 @@ import { renderLanguage } from "./settings/language.js";
 import { renderModelPicker } from "./settings/model-picker.js";
 import { renderOverlayUnlock } from "./settings/overlay-position.js";
 import { renderSetupAgain } from "./settings/setup-again.js";
-import { registerPanels, renderSettings, wireSettings } from "./settings/page.js";
+import { registerPanels, wireSettings } from "./settings/page.js";
 import { renderVoices } from "./settings/voices.js";
 import { renderWalkMap } from "./settings/walk-map.js";
 import { renderSpeechInstall, wireSpeechStatus } from "./settings/whisper.js";
@@ -79,7 +79,6 @@ wireSetup();
   onUpdate((await call("update:get")) || ({} as UpdateStatus));
   const cfg0 = (await call("config:get")) || {};
   live.speech = (await call("speech:status")) || {};
-  renderSettings();
   // a new install walks through setup first; one that skipped it starts on the Addon page until the game is set
   if (!live.appSettings.setupDone) openSetup();
   else if (!cfg0.wow_dir) { show("addon"); toast("Start by choosing your World of Warcraft folder, then install the addon.", false, 10000); }

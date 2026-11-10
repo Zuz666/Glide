@@ -71,8 +71,11 @@ export const SCHEMA: Tab[] = [
             help: "Typed questions and pace reviews. Spoken questions use the separately selected role below." },
           { key: L + "deep_reasoning_effort", label: "Deep reasoning effort", type: "select",
             options: [["auto", "Auto"]], help: "Supported levels for the deep model above. Save to apply." },
+        ] },
+      { title: "AI behavior", fields: [
           { key: L + "voice_question_model", label: "Spoken questions use", type: "select",
-            options: [["fast", "the fast model"], ["deep", "the deep model"]] },
+            options: [["fast", "the fast model"], ["deep", "the deep model"]],
+            help: "Chooses the AI role that answers push-to-talk questions after speech recognition. This does not select the recognizer or the speaking voice. Typed questions use Deep; automatic callouts use Fast." },
           { key: L + "enabled", label: "AI coach on", type: "bool",
             help: "Off: only simple rule-based callouts, with no API calls." },
         ] },
