@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from typing import IO, Callable
 
 import settings
@@ -85,12 +86,15 @@ class Voice:
         """The voice settings, read through settings_manifest.json (defaults, ranges)."""
         return settings.Settings("voice", self.cfg)
 
-    def __init__(self, cfg, log_dir=None, *, announce=True):
+    def __init__(self, cfg, log_dir=None, *, announce=True, on_spoken=None):
         self.cfg = cfg
         self.proc = None
         self._sequence = 0
+        self._pending = {}
+        self.on_spoken = on_spoken
         self.muted = False
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()          # serialize commands, including blocking pipe writes
+        self._state_lock = threading.Lock()   # pending turns/worker identity only; never held across I/O
         self.log_path = os.path.join(log_dir or tempfile.gettempdir(), "voice.log")
         self.enabled = self.opt.get("enabled") and sys.platform == "win32"
         if self.enabled:
@@ -103,20 +107,67 @@ class Voice:
             _announce(self, localize)
 
     def _start(self):
+        with self._state_lock:
+            self._pending.clear()
+            self.proc = None
         try:
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sapi5.ps1")
             with open(self.log_path, "a", encoding="utf-8") as log:
-                self.proc = subprocess.Popen(
+                proc = subprocess.Popen(
                     ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script],
-                    stdin=subprocess.PIPE, stdout=log, stderr=log, text=True, encoding="utf-8",
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, encoding="utf-8",
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            with self._state_lock:
+                self.proc = proc
+            threading.Thread(target=self._read_status, args=(proc,), daemon=True, name="sapi5-status").start()
         except Exception as e:
             console.log("voice", "disabled: %s" % e)
-            self.proc = None
+            with self._state_lock:
+                self.proc = None
+
+    def _read_status(self, proc):
+        """Drain native diagnostics and report only matched, successful completions from the current worker."""
+        stdout = proc.stdout
+        if stdout is None:
+            return
+        try:
+            with stdout, open(self.log_path, "a", encoding="utf-8", buffering=1) as log:
+                for line in stdout:
+                    log.write(line)
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict) or event.get("event") not in ("done", "error", "cancelled"):
+                        continue
+                    ident = event.get("id")
+                    if not isinstance(ident, int):
+                        continue
+                    with self._state_lock:
+                        if self.proc is not proc:
+                            continue
+                        text = self._pending.pop(ident, None)
+                        at = time.time() * 1000
+                    if event["event"] == "done" and text is not None and isinstance(event.get("voice"), str):
+                        if self.on_spoken is not None:
+                            try:
+                                self.on_spoken({"voice": event["voice"], "text": text, "at": at})
+                            except Exception as e:  # the UI must not stop the native reader
+                                console.log_once("voice.status", e)
+        except Exception as e:
+            console.log_once("voice.reader", e)
+        finally:
+            with self._state_lock:
+                if self.proc is proc:
+                    self._pending.clear()
 
     def _send(self, stdin: IO[str], op: str, **fields):
         """Use the caller's checked pipe under the voice lock so commands cannot interleave."""
         self._sequence += 1
+        if op == "speak":
+            # Register before writing: a short turn can finish before write/flush returns.
+            with self._state_lock:
+                self._pending[self._sequence] = fields["text"]
         stdin.write(json.dumps({"id": self._sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
         stdin.flush()
 
@@ -167,4 +218,6 @@ class Voice:
                            rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt))
             except Exception as e:
                 console.log("voice", "write failed: %s" % e)
-                self.proc = None
+                with self._state_lock:
+                    self._pending.clear()
+                    self.proc = None

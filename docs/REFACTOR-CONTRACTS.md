@@ -77,6 +77,10 @@ they don't spell out.
 
 ## Recorded changes
 
+- **Standalone speech observations (contracts 2, 3 and 8):** the engine's native voice reports only successful completed turns as `event: voice_spoken` with `{voice, text, at}` (actual SAPI5 name, submitted text and Unix milliseconds). Both event streams replay their latest observation after init, never the speak command; older observations cannot replace newer ones. The desktop updates Last line spoken with without playing or interrupting audio. Errors, cancellations, duplicate/unknown command ids and retired workers do not overwrite the last successful record. Native diagnostics still reach `voice.log`; no new persisted setting or native-worker protocol.
+
+- **Standalone pipe progress (no interface change):** command writes remain serialized, but the stdout reader uses a separate short-lived pending-state lock. No pipe I/O holds that state lock, and turns are registered before writing so fast completions cannot be lost. Bounded bidirectional pipe coverage prevents a full command pipe and a full response pipe from deadlocking each other.
+
 - **Copy Windows voice (contract 8):** the standalone speech process's Voice name field can copy the Windows/SAPI5 selection from Coach voice. This is an ordinary unsaved edit, with Save and Revert unchanged; copying Windows default clears the name. The saved Windows selection is used when the picker is not visible, including settings search or another speech provider. No new persisted setting or IPC.
 
 - **Compact voice-copy action (contract 8):** Copy Windows voice uses the same underlined action style as Use default and appears immediately before it, after the restart indicator. Copy/save behavior is unchanged.
