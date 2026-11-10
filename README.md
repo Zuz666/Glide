@@ -147,6 +147,8 @@ Glide updates itself: when a new version is out, one click installs it.
 
 - **Translation:** select the coach language and configure an available AI model. Translation uses the fast model;
   without an available model, text stays English. Speech synthesis itself does not translate text.
+  For Russian prose, the model is instructed to use Cyrillic names or phonetic spellings (for example, **Глайд войс**)
+  so monolingual voices can read them. Machine identifiers and raw diagnostics remain unchanged.
 - **Offline speech:** choose **Windows voices (SAPI5)** in Voice settings. Glide lists and plays installed Windows
   and third-party SAPI5 voices, including [SileroTTS for Windows](https://github.com/snakers4/silero-models/releases/tag/v5.6).
   Install a matching voice, reload the list and play a sample. No additional Silero model download inside Glide is needed.
@@ -154,6 +156,8 @@ Glide updates itself: when a new version is out, one click installs it.
   is free without registration or an API key, with natural-sounding voices and multilingual models. Availability is
   not guaranteed. Choose a matching voice or use the multilingual filter; failed requests use the selected Windows
   SAPI5 voice. Other online providers retain their own keys, billing and language support.
+- **Speech text:** Voice settings shows the prepared phrase beside **Play a sample**; that button speaks exactly
+  the displayed phrase. Beneath the last voice and time, Glide shows the text of the last spoken line in this session.
 
 Save language changes and restart the coach. Interface and community-feed translation remain separate WIP options.
 

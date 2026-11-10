@@ -52,6 +52,7 @@ from route_keeper import RouteKeeper
 from session_book import SessionBook
 from settings import Settings
 from log import log_once
+from speech_language import prose_spelling
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, ".."))
@@ -1094,11 +1095,11 @@ class Coach:
         blocks.append({"type": "text", "text": (
             "OUTPUT LANGUAGE: Write all player-facing answers, callouts, reviews, quest explanations and "
             "asides directly in the language with BCP-47 code %s. Keep questions and reference data unchanged. "
-            "Preserve proper names, identifiers, URLs, code and raw diagnostics. Keep machine directives "
+            "Preserve identifiers, URLs, code and raw diagnostics. Keep machine directives "
             "(FACTS, WATCH, UNWATCH, PERSONA, NAME, VOICE, LORE, TONE, ROLE, SCENE, BANTER, CHAT) and SKIP "
             "in their existing format, with identifiers and directive payloads unchanged. "
-            "For JSON/structured tasks preserve the schema keys and required machine values."
-            % self.localization.language)})
+            "For JSON/structured tasks preserve the schema keys and required machine values. "
+            % self.localization.language) + prose_spelling(self.localization.language)})
         return blocks
 
     def _directives(self, text, with_facts=False):
