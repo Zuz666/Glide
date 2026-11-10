@@ -12,8 +12,8 @@ import { edits, getPath, updateDirty } from "./fields.js";
 const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3 };
 const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter" };
 const ROLES: [string, string, string, string][] = [   // path, config key, label, help
-  ["fast", "fast_model", "Callouts and spoken questions", "Fires often: a fast, cheap model keeps callouts quick."],
-  ["deep", "deep_model", "Typed questions and pace reviews", "Fewer calls: a stronger model gives better answers."]];
+  ["fast", "fast_model", "Fast role", "Callouts, quest briefings and translation. Spoken questions use the role selected below."],
+  ["deep", "deep_model", "Deep role", "Typed questions and pace reviews. Spoken questions use the role selected below."]];
 const per = (v: number | null | undefined) => (v == null ? "?" : v < 0.01 && v > 0 ? v.toFixed(4) : (+v).toFixed(v < 1 ? 3 : 2));
 let MODELS: Obj | null = null;
 
@@ -163,7 +163,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
         if (!r.ok) throw new Error(r.error || "not applied");
         const reset = Object.entries(r.applied || {}).some(([k, value]) => k.endsWith("_reasoning_effort") && value === "auto");
         await loadModels();
-        toast(`${key === "fast_model" ? "Callouts and voice" : "Typed questions"} now use ${v}. Saved.`);
+        toast(`${key === "fast_model" ? "Fast" : "Deep"} role now uses ${v}. Saved.`);
         if (reset) toast("Reasoning reset to Auto for the new model.");
         draw();
         modelSettingsSaved(r.applied || { [key]: v });

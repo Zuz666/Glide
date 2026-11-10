@@ -115,12 +115,15 @@ class Briefings:
             # Prepare the objective before speech; the model produces the explanation natively in the same language.
             if speak_fn(head, "briefing", False) is not False:
                 speech = EarlySpeech(lambda t, u: speak_fn(t, "briefing", u), words, prefix=head)
-        expl, model_txt, facts = self._explain_quests(infos, later, words, speech)
+        attribution = {}
+        expl, model_txt, facts = self._explain_quests(infos, later, words, speech, attribution=attribution)
         if not expl:
             expl = " ".join(filter(None, (briefing.offline_explanation(b) for b in infos)))
             expl = c.localize_text(expl)
         msg = {"kind": "briefing", "text": (head + " " + expl).strip(), "speak": True, "urgent": False,
                "model": model_txt, "quests": [b["id"] for b in infos], "t": time.time()}
+        if attribution:
+            msg["attribution"] = attribution
         # Both parts are ready: do not retranslate the model's native explanation or the early-spoken objective.
         msg["text"] = c.localization.generated(msg["text"])
         if speech is not None:
@@ -153,7 +156,7 @@ class Briefings:
             infos.append(b)
         return infos
 
-    def _explain_quests(self, infos, later, words, speech):
+    def _explain_quests(self, infos, later, words, speech, attribution=None):
         """The fast model's explanation of how to do the quests, when it can be called. -> (text or "", the model
         note, fact ids)."""
         c = self.coach
@@ -164,13 +167,16 @@ class Briefings:
         trigger = briefing.explain_request(infos, later, words,
                                            short_json([briefing.prompt_fields(b) for b in infos], 5000))
         user = c._user_message(ctx, trigger, cc=c.llm.ref_marker(model))
-        text, _meta = c.llm.call_once(model, user, 400, deep=False, tools=c._shared_tools(model), on_text=speech)
+        text, _meta = c.llm.call_once(model, user, 400, deep=False, tools=c._shared_tools(model),
+                                     on_text=speech, role="quest briefing")
+        if attribution is not None and _meta.get("attribution"):
+            attribution.update(_meta["attribution"])
         if not text:
             return "", "offline", []
         text, facts, _had = c._directives(text, with_facts=True)
         if is_skip(text):
             return "", "offline", facts
-        return trim_words(text, words), "%s %.1fs" % (model, c.llm.last_latency), facts
+        return trim_words(text, words), c._model_note(model, _meta), facts
 
     def step_videos(self):
         """The current RestedXP step's YouTube clips (see briefing.StepVideos): what each shows, said aloud, and the

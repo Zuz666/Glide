@@ -96,7 +96,8 @@ def _digest(*parts, files=()):
 
 
 def _sources(*subdirs):
-    return sorted(f for d in subdirs for f in glob.glob(os.path.join(DESK, "src", d, "**", "*.ts"), recursive=True))
+    return sorted(f for d in subdirs for extension in ("*.ts", "*.mts")
+                  for f in glob.glob(os.path.join(DESK, "src", d, "**", extension), recursive=True))
 
 
 @contextlib.contextmanager

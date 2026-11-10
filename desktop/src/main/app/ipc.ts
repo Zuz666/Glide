@@ -11,7 +11,7 @@ import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } f
 import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
 import { listWhisperModels, Speech } from "../speech";
-import type { AppSettingsPatch, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
+import type { AppSettingsPatch, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import type { WindowsTts } from "../windows-tts";
@@ -113,7 +113,7 @@ function appChannels(d: IpcDeps): void {
     if (problem) throw new Error(problem);           // applied for this run, not saved: the toast says why
     return settings.current;
   });
-  handle("app:note", (line: string) => engine.note(String(line).slice(0, 300)));     // the window's own log lines (voice)
+  handle("app:note", (line: string, attribution?: LogAttribution) => engine.note(String(line).slice(0, 300), attribution));
   handle("app:logs", async () => {
     // the Logs page on disk (userData/logs): written to only once there is a line, so it may not exist yet
     await engine.file?.flush();
@@ -134,38 +134,47 @@ function appChannels(d: IpcDeps): void {
     return env ? keyValue(env) : "";
   };
   let ttsSequence = 0, ttsActive = 0;
-  handle("tts:synth", async (text: string, style?: string, tone?: string) => {
-    const s = settings.current.speech || {}, id = ++ttsSequence, started = performance.now();
+  handle("tts:synth", async (text: string, style?: string, tone?: string, requestId?: string) => {
+    const s = structuredClone(settings.current.speech || {}), id = ++ttsSequence, started = performance.now();
     const input = String(text || "").slice(0, 4000), provider = s.provider || "unknown";
-    const voice = provider === "edge" ? s.edge?.voice : provider === "openai" ? s.openai?.voice
-      : provider === "azure" ? s.azure?.voice : provider === "google" ? s.google?.voice : s.elevenlabs?.voiceId;
+    const voice = provider === "edge" ? s.edge?.voice : provider === "openai" ? s.openai?.voice || "coral"
+      : provider === "azure" ? s.azure?.voice || "en-US-AndrewMultilingualNeural"
+      : provider === "google" ? s.google?.voice || "en-US-Chirp3-HD-Charon"
+      : provider === "elevenlabs" ? s.elevenlabs?.voiceId || "JBFqnCBsd6RMkjVDRZzb" : undefined;
+    const model = provider === "openai" ? s.openai?.model || "gpt-4o-mini-tts"
+      : provider === "elevenlabs" ? s.elevenlabs?.model || "eleven_flash_v2_5" : undefined;
+    const attribution: LogAttribution = { category: "TTS", operation: "online synthesis", provider,
+      request_id: requestId || String(id), ...(voice ? { voice } : {}), ...(model ? { model } : {}) };
     ttsActive++;
-    engine.note(`[voice] TTS #${id} start provider=${provider} voice=${JSON.stringify(String(voice || "default").slice(0, 120))} chars=${input.length} active=${ttsActive}`);
+    engine.note(`[voice] TTS #${id} start provider=${provider} voice=${JSON.stringify(voice || "not selected")}${model ? ` model=${JSON.stringify(model)}` : ""} chars=${input.length} active=${ttsActive} text=${JSON.stringify(input)}`,
+      { ...attribution, status: "started" });
     try {
       const data = await synth(s, input, ttsKey(s.provider),
         String(style || "").slice(0, 1000), String(tone || "").slice(0, 200));
-      engine.note(`[voice] TTS #${id} ready elapsed_ms=${Math.round(performance.now() - started)} audio_bytes=${data.length}`);
-      return { mime: "audio/mpeg", data };
+      const elapsed = Math.round(performance.now() - started);
+      const ready = { ...attribution, status: "ready", elapsed_ms: elapsed };
+      engine.note(`[voice] TTS #${id} ready elapsed_ms=${elapsed} audio_bytes=${data.length}`, ready);
+      return { mime: "audio/mpeg", data, attribution: ready };
     } catch (error) {
       const detail = error instanceof EdgeTtsError
         ? { reason: error.reason, audio_bytes: error.audioBytes, exit_code: error.exitCode, http_status: error.httpStatus }
         : { reason: "ProviderError" };
-      engine.note(`[voice] TTS #${id} failed elapsed_ms=${Math.round(performance.now() - started)} ${JSON.stringify(detail)}`);
-      // Electron only transports the message; keep its request id for the renderer's fallback log.
+      const elapsed = Math.round(performance.now() - started);
+      engine.note(`[voice] TTS #${id} failed elapsed_ms=${elapsed} ${JSON.stringify(detail)}`,
+        { ...attribution, status: "error", elapsed_ms: elapsed });
+      // Electron only transports the message; the renderer already owns this request's local ID.
       throw new Error(`TTS #${id}: ${error instanceof Error ? error.message : "synthesis failed"}`);
     } finally {
       ttsActive--;
     }
   });
   handle("tts:windowsSpeak", async (id, text, options) => {
-    if (settings.current.muted) throw new Error("Windows SAPI5 speech is muted");
-    try {
-      return await d.windowsTts.speak(id, String(text || "").slice(0, 4000), options);
-    } catch (error) {
-      const message = (error as Error).message;
-      if (!message.includes("speech cancelled")) engine.note(`[voice] SAPI5 failed: ${message}`);
-      throw error;
+    if (settings.current.muted) {
+      engine.note(`[voice] SAPI5 rejected request=${JSON.stringify(id)}: speech is muted`,
+        { category: "TTS", operation: "native speech", provider: "SAPI5", request_id: id, status: "error" });
+      throw new Error("Windows SAPI5 speech is muted");
     }
+    return d.windowsTts.speak(id, String(text || "").slice(0, 4000), options);
   });
   handle("tts:windowsStop", (id) => d.windowsTts.stop(id));
   handle("tts:voices", (provider) => provider === "windows" ? d.windowsTts.voices()

@@ -2,6 +2,7 @@
 // and the parts of its config the app itself acts on (push-to-talk, the overlay's drag key, custom endpoints).
 import path from "path";
 import { EngineOptions } from "../engine";
+import type { LogAttribution } from "../../shared/ipc";
 import { defaultHome } from "../paths";
 import { secretEnv } from "../secrets";
 import { effectiveWhisperModel, languageCode } from "../speech-language";
@@ -36,8 +37,8 @@ function resetModelEfforts(current: Obj, next: Obj, patch: Obj): void {
 
 /** Merge a patch into config.json, re-read first, when no coach is running (saveConfig otherwise; the first start's
  * WoW folder, before the coach starts). Returns the new config. Throws, leaving the file alone, when config.json is
- * there but unreadable. */
-export function updateConfig(patch: Obj): Obj {
+ * there but unreadable. The optional reporter runs only after the local write succeeds. */
+export function updateConfig(patch: Obj, note?: RunningEngine["note"]): Obj {
   const p = configPath();
   const cur = readJsonFile(p);
   if (cur.bad !== undefined) {
@@ -49,11 +50,29 @@ export function updateConfig(patch: Obj): Obj {
   const speechPatch = speechModelPatch(next);
   if (speechPatch) next = deepMerge(next, speechPatch);
   writeJson(p, next);
+  if (note) {
+    const before = (cur.value.companion as Obj | undefined)?.llm as Obj | undefined;
+    const after = (next.companion as Obj | undefined)?.llm as Obj | undefined;
+    for (const role of ["fast", "deep"]) {
+      const model = after?.[`${role}_model`];
+      const previous = before?.[`${role}_reasoning_effort`] ?? "auto";
+      const reasoning = after?.[`${role}_reasoning_effort`] ?? "auto";
+      if (model === before?.[`${role}_model`] && reasoning === previous) continue;
+      note(`[coach] Saved ${role}: ${model ?? "default model"}; reasoning ${previous} → ${reasoning} (pending restart).`,
+        { category: "AI", operation: "settings", role, status: "saved", application: "pending restart",
+          ...(typeof model === "string" ? { model } : {}),
+          ...(typeof reasoning === "string" ? { reasoning } : {}),
+          ...(typeof previous === "string" ? { previous_reasoning: previous } : {}) });
+    }
+  }
   return next;
 }
 
 /** The running coach, as saveConfig needs it. */
-export interface RunningEngine { state: string; url: string | null; token: string }
+export interface RunningEngine {
+  state: string; url: string | null; token: string;
+  note(text: string, attribution?: LogAttribution): void;
+}
 
 /** Save a patch of config.json. The engine owns the file (docs/REFACTOR-CONTRACTS.md, contract 5): while it runs,
  * it saves the patch (POST /settings {"save": patch}), so its own writes (model picks, sliders) and the app's never
@@ -72,7 +91,7 @@ export async function saveConfig(patch: Obj, engine: RunningEngine): Promise<Obj
     } catch { /* the coach is going away: save it here */ }
   }
   // not taken (stopped, starting, or config.json unreadable: updateConfig then says why and leaves the file alone)
-  return updateConfig(patch);
+  return updateConfig(patch, (text, attribution) => engine.note(text, attribution));
 }
 
 /** One section of config.json's "companion" settings ({} when it isn't there). */

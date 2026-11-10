@@ -106,9 +106,26 @@ class Voice:
         if self.enabled and self.opt.get("announce"):
             _announce(self, localize)
 
-    def _start(self):
+    @staticmethod
+    def _log_turn(turn, status, detail=""):
+        attribution = dict(turn["attribution"], status=status,
+                           elapsed_ms=round((time.monotonic() - turn["submitted"]) * 1000))
+        text = "SAPI5 %s request=%s" % (status, attribution["request_id"])
+        if status == "submitted":
+            text += " text=" + json.dumps(turn["text"], ensure_ascii=False)
+        if detail:
+            text += " reason=" + json.dumps(detail, ensure_ascii=False)
+        console.log("voice", text, attribution)
+
+    def _fail_pending(self, detail):
         with self._state_lock:
-            self._pending.clear()
+            pending, self._pending = self._pending, {}
+        for turn in pending.values():
+            self._log_turn(turn, "error", detail)
+
+    def _start(self):
+        self._fail_pending("Speech worker replaced before completion")
+        with self._state_lock:
             self.proc = None
         try:
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sapi5.ps1")
@@ -126,7 +143,7 @@ class Voice:
                 self.proc = None
 
     def _read_status(self, proc):
-        """Drain native diagnostics and report only matched, successful completions from the current worker."""
+        """Drain native diagnostics; only matched successful completions update last-spoken state."""
         stdout = proc.stdout
         if stdout is None:
             return
@@ -138,7 +155,7 @@ class Voice:
                         event = json.loads(line)
                     except ValueError:
                         continue
-                    if not isinstance(event, dict) or event.get("event") not in ("done", "error", "cancelled"):
+                    if not isinstance(event, dict) or event.get("event") not in ("started", "done", "error", "cancelled"):
                         continue
                     ident = event.get("id")
                     if not isinstance(ident, int):
@@ -146,28 +163,44 @@ class Voice:
                     with self._state_lock:
                         if self.proc is not proc:
                             continue
-                        text = self._pending.pop(ident, None)
+                        turn = self._pending.get(ident)
+                        if turn is None:
+                            continue
+                        if event["event"] != "started":
+                            self._pending.pop(ident)
+                        if isinstance(event.get("voice"), str):
+                            turn["attribution"]["voice"] = event["voice"]
                         at = time.time() * 1000
-                    if event["event"] == "done" and text is not None and isinstance(event.get("voice"), str):
+                    self._log_turn(turn, event["event"], str(event.get("error") or ""))
+                    if event["event"] == "done" and isinstance(event.get("voice"), str):
                         if self.on_spoken is not None:
                             try:
-                                self.on_spoken({"voice": event["voice"], "text": text, "at": at})
+                                self.on_spoken({"voice": event["voice"], "text": turn["text"], "at": at})
                             except Exception as e:  # the UI must not stop the native reader
                                 console.log_once("voice.status", e)
         except Exception as e:
             console.log_once("voice.reader", e)
         finally:
             with self._state_lock:
+                pending = self._pending if self.proc is proc else {}
                 if self.proc is proc:
-                    self._pending.clear()
+                    self._pending = {}
+            for turn in pending.values():
+                self._log_turn(turn, "error", "Speech worker closed before completion")
 
     def _send(self, stdin: IO[str], op: str, **fields):
         """Use the caller's checked pipe under the voice lock so commands cannot interleave."""
         self._sequence += 1
         if op == "speak":
+            turn = {"text": fields["text"], "submitted": time.monotonic(),
+                    "attribution": {"category": "TTS", "operation": "native speech",
+                                    "provider": "SAPI5", "request_id": "standalone-%d" % self._sequence,
+                                    "voice": fields.get("voice") or "Windows default",
+                                    "rate": fields["rate"], "volume": fields["volume"]}}
             # Register before writing: a short turn can finish before write/flush returns.
             with self._state_lock:
-                self._pending[self._sequence] = fields["text"]
+                self._pending[self._sequence] = turn
+            self._log_turn(turn, "submitted")
         stdin.write(json.dumps({"id": self._sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
         stdin.flush()
 
@@ -218,6 +251,6 @@ class Voice:
                            rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt))
             except Exception as e:
                 console.log("voice", "write failed: %s" % e)
+                self._fail_pending("Could not send speech to worker")
                 with self._state_lock:
-                    self._pending.clear()
                     self.proc = None

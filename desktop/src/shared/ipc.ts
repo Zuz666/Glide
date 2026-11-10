@@ -12,7 +12,27 @@ export type Obj = Record<string, any>;
 /** The coach process as the main process runs it (main/engine.ts). */
 export type EngineRunState = "stopped" | "building" | "starting" | "running" | "stopping" | "crashed";
 export interface EngineStatus { state: EngineRunState; detail: string; port: number; url: string | null; token: string }
-export interface LogLine { t: number; stream: "out" | "err" | "app"; text: string }
+/** Attribution captured for one actual operation; optional fields are absent when not reported. */
+export interface LogAttribution {
+  category: "AI" | "STT" | "TTS";
+  operation?: string;
+  model?: string;
+  reported_model?: string;
+  provider?: string;
+  role?: string;
+  reasoning?: string;
+  sent_reasoning?: string;
+  status?: string;
+  voice?: string;
+  language?: string;
+  request_id?: string;
+  previous_reasoning?: string;
+  application?: string;
+  elapsed_ms?: number;
+  rate?: number;
+  volume?: number;
+}
+export interface LogLine { t: number; stream: "out" | "err" | "app"; text: string; attribution?: LogAttribution }
 
 export interface AppInfo {
   version: string; dev: boolean; home: string; defaultHome: string; checkout: boolean;
@@ -407,11 +427,11 @@ export interface InvokeMap {
   "app:info": () => AppInfo;
   "app:settings:get": () => AppSettings;
   "app:settings:set": (patch: AppSettingsPatch) => AppSettings;
-  "app:note": (line: string) => void;
+  "app:note": (line: string, attribution?: LogAttribution) => void;
   "app:logs": () => string;                   // open the log files' folder (userData/logs): "" or why it couldn't
   "app:changelog": () => Obj;
   "app:mute": (muted: boolean) => boolean;
-  "tts:synth": (text: string, style?: string, tone?: string) => { mime: string; data: Uint8Array };
+  "tts:synth": (text: string, style?: string, tone?: string, requestId?: string) => { mime: string; data: Uint8Array; attribution: LogAttribution };
   "tts:voices": (provider: TtsProvider) => Voice[];
   "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">) => { voice: string };
   "tts:windowsStop": (id?: string) => void;

@@ -67,7 +67,8 @@ const engine = new Engine();
 engine.file = new LogFile(logsDir());
 const updater = new Updater((m) => engine.note(m));
 const speechMgr = new Speech(engine);
-const windowsTts = new WindowsTts(path.join(shippedEngine, "companion", "sapi5.ps1"), (line) => engine.note(line));
+const windowsTts = new WindowsTts(path.join(shippedEngine, "companion", "sapi5.ps1"),
+  (line, attribution) => engine.note(line, attribution));
 const sampler = new ResourceSampler();
 
 const mainWindow = new MainWindow(() => !quitting && !!settings.current.closeToTray && tray.exists);

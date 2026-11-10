@@ -182,7 +182,7 @@ async function configChecks() {
     fast_model: "ep:openai:gpt-6-luna", fast_reasoning_effort: "none",
     deep_model: "ep:openai:gpt-6-luna", deep_reasoning_effort: "low",
   } } }));
-  const stopped = { state: "stopped", url: null, token: "" };
+  const stopped = { state: "stopped", url: null, token: "", note() {} };
   await config.saveConfig({ companion: { llm: { fast_model: "ep:openai:gpt-6.1-sol" } } }, stopped);
   const restarted = config.readConfig().companion.llm;
   assert.strictEqual(restarted.fast_model, "ep:openai:gpt-6.1-sol");

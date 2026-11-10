@@ -126,6 +126,7 @@ export interface CoachMessage {
   chat?: boolean;                 // an answer that keeps a chat with the coach going (the player answered an aside)
   urgent?: boolean;
   model?: string;                 // which model (or "offline", "local", "step video") said it
+  attribution?: unknown;          // source-time diagnostic metadata; only the Logs view renders it
   t: number;                      // seconds since the epoch
   quests?: number[];              // a briefing's quests
   spoken?: string;                // the start already said while the reply streamed

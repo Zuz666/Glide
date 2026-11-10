@@ -14,7 +14,8 @@ import fs from "fs";
 import net from "net";
 import path from "path";
 import { app } from "electron";
-import type { EngineRunState, LogLine } from "../shared/ipc";
+import type { EngineRunState, LogAttribution, LogLine } from "../shared/ipc";
+import { formatLogText, normalizeLogAttribution, parseLogEnvelope } from "../shared/logging.mjs";
 import type { LogFile } from "./logfile";
 import { pylibDir, pythonCommand, syncEngine, whisperDirs } from "./paths";
 
@@ -68,19 +69,48 @@ export class Engine extends EventEmitter {
     this.emit("state", { state: s, detail, port: this.port, url: this.url, token: this.token });
   }
 
-  private addLog(stream: LogLine["stream"], text: string): void {
-    for (const line of text.split(/\r?\n/)) {
+  private addLog(stream: LogLine["stream"], text: string, attribution?: LogAttribution): void {
+    const metadata = normalizeLogAttribution(attribution);
+    for (const line of metadata ? [text] : text.split(/\r?\n/)) {
       if (!line.trim()) continue;
-      const l = { t: Date.now(), stream, text: line };
+      const parsed = metadata ? { text: line, attribution: metadata } : stream === "out" ? parseLogEnvelope(line) : { text: line };
+      const l: LogLine = { t: Date.now(), stream, ...parsed };
       this.log.push(l);
-      this.file?.write(`[${stream}] ${line}`);
+      this.file?.write(`[${stream}] ${formatLogText(l.text, l.attribution)}`);
       this.emit("log", l);
     }
     if (this.log.length > MAX_LOG) this.log.splice(0, this.log.length - MAX_LOG);
   }
 
-  note(text: string): void {
-    this.addLog("app", text);
+  note(text: string, attribution?: LogAttribution): void {
+    this.addLog("app", text, attribution);
+  }
+
+  /** Decode UTF-8 and assemble full process lines before inspecting structured stdout. */
+  private pipeLogs(p: ChildProcess, stdoutLine?: (line: string) => void, stdout = true): void {
+    for (const [source, stream] of [[p.stdout, "out"], [p.stderr, "err"]] as const) {
+      if (!source || (stream === "out" && !stdout)) continue;
+      let pending = "";
+      const emit = (line: string) => {
+        if (stream === "out") stdoutLine?.(line);
+        this.addLog(stream, line);
+      };
+      source.setEncoding("utf8");
+      source.on("data", (chunk: string) => {
+        pending += chunk;
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) !== -1) {
+          emit(pending.slice(0, newline).replace(/\r$/, ""));
+          pending = pending.slice(newline + 1);
+        }
+      });
+      const flush = () => {
+        if (pending) emit(pending);
+        pending = "";
+      };
+      source.on("end", flush);
+      p.on("close", flush);
+    }
   }
 
   private env(o: EngineOptions): NodeJS.ProcessEnv {
@@ -112,8 +142,7 @@ export class Engine extends EventEmitter {
     return new Promise((resolve) => {
       const p = this.spawnPython(args, o);
       if (track) this.proc = p;
-      p.stdout?.on("data", (d) => this.addLog("out", d.toString("utf8")));
-      p.stderr?.on("data", (d) => this.addLog("err", d.toString("utf8")));
+      this.pipeLogs(p);
       p.on("error", (e) => {
         this.note(`${label} failed to start: ${e.message}`);
         if (track && this.proc === p) this.proc = null;     // no 'exit' follows a failed launch
@@ -132,8 +161,9 @@ export class Engine extends EventEmitter {
     return new Promise((resolve, reject) => {
       const p = this.spawnPython(args, { ...o, env: {} }, { stdio: ["pipe", "pipe", "pipe"] });
       let out = "";
-      p.stdout?.on("data", (d) => (out += d.toString("utf8")));
-      p.stderr?.on("data", (d) => this.addLog("err", d.toString("utf8")));
+      p.stdout?.setEncoding("utf8");
+      p.stdout?.on("data", (d: string) => (out += d));
+      this.pipeLogs(p, undefined, false);
       p.on("error", reject);
       p.on("exit", () => {
         const lines = out.trim().split(/\r?\n/);
@@ -187,19 +217,13 @@ export class Engine extends EventEmitter {
     this.note(`starting the coach: ${[py.cmd, ...py.args, ...args].join(" ")}  (in ${o.home})`);
     const p = this.spawnPython(args, o, { stdio: ["pipe", "pipe", "pipe"], env: { ...this.env(o), GLIDE_TOKEN: this.token, GLIDE_APP_VERSION: app.getVersion() } });
     this.proc = p;
-    let buf = "";
-    p.stdout?.on("data", (d: Buffer) => {
-      const s = d.toString("utf8");
-      buf += s;
-      const ready = this.state === "starting" ? buf.match(/GLIDE_READY port=\d+[^\r\n]*/) : null;
+    this.pipeLogs(p, (line) => {
+      const ready = this.state === "starting" ? line.match(/GLIDE_READY port=\d+[^\r\n]*/) : null;
       if (ready) {
-        buf = "";
         this.file?.header("coach ready", ready[0]);
         this.setState("running", o.sim ? "simulation" : "");
       }
-      this.addLog("out", s);
     });
-    p.stderr?.on("data", (d: Buffer) => this.addLog("err", d.toString("utf8")));
     p.on("error", (e) => {
       // a Python that can't be launched (missing, blocked) gives 'error' and 'close' but never 'exit': without this
       // the coach would stay "starting" and stop() would wait forever

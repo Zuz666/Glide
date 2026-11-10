@@ -3,7 +3,7 @@
 
 export type {
   AddonStatus, AppInfo, AppSettings, AppSettingsPatch, EngineRunState, EngineStatus, Footprint, KeyGuide, KeyStatus, KeyTest, KnownKey,
-  LogLine, Obj, SpeechSettings, SpeechStatus, TtsProvider, UpdateStatus, Voice, WhisperModel, WowClient,
+  LogAttribution, LogLine, Obj, SpeechSettings, SpeechStatus, TtsProvider, UpdateStatus, Voice, WhisperModel, WowClient,
 } from "../shared/ipc.js";
 export type {
   CoachMessage, CoachStats, EngineState, InitEvent, LiteInitEvent, LiteState, LiveGame, Models, NavBuild, Refresh, Reminder,

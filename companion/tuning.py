@@ -148,21 +148,22 @@ def apply(cfg, changes, config_path=None, catalog=None):
     applied = {}
     for k, v in (changes or {}).items():
         if k in SETTINGS:
-            applied[k] = cfg[k] = clamp(k, v)
+            applied[k] = clamp(k, v)
         elif k in TOGGLES:
             if not isinstance(v, bool):
                 raise ValueError("%s takes true or false, not %r" % (k, v))
-            applied[k] = cfg[k] = v
+            applied[k] = v
         elif k in MODEL_KEYS:
             if not isinstance(v, str) or not MODEL_RE.match(v.strip()):
                 raise ValueError("not a model id: %r" % (v,))
-            applied[k] = cfg[k] = v.strip()
+            applied[k] = v.strip()
         elif k in TEXTS:
             if not isinstance(v, str):
                 raise ValueError("%s takes text, not %r" % (k, v))
-            applied[k] = cfg[k] = " ".join(v.split())[:MAX_TEXT]
+            applied[k] = " ".join(v.split())[:MAX_TEXT]
     if applied and config_path:
         save(config_path, applied)
+    cfg.update(applied)                         # validation and persistence succeeded before live state changes
     return applied
 
 

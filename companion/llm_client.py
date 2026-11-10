@@ -7,6 +7,7 @@ dashboard shows.
 The coach holds one LLMClient and hands it its system prompt (system_fn), the runner for the tools a model calls
 (run_tool) and where status messages go (emit). Each call says which model path it is for ("fast" or "deep"), so a
 reflection running beside a callout books its tokens and picks its options for its own path."""
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -21,7 +22,7 @@ import providers
 import reasoning
 import settings
 import websearch
-from log import log_once
+from log import log, log_once
 from speech_language import prose_spelling
 
 
@@ -45,7 +46,42 @@ def api_message(detail):
 API_LABEL = providers.API_LABEL
 KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY",
            "endpoint": "custom endpoint (Settings > Models)"}
-PATH_ROLE = {"fast_model": "callouts and spoken questions", "deep_model": "typed questions and pace reviews"}
+
+
+def path_roles(cfg):
+    """Role descriptions follow the actual spoken-question routing override."""
+    spoken_fast = settings.Settings("llm", cfg).get("voice_question_model") == "fast"
+    return {"fast_model": "callouts and spoken questions" if spoken_fast else "callouts",
+            "deep_model": "typed questions and pace reviews" if spoken_fast else
+                          "typed and spoken questions and pace reviews"}
+
+
+def _model_id(value):
+    """Only model identifiers, never endpoint URLs or arbitrary response payloads."""
+    return value if isinstance(value, str) and len(value) <= 240 and "://" not in value and \
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*", value) else None
+
+
+def _sent_reasoning(options):
+    """A bounded description of documented request controls, never opaque reasoning content."""
+    levels = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    parts = []
+    effort = options.get("reasoning_effort")
+    for key in ("reasoning", "output_config"):
+        nested = options.get(key)
+        if isinstance(nested, dict):
+            effort = nested.get("effort", effort)
+    if effort in levels:
+        parts.append("effort=" + effort)
+    thinking = options.get("thinking")
+    if isinstance(thinking, dict):
+        mode = thinking.get("type")
+        if mode in ("disabled", "enabled", "adaptive", "between_tools"):
+            parts.append("thinking=" + mode)
+        budget = thinking.get("budget_tokens")
+        if isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
+            parts.append("thinking budget=%d" % budget)
+    return "; ".join(parts) or "provider default"
 
 
 def api_label(model):
@@ -77,6 +113,32 @@ def _no_tool(name, args, ctx, budget_s):
     return {"error": "no tools here"}
 
 
+def log_settings(before, after, application, catalog=None):
+    """Record each path's changed selection; saved settings are not claimed to be running."""
+    old, new = settings.Settings("llm", before), settings.Settings("llm", after)
+    old_roles, new_roles = path_roles(before), path_roles(after)
+    for path in ("fast", "deep"):
+        key = path + "_model"
+        model, previous_model = new.get(key), old.get(key)
+        effort, previous = new.get(path + "_reasoning_effort"), old.get(path + "_reasoning_effort")
+        if model == previous_model and effort == previous and old_roles[key] == new_roles[key]:
+            continue
+        attribution = {"category": "AI", "operation": "settings", "role": new_roles[key],
+                       "provider": models_mod.provider(model), "application": application,
+                       "status": "saved" if application == "pending restart" else "applied"}
+        if selected := _model_id(model):
+            attribution["model"] = selected
+        if effort in ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            attribution["reasoning"] = effort
+        if previous in ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            attribution["previous_reasoning"] = previous
+        action = "Saved" if application == "pending restart" else "Applied"
+        name = (catalog.get(model) or {}).get("name") if catalog is not None else model
+        text = "%s %s: %s; reasoning %s → %s (%s)." % (
+            action, new_roles[key], name or model, previous, effort, application)
+        log("coach", text, attribution)
+
+
 class LLMClient:
     """The model calls behind the coach. emit(message dict): status and error messages for the dashboard;
     system_fn(cache marker) -> the system prompt blocks; run_tool(name, args, ctx, budget_s): one tool call a model
@@ -90,7 +152,8 @@ class LLMClient:
     def __init__(self, cfg, emit=None, system_fn=None, run_tool=None, catalog=None, usage_fn=None):
         """cfg: the "llm" config (models, keys' environment variables, endpoints, timeouts, tuning switches)."""
         self.cfg = cfg
-        self.emit = emit or (lambda m: None)
+        self._request = threading.local()
+        self._emit_message = emit or (lambda m: None)
         self.system_fn = system_fn or (lambda cc=None: [])
         self.run_tool: Callable[..., Any] = run_tool or _no_tool
         self.keys, self.endpoints = api_keys(cfg)
@@ -117,6 +180,44 @@ class LLMClient:
         self.fails = 0
         self.last_latency = 0.0
         self.last_usage = {}                  # summed usage of the last turn (evals)
+
+    def emit(self, message):
+        """Diagnostics inherit only this thread's active operation, captured before asynchronous delivery."""
+        current = getattr(self._request, "current", None)
+        if current is not None and "attribution" not in message:
+            message = dict(message, attribution=self._snapshot(
+                current, "error" if message.get("kind") == "error" else None))
+        self._emit_message(message)
+
+    @contextmanager
+    def _operation(self, model, deep, role, operation):
+        previous = getattr(self._request, "current", None)
+        attribution = {"category": "AI", "operation": operation,
+                       "provider": models_mod.provider(model), "role": role or path_of(deep),
+                       "reasoning": self.opt.get(path_of(deep) + "_reasoning_effort")}
+        if selected := _model_id(model):
+            attribution["model"] = selected
+        current = {"attribution": attribution, "started": time.monotonic(), "sent": []}
+        self._request.current = current
+        try:
+            yield current
+        finally:
+            self._request.current = previous
+
+    @staticmethod
+    def _snapshot(current, status=None):
+        attribution = dict(current["attribution"])
+        if attribution.get("reasoning") not in ("auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            attribution.pop("reasoning", None)
+        attribution["elapsed_ms"] = round((time.monotonic() - current["started"]) * 1000)
+        if status:
+            attribution["status"] = status
+        return attribution
+
+    def _finish(self, current, text, meta):
+        attribution = self._snapshot(current, "completed" if text else "error")
+        self.last_latency = attribution["elapsed_ms"] / 1000
+        return text, dict(meta, attribution=attribution)
 
     def provider_for(self, model):
         """The provider that serves this model id, or None (a custom endpoint that isn't configured)."""
@@ -207,7 +308,10 @@ class LLMClient:
                        % (openai_compat.split_endpoint(model)[0], model), "speak": False})
             return None, {}
         label = p.label
-        effort = self.opt.get(path + "_reasoning_effort") if effort is None else effort
+        current = getattr(self._request, "current", None)
+        if effort is None:
+            effort = current["attribution"]["reasoning"] if current is not None else \
+                self.opt.get(path + "_reasoning_effort")
         try:
             reasoning.validate(model, self.cfg, effort, self.catalog.get(model) if self.catalog is not None else None)
         except ValueError as e:
@@ -219,6 +323,11 @@ class LLMClient:
         while i < len(attempts):            # if the API rejects the tuning options, the next set
             attempt = attempts[i]
             req, stream = p.request(body, attempt, on_text)
+            if current is not None:
+                sent = _sent_reasoning(attempt)
+                if sent not in current["sent"]:
+                    current["sent"].append(sent)
+                current["attribution"]["sent_reasoning"] = " → ".join(current["sent"])
             try:
                 data = p.parse(p.fetch(req, stream, on_text, self.opt.get("timeout")))
             except urllib.error.HTTPError as e:
@@ -256,6 +365,10 @@ class LLMClient:
             if effort == "auto":
                 p.accepted(model, attempt, path == "deep")
             self._recovered(p.name, label)
+            if current is not None:
+                current["attribution"].pop("reported_model", None)
+                if reported := _model_id(data.get("model")):
+                    current["attribution"]["reported_model"] = reported
             self._account(model, body, data.get("usage") or {}, path)
             return data, attempt
         return None, {}
@@ -347,16 +460,24 @@ class LLMClient:
 
 
     def translate(self, text, language):
-        """Translate deterministic coach text through the existing billing/backoff/provider path.
-
-        No usable configured model means no request. Translator diagnostics use the normal emit callback;
-        Localizer's reentrancy guard keeps those diagnostics from recursively requesting translation.
-        """
         if language == "en" or not text:
             return None
         model = self.cfg.get("fast_model")
         if not model or not self.available(model) or self.provider_for(model) is None:
             return None
+        with self._operation(model, False, "translation", "translation") as current:
+            translated = self._translate(text, language, model)
+            attribution = self._snapshot(current, "completed" if translated else "error")
+            attribution["language"] = language
+            log("translation", translated or "Translation unavailable; keeping the original text.", attribution)
+            return translated
+
+    def _translate(self, text, language, model):
+        """Translate deterministic coach text through the existing billing/backoff/provider path.
+
+        No usable configured model means no request. Translator diagnostics use the normal emit callback;
+        Localizer's reentrancy guard keeps those diagnostics from recursively requesting translation.
+        """
         instruction = (
             "Translate the English coach message into the language with BCP-47 code %s. "
             "Return only the translation, with no introduction, quotation wrapping or commentary. "
@@ -369,7 +490,7 @@ class LLMClient:
                 "system": [{"type": "text", "text": instruction}],
                 "messages": [{"role": "user", "content": json.dumps({"text": text}, ensure_ascii=False)}]}
         opts = self.model_options(model, False) if self.opt.get("tune_thinking") else {}
-        effort = self.opt.get("fast_reasoning_effort")
+        effort = self._request.current["attribution"]["reasoning"]
         data, opts = self.post(body, opts, "fast", effort=effort)
         data = self._retry_empty(body, opts, data, "fast", effort=effort)
         return self._answer_text(data) if data else None
@@ -385,7 +506,7 @@ class LLMClient:
         for key in ("fast_model", "deep_model"):
             m = self.cfg.get(key)
             prov = models_mod.provider(m)
-            parts.append("%s: %s (%s%s)" % (PATH_ROLE[key], self.model_name(m), API_LABEL[prov],
+            parts.append("%s: %s (%s%s)" % (path_roles(self.cfg)[key], self.model_name(m), API_LABEL[prov],
                                             "" if self.keys.get(prov) else ", no %s set" % KEY_ENV[prov]))
         return "; ".join(parts)
 
@@ -401,7 +522,7 @@ class LLMClient:
             return
         both = len(changed) == 2 and changed["fast_model"][1] == changed["deep_model"][1]
         items = [("all coaching", changed["fast_model"][1])] if both else \
-            [(PATH_ROLE[k], n) for k, (o, n) in sorted(changed.items(), key=lambda kv: kv[0] != "fast_model")]
+            [(path_roles(self.cfg)[k], n) for k, (o, n) in sorted(changed.items(), key=lambda kv: kv[0] != "fast_model")]
         lines, warn = [], []
         for role, m in items:
             prov = models_mod.provider(m)
@@ -429,7 +550,13 @@ class LLMClient:
                        % (data.get("stop_reason"), u.get("output_tokens", 0)), "speak": False})
         return text
 
-    def call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None):
+    def call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None,
+                  role=None, operation="completion"):
+        with self._operation(model, deep, role, operation) as current:
+            text, meta = self._call_once(model, user, max_tokens, deep, tools, schema, on_text)
+            return self._finish(current, text, meta)
+
+    def _call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None):
         """One-shot answer (live callouts, and everything without the knowledge layer), booked to the deep or fast
         path. `tools`: sent with tool_choice none only to share the questions' cached prefix (see caching). `schema`:
         a JSON schema the reply must follow (structured outputs, Claude API only; if the API refuses it the request
@@ -437,7 +564,7 @@ class LLMClient:
         -> (text, meta)."""
         meta: dict[str, Any] = {"tool_calls": 0, "tools": [], "sources": []}
         path = path_of(deep)
-        effort = self.opt.get(path + "_reasoning_effort")
+        effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
         opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
         if schema and models_mod.provider(model) == "anthropic" and self.opt.get("structured_outputs"):
@@ -472,7 +599,13 @@ class LLMClient:
         return again if again is not None else data
 
     def call_tools(self, model, messages, tools, max_calls, deadline_s, ctx=None, max_tokens=600, deep=False,
-                   on_text=None):
+                   on_text=None, role=None, operation="tool loop"):
+        with self._operation(model, deep, role, operation) as current:
+            text, meta = self._call_tools(model, messages, tools, max_calls, deadline_s, ctx, max_tokens, deep, on_text)
+            return self._finish(current, text, meta)
+
+    def _call_tools(self, model, messages, tools, max_calls, deadline_s, ctx=None, max_tokens=600, deep=False,
+                    on_text=None):
         """Tool-use loop for questions and reviews. Sends tools (tool_choice auto); on stop_reason "tool_use" runs
         every tool_use block through run_tool (knowledge.api.dispatch on the live ctx, or the coach's own tools) and
         sends the tool_result blocks back; stops at end_turn. After max_calls tool calls or deadline_s seconds the
@@ -480,7 +613,7 @@ class LLMClient:
         are the same as for one-shot calls. -> (text or None, {"tool_calls", "tools", "sources", "rounds"})."""
         meta: dict[str, Any] = {"tool_calls": 0, "tools": [], "sources": [], "rounds": 0}
         path = path_of(deep)
-        effort = self.opt.get(path + "_reasoning_effort")
+        effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
         opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
         tools = [dict(t) for t in tools or ()]

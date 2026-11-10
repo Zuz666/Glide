@@ -83,7 +83,9 @@ class Reflector:
         try:
             text, _meta = c.llm.call_once(model, prompts.REFLECT_PROMPT % (notes, threads, "\n".join(lines)), 1600,
                                           deep=True,
-                                          schema=self.REFLECT_SCHEMA)
+                                          schema=self.REFLECT_SCHEMA, role="reflection")
+            if _meta.get("attribution"):
+                log("memory", "Reflection generation finished.", _meta["attribution"])
         except Exception as e:  # noqa: BLE001 - learning is a background extra
             log("memory", "reflection failed: %s" % e)
             return None

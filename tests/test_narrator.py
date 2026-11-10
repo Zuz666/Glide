@@ -33,6 +33,7 @@ export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": "export const toast = (..._a: unknown[]) => undefined;\n",
     "types.ts": """
+export type { LogAttribution } from "./ipc.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
 """,
@@ -199,6 +200,9 @@ tmp = tempfile.mkdtemp(prefix="glide-narrator-")
 try:
     with open(SRC, encoding="utf-8") as fh:
         files = {"narrator.ts": fh.read(), **STUBS}
+    for name in ("ipc.ts", "engine.ts"):
+        with open(os.path.join(DESK, "src", "shared", name), encoding="utf-8") as fh:
+            files[name] = fh.read()
     # narrator.ts beside its stand-ins, compiled once per content (the tests' shared compiles, desktop_ts.py)
     out = desktop_ts.compiled("narrator", files, ["narrator.ts", "--target", "ES2023", "--module", "ES2022",
                                                   "--moduleResolution", "bundler", "--lib", "ES2023,DOM", "--strict",

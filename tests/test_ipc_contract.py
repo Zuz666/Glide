@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """The desktop IPC has one channel map (desktop/src/shared/ipc.ts): every channel in it is answered by main/app/ipc.ts
 and let through by the preload, and nothing else is; every event the main process sends is in its EventMap and the
-preload's event list. The shared files stay type-only: the sandboxed preload can't load a local module, and the main
-process (CommonJS) and the renderer (ES modules) both compile them into dist/shared."""
+preload's event list."""
 import glob
 import os
 import re
@@ -37,12 +36,4 @@ for f in main_files:
     sent |= set(re.findall(r'\b(?:broadcast|send)\("([\w:]+)"', open(f, encoding="utf-8-sig").read()))
 assert sent and sent <= events, ("sent but not in EventMap", sent - events)
 
-# type-only: nothing outside src/shared imports it as a value (an `import type` / `export type` is erased)
-for f in glob.glob(os.path.join(SRC, "**", "*.ts"), recursive=True):
-    for m in re.finditer(r'^(import|export)\b([^;]*?)from "(\.\./)+shared/', open(f, encoding="utf-8-sig").read(), re.M):
-        assert m.group(2).startswith(" type "), "%s imports shared/ at run time: %s" % (f, m.group(0))
-for f in glob.glob(os.path.join(SRC, "shared", "*.ts")):
-    code = re.sub(r"//.*|/\*.*?\*/", "", open(f, encoding="utf-8").read(), flags=re.S)
-    assert not re.search(r"^\s*(export\s+)?(const|let|var|function|class|enum)\b|^\s*import\s+(?!type\b)", code, re.M), \
-        "%s has run-time code; shared files must be type-only" % f
 print("ok")

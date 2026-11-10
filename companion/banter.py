@@ -28,7 +28,7 @@ import models as models_mod
 import persona as persona_mod
 import recall as recall_mod
 from replies import is_skip, trim_words
-from log import log_once
+from log import log, log_once
 
 REPLY_S = 180              # the player answered an aside: they asked or said something within this long after it
 FRESH_S = 10               # the game state is live: a frame arrived this recently
@@ -434,7 +434,9 @@ class Banter:
         c = self.coach
         try:
             text, _meta = c.llm.call_once(c.cfg.get("fast_model"), persona_mod.seed_request(brief, lore, role), 800,
-                                          schema=persona_mod.SEED_SCHEMA)
+                                          schema=persona_mod.SEED_SCHEMA, role="character setup")
+            if _meta.get("attribution"):
+                log("character", "Character sample and story generation finished.", _meta["attribution"])
             mt = re.search(r"\{.*\}", text or "", re.S)
             d = json.loads(mt.group(0)) if mt else {}
         except Exception as e:  # noqa: BLE001 - an extra: the character plays on without its samples
@@ -678,7 +680,7 @@ class Banter:
             ctx = c.context(triggers=["banter"])
             trigger = self.request(limit, moment, act) + "\n" + self.reminder()
             user = c._user_message(ctx, trigger, triggers=["banter"], cc=c.llm.ref_marker(model))
-            text, meta = c.llm.call_once(model, user, 400)
+            text, meta = c.llm.call_once(model, user, 400, role="banter")
         except Exception as e:  # noqa: BLE001 - an aside is an extra; never breaks the coach
             log_once("banter.speak", e)
             return None
@@ -692,6 +694,8 @@ class Banter:
         c.history = (c.history + [text])[-10:]
         msg = {"kind": "banter", "text": c.localization.generated(text), "speak": True, "urgent": False,
                "model": c._model_note(model, meta), "t": time.time()}
+        if meta.get("attribution"):
+            msg["attribution"] = meta["attribution"]
         if tone:
             msg["tone"] = tone
         c.emit(msg)
