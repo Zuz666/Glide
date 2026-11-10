@@ -155,6 +155,12 @@ button.log-category { cursor: help; }
 .language-help-popup h3 { margin: 0; color: var(--gold); }
 .language-help-popup dt { margin-top: 14px; font-weight: 600; }
 .language-help-popup dd { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; line-height: 1.5; }
+.thinking-help-term { anchor-name: --thinking-help; text-decoration-style: dotted; cursor: help; }
+.thinking-help-popup { position: fixed; position-anchor: --thinking-help; position-area: bottom span-right; position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline; inset: auto; margin: 6px; width: min(620px, calc(100vw - 32px)); max-height: 70vh; overflow: auto; padding: 16px; color: var(--ink); background: var(--tip); border: 1px solid var(--edge); border-radius: var(--radius-s); box-shadow: var(--tip-shadow); font-size: 13px; line-height: 1.45; }
+.thinking-help-popup p { margin: 8px 0; color: var(--ink-2); }
+.thinking-help-popup table { width: 100%; border-collapse: collapse; }
+.thinking-help-popup th, .thinking-help-popup td { padding: 6px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--edge-soft); }
+.thinking-help-popup th { color: var(--gold); }
 .dirty { color: var(--warn); font-size: 14px; font-weight: 600; }
 
 .keyrow { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 14px 0; border-top: 1px solid var(--edge-soft); }

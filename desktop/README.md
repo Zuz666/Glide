@@ -100,7 +100,19 @@ settings, saved keys and downloads behind in the old folder.
 - **Change the engine home**, for example to point it at a project checkout. A checkout's own code is used as it is.
 - **Import data:** copies `data\` and `config.json` in from another Glide folder.
 
+## Saving settings
+
+Ordinary fields use the same draft workflow for manual edits and **Use default**: changes stay unsaved until **Save** or **Save and restart coach**, and **Revert** cancels them. Saving a default removes the persisted override rather than pinning today's default value. If there was no stored override, Use default only cancels an unsaved edit; no save is needed. A failed save keeps the draft.
+
+Live settings apply to the next call; fields marked ↻ require a coach restart. Save without restarting reports that requirement. Model catalogue picks and Coach voice controls retain their immediate-save behavior; API keys and endpoints retain their own save actions. Engine home folder changes and **Use default folder** save immediately and both report that a restart is needed.
+
 ## Models and agents
+
+Settings separates **API keys** (credentials for AI, speech and search services) from **AI models** (model selection and behavior). Under AI models, **Custom endpoints** follows **Model ids**; **AI behavior & requests** contains spoken-question routing, the AI switch, request timing and automatic thinking tuning.
+
+Each reasoning-effort explanation links Auto to **Automatic thinking tuning**. Hover or focus **lightweight** to see the Fast/Deep policy by provider. The switch only supplies automatic options for supported direct Claude/Gemini models; explicit effort takes priority, and compatible endpoints/OpenRouter are unaffected. Turning tuning off leaves Auto to the provider.
+
+**AI request timeout (s)** limits each request to an AI model, including coach answers and message translation; retries and multi-step answers can take longer in total. It is separate from the desktop's local settings-save timeout. Saving a model change does not wait for translation of its announcement: the selection is applied and acknowledged while the notice is localized in the background.
 
 Every provider the console supports works here:
 
@@ -108,12 +120,12 @@ Every provider the console supports works here:
 - **Gemini:** `gemini:<id>`
 - **OpenRouter:** `vendor/model`
 
-On top of those, **custom endpoints** (Settings > AI models & keys) add any OpenAI-compatible server: Ollama, LM Studio, OpenAI, Groq, Mistral, DeepSeek and others.
+On top of those, **custom endpoints** (Settings > AI models) add any OpenAI-compatible server: Ollama, LM Studio, OpenAI, Groq, Mistral, DeepSeek and others.
 
 - **Config:** they are saved in `companion.llm.endpoints`.
 - **Model ids:** `ep:<endpoint>:<model>`.
-- **Picking one:** the endpoint's models appear under Settings > AI models & keys > Choose models. You can also click one in the endpoint's test list.
-- **Keys:** a key is optional for local servers.
+- **Picking one:** the endpoint's models appear under Settings > AI models > Choose models. You can also click one in the endpoint's test list.
+- **Keys:** set credentials in Settings > API keys; a key is optional for local servers. After adding or editing endpoints, click **Save endpoints** first: endpoint-to-keys links stay disabled until saved, so navigation cannot discard those edits and new endpoint credentials appear in the key list.
 
 ## Overlay
 
@@ -134,7 +146,7 @@ The key can be changed under Settings > Overlay (`companion.overlay.drag_key`, a
   - Azure Speech: neural voices.
   - Google Cloud Text-to-Speech.
 
-  Keys go under AI models & keys. If a service fails, that line is spoken with the Windows voice.
+  Keys go under Settings > API keys. If a service fails, that line is spoken with the Windows voice.
 - **Push-to-talk recognition:**
   - **Offline:** Whisper (model small.en by default, downloaded on first use, about 460 MB) or the Windows recognizer. Until the model is on the PC, push-to-talk uses the Windows recognizer.
   - **Online:** OpenAI (gpt-4o-mini-transcribe), Groq (whisper-large-v3-turbo) or Deepgram (nova-3).

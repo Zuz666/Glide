@@ -23,7 +23,7 @@ const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], 
 
 const field = (label: string, help: string, ctl: string) =>
   `<div class="field"><div class="lab">${label}${help ? `<small>${help}</small>` : ""}</div><div class="ctl">${ctl}</div></div>`;
-const keyNote = (env: string) => env ? `<span class="help">Needs <code>${esc(env)}</code> under AI models and keys.</span>` : "";
+const keyNote = (env: string) => env ? `<span class="help">Needs <code>${esc(env)}</code> in Settings &gt; API keys.</span>` : "";
 const options = (list: [string, string][], cur: string) =>
   list.map(([m, l]) => `<option value="${m}" ${m === cur ? "selected" : ""}>${l}</option>`).join("");
 /** A voice picker filled by Load voices; until then it shows the saved voice (or the provider's default). */

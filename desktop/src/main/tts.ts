@@ -121,7 +121,7 @@ const VOICE_LISTS: Record<Exclude<KeyProvider, "openai">, VoiceList> = {
 export async function synth(s: SpeechSettings, text: string, key: string, style = "", tone = ""): Promise<Buffer> {
   const p = s.provider;
   if (p && Object.hasOwn(TTS_KEYS, p) && !key) {
-    throw new Error(`${p}: no ${TTS_KEYS[p as KeyProvider]} (Settings > AI models & keys)`);
+    throw new Error(`${p}: no ${TTS_KEYS[p as KeyProvider]} (Settings > API keys)`);
   }
   const signal = AbortSignal.timeout(TIMEOUT);
   if (p && Object.hasOwn(SYNTH, p)) return SYNTH[p as Online](s, text, key, signal, style, tone);

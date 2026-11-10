@@ -286,7 +286,10 @@ class Coach:
         return self.llm.describe_models()
 
     def announce_models(self, changes, startup=False):
-        return self.llm.announce_models(changes, startup)
+        message = self.llm.prepare_model_announcement(changes, startup)
+        if message:
+            # A settings acknowledgement must not wait for the notice's translation or speech.
+            self.localization.deliver(message, self.emit)
 
     def model_name(self, model):
         return self.llm.model_name(model)

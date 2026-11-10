@@ -510,13 +510,14 @@ class LLMClient:
                                             "" if self.keys.get(prov) else ", no %s set" % KEY_ENV[prov]))
         return "; ".join(parts)
 
-    def announce_models(self, changes, startup=False):
-        """Say which model each path now uses. changes: {"fast_model"|"deep_model": (old id, new id)}. A switch to
-        another provider clears that old provider's suspension and back-off, so the new model is tried at once."""
+    def prepare_model_announcement(self, changes, startup=False):
+        """Build the notice before queuing its translation, without waiting for a provider.
+
+        A switch to another provider clears that old provider's suspension and back-off immediately.
+        """
         if startup:
-            self.emit({"kind": "info", "text": "Coach models (saved selection) - " + self.describe_models(),
-                       "speak": False})
-            return
+            return {"kind": "info", "text": "Coach models (saved selection) - " + self.describe_models(),
+                    "speak": False}
         changed = {k: (o, n) for k, (o, n) in (changes or {}).items() if n and o != n}
         if not changed:
             return
@@ -537,8 +538,8 @@ class LLMClient:
             self.suspended, self.suspended_for = None, None
         if self.backoff_until or self.fails:
             self.fails, self.backoff_until = 0, 0
-        self.emit({"kind": "info", "text": ("Model switched. " + ". ".join(lines) + ". " + " ".join(dict.fromkeys(warn))).strip(),
-                   "speak": True, "urgent": False})
+        return {"kind": "info", "text": ("Model switched. " + ". ".join(lines) + ". " + " ".join(dict.fromkeys(warn))).strip(),
+                "speak": True, "urgent": False}
 
     def _answer_text(self, data):
         u = data.get("usage") or {}

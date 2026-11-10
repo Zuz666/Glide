@@ -12,11 +12,12 @@ import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
 import { bindModelReasoning } from "./model-picker.js";
 import { highlightSearch, queryWords, searchQuery, searchSchema, setSearchQuery } from "./search.js";
+import { bindThinkingHelp } from "./thinking-help.js";
 
 /** A custom panel: draws a group's content into `host` (settings-schema.ts Group.special names it). */
 export type Panel = (g: Group, host: HTMLElement) => void | Promise<void>;
 
-const TAB_ICON: Record<string, string> = { general: "settings", models: "key-round", coach: "sparkles", buffs: "swords",
+const TAB_ICON: Record<string, string> = { general: "settings", keys: "key-round", models: "cpu", coach: "sparkles", buffs: "swords",
                                           language: "globe", voice: "volume-2", overlay: "maximize", capture: "server" };
 const LLM = "companion.llm.";
 // live-tunable without a restart (the dashboard's Coach context / Models settings): "live" in the engine's manifest
@@ -59,6 +60,8 @@ export function registerPanels(p: Record<string, Panel>): void {
 /** Go to the Settings page on one section. */
 export function openSettingsTab(id: string): void {
   tab = id;
+  setSearchQuery("");
+  $<HTMLInputElement>("set-search").value = "";
   show("settings");
 }
 
@@ -105,29 +108,23 @@ export async function renderSettings(): Promise<void> {
       }));
     }
   });
+  bindThinkingHelp(body);
   pending.push(Promise.resolve(bindModelReasoning(body)).then(restoreView));
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
     renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
   });
   if (searching) highlightSearch(body);
-  body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = async () => {
+  body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = () => {
     const key = b.dataset.reset!;
-    if (key === "companion.voice.language" || key.endsWith("_reasoning_effort")
-        || key === LLM + "fast_model" || key === LLM + "deep_model") {
-      if (getPath(live.config, key) === undefined) edits.delete(key);
-      else edits.set(key, null);
-      if (key === LLM + "fast_model" || key === LLM + "deep_model") {
-        const effort = key.replace(/_model$/, "_reasoning_effort");
-        if (getPath(live.config, effort) === undefined) edits.delete(effort);
-        else edits.set(effort, null);
-      }
-      void renderSettings();
-      return;
+    // Defaults are edits too: never persist behind Save/Revert or bypass live/restart handling.
+    if (getPath(live.config, key) === undefined) edits.delete(key);
+    else edits.set(key, null);
+    if (key === LLM + "fast_model" || key === LLM + "deep_model") {
+      const effort = key.replace(/_model$/, "_reasoning_effort");
+      if (getPath(live.config, effort) === undefined) edits.delete(effort);
+      else edits.set(effort, null);
     }
-    edits.delete(key);
-    await call("config:set", patchFor(key, null));
-    toast(`${key.split(".").pop()} reset to its default`);
-    renderSettings();
+    void renderSettings();
   }));
   updateDirty();
   restoreView();
@@ -223,6 +220,17 @@ export function wireSettings(): void {
   $("set-save").onclick = () => saveSettings(false);
   $("set-save-restart").onclick = () => saveSettings(true);
   $("set-revert").onclick = () => { edits.clear(); renderSettings(); };
+  $("set-body").addEventListener("click", async (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("[data-thinking-settings]")) return;
+    tab = "models";
+    setSearchQuery("");
+    $<HTMLInputElement>("set-search").value = "";
+    await renderSettings();
+    if (currentPage() !== "settings") return;
+    const row = $("set-body").querySelector<HTMLElement>('[data-key="companion.llm.tune_thinking"]');
+    row?.scrollIntoView({ block: "center" });
+    row?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  });
   document.addEventListener("model-settings-saved", () => {
     if (currentPage() === "settings") renderSettings();
   });

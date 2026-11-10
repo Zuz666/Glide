@@ -175,7 +175,7 @@ async function runAction(act: string): Promise<void> {
   if (act === "nav_rebuild") return rebuildWalkMap();
   if (act === "engine_start") { await call("engine:start"); return; }
   if (act === "wow_dir") return show("addon");
-  if (act === "keys") { openSettingsTab("models"); return; }
+  if (act === "keys") { openSettingsTab("keys"); return; }
   if (act === "speech_repair" || act === "speech_download") { await call("speech:install"); refreshStatus(); return; }
   if (act === "update_install") { await call("update:install"); return; }
   if (act === "update_download") { await call("update:download"); return; }
