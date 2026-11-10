@@ -1,13 +1,14 @@
 // The Settings page's ordinary fields (settings-schema.ts): where each value is stored, what its control shows,
 // and the unsaved edits. A key is a path in config.json, or in the app's own settings when it starts with "app:".
 import { $, esc, icon } from "../dom.js";
-import { Field } from "../settings-schema.js";
+import { Field, SCHEMA } from "../settings-schema.js";
 import { live } from "../state.js";
 import { languageCode } from "../speech-language.js";
 import { Obj } from "../types.js";
 
-/** field key -> new value, as the control shows it (unsaved) */
+/** field key -> unsaved control value; null stages removing a config override */
 export const edits: Map<string, unknown> = new Map();
+const fieldsByKey = new Map(SCHEMA.flatMap((tab) => tab.groups.flatMap((group) => (group.fields || []).map((f) => [f.key, f] as const))));
 
 export function getPath(o: Obj, path: string): unknown {
   return path.split(".").reduce<any>((v, k) => (v && typeof v === "object" ? v[k] : undefined), o);
@@ -36,15 +37,17 @@ export const isApp = (key: string) => key.startsWith("app:");
 const rawStored = (f: Field) => (isApp(f.key) ? getPath(live.appSettings, f.key.slice(4)) : getPath(live.config, f.key));
 // what the control shows: inverted fields display the negation of what is stored
 const stored = (f: Field) => { const v = rawStored(f); return f.invert && v !== undefined ? !v : v; };
-export const toStore = (f: Field, v: unknown) => (f.invert ? !v : v);
-const current = (f: Field) => (edits.has(f.key) ? edits.get(f.key) : stored(f) ?? f.def);
+// null stages removing an override, including for inverted controls.
+export const toStore = (f: Field, v: unknown) => (v === null ? null : f.invert ? !v : v);
+const current = (f: Field) => (edits.has(f.key) ? edits.get(f.key) ?? f.def : stored(f) ?? f.def);
 const controlId = (f: Field) => `f_${f.key.replace(/[^a-z0-9]/gi, "_")}`;
+const canReset = (f: Field) => !(edits.has(f.key) && edits.get(f.key) === null)
+  && (rawStored(f) != null || JSON.stringify(current(f)) !== JSON.stringify(f.def));
 
 function setEdit(f: Field, v: unknown): void {
   const base = stored(f) ?? f.def;
   if (JSON.stringify(v) === JSON.stringify(base)) edits.delete(f.key);
   else edits.set(f.key, v);
-  document.querySelector(`.field[data-key="${CSS.escape(f.key)}"]`)?.classList.toggle("changed", edits.has(f.key));
   updateDirty();
 }
 
@@ -52,7 +55,26 @@ function setEdit(f: Field, v: unknown): void {
 export function updateDirty(): void {
   const n = edits.size;
   $("set-dirty").textContent = n ? `${n} unsaved change${n > 1 ? "s" : ""}` : "";
-  for (const id of ["set-save", "set-save-restart", "set-revert"]) $<HTMLButtonElement>(id).disabled = !n;
+  for (const id of ["set-save", "set-revert"]) $<HTMLButtonElement>(id).disabled = !n;
+  let restartRequired = false;
+  for (const key of edits.keys()) {
+    if (fieldsByKey.get(key)?.restart) {
+      restartRequired = true;
+      break;
+    }
+  }
+  $<HTMLButtonElement>("set-save-restart").disabled = !restartRequired;
+  document.querySelectorAll<HTMLElement>(".field[data-key]").forEach((row) => {
+    const f = fieldsByKey.get(row.dataset.key!);
+    if (!f) return;
+    row.classList.toggle("changed", edits.has(f.key));
+    const reset = row.querySelector<HTMLButtonElement>("[data-reset]");
+    if (reset) {
+      const resettable = canReset(f);
+      reset.disabled = !resettable;
+      reset.title = `${resettable ? "Remove it from config.json and use" : "Already using"} the default (${JSON.stringify(f.def)})`;
+    }
+  });
 }
 
 function controlHtml(f: Field, id: string, v: unknown): string {
@@ -85,13 +107,13 @@ function controlHtml(f: Field, id: string, v: unknown): string {
 
 export function fieldHtml(f: Field): string {
   const ctl = controlHtml(f, controlId(f), current(f));
-  const isDef = stored(f) === undefined;
+  const resettable = canReset(f);
   return `<div class="field${edits.has(f.key) ? " changed" : ""}" data-key="${esc(f.key)}">
     <div class="lab">${esc(f.label)}${f.help ? `<small>${esc(f.help)}</small>` : ""}</div>
     <div class="ctl">${ctl}
       ${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
       ${f.key === "companion.voice.voice" ? `<button type="button" class="reset" data-copy-windows-voice title="Copy the selected Windows/SAPI5 voice from Coach voice. Windows default leaves the name empty.">Copy Windows voice</button>` : ""}
-      ${!isDef && !isApp(f.key) ? `<button class="reset" data-reset="${esc(f.key)}" title="Remove it from config.json and use the default (${esc(JSON.stringify(f.def))})">Use default</button>` : ""}</div></div>`;
+      ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(`${resettable ? "Remove it from config.json and use" : "Already using"} the default (${JSON.stringify(f.def)})`)}">Use default</button>` : ""}</div></div>`;
 }
 
 /** Follow the control drawn by fieldHtml: each change is an edit (or no longer one when it's back to the stored value). */

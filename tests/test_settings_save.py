@@ -71,6 +71,46 @@ try:
     glide_app.App.on_settings(a, {"save": {"companion": {"llm": {
         "fast_model": "ep:openai:gpt-6-luna", "fast_reasoning_effort": "low"}}}})
     assert glideconfig.load(tmp)["llm"]["fast_reasoning_effort"] == "low"
+
+    # A combined save cannot leave invalid live choices persisted for the next restart.
+    a = fake_app(sim=False)
+    a.coach.cfg.update({"fast_model": "ep:openai:gpt-6.1-sol", "fast_reasoning_effort": "low"})
+    a.coach.cfg["endpoints"] = [{"id": "openai", "base_url": "https://api.openai.com/v1"}]
+    before = open(p, encoding="utf-8").read()
+    running_before = dict(a.coach.cfg)
+    try:
+        glide_app.App.on_settings(a, {
+            "save": {"companion": {"llm": {"fast_reasoning_effort": "none"}, "ptt": {"key": "F10"}}},
+            "fast_reasoning_effort": "none"})
+        raise AssertionError("accepted unsupported reasoning effort")
+    except ValueError:
+        pass
+    assert open(p, encoding="utf-8").read() == before
+    assert a.coach.cfg == running_before
+
+    # Use default removes the override on disk and applies that exact default without a restart.
+    default_model = glide_app.settings.default("llm.fast_model")
+    glide_app.App.on_settings(a, {
+        "save": {"companion": {"llm": {"fast_model": None, "fast_reasoning_effort": None}}},
+        "fast_model": default_model, "fast_reasoning_effort": "auto"})
+    saved = json.load(open(p, encoding="utf-8"))["companion"]["llm"]
+    assert "fast_model" not in saved and "fast_reasoning_effort" not in saved
+    assert a.coach.cfg["fast_model"] == default_model and a.coach.cfg["fast_reasoning_effort"] == "auto"
+    assert glideconfig.load(tmp)["llm"]["fast_model"] == default_model
+
+    # A failed combined write leaves the running selection untouched too.
+    a = fake_app(sim=False)
+    running_before = dict(a.coach.cfg)
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write('{"wow_dir": ,}')
+    try:
+        glide_app.App.on_settings(a, {"save": {"wow_dir": "E:/WoW"}, "fast_model": "c-model"})
+        raise AssertionError("saved over an unreadable config.json")
+    except ValueError:
+        pass
+    assert a.coach.cfg == running_before
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(before)
     # a bad patch is refused (POST /settings answers 400 with the reason) and the file stays as it is
     before = open(p, encoding="utf-8").read()
     for bad in ({"save": [1]}, {"save": "x"}):

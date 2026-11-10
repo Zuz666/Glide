@@ -542,14 +542,32 @@ class App:
             if not isinstance(save, dict):
                 raise ValueError("save takes an object (a patch of config.json)")
             def saved_llm(config):
+                if not isinstance(config, dict):
+                    return {}
                 companion = config.get("companion")
                 llm = companion.get("llm") if isinstance(companion, dict) else None
                 return llm if isinstance(llm, dict) else {}
+            # Validate live changes before writing either half of a combined Settings save.
+            # Commit once, then publish the new running values. A failed write changes neither.
+            applied = tuning.apply(dict(self.coach.cfg), changes, catalog=self.catalog)
+            patch = dict(save)
+            if applied:
+                companion = patch.get("companion")
+                companion = dict(companion) if isinstance(companion, dict) else {}
+                llm = dict(saved_llm(patch))
+                for key, value in applied.items():
+                    # A reset removes the persisted override but applies its manifest default now.
+                    if key not in llm or llm[key] is not None or value != settings.default("llm." + key):
+                        llm[key] = value
+                companion["llm"] = llm
+                patch["companion"] = companion
             saved_before = saved_llm(glideconfig.read(ROOT)[0])
-            saved = glideconfig.patch((), save, ROOT)  # the app's saves also land in sim
+            saved = glideconfig.patch((), patch, ROOT)  # the app's saves also land in sim
             saved_after = saved_llm(saved)
+            self.coach.cfg.update(applied)
             log_settings(saved_before, saved_after, "pending restart", self.catalog)
-        applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)
+        else:
+            applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)
         switched = {k: (before.get(k), applied[k]) for k in tuning.MODEL_KEYS
                     if k in applied and applied[k] != before.get(k)}
         if switched:
