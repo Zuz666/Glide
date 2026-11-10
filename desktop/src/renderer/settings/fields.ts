@@ -88,7 +88,9 @@ export function fieldHtml(f: Field): string {
   const isDef = stored(f) === undefined;
   return `<div class="field${edits.has(f.key) ? " changed" : ""}" data-key="${esc(f.key)}">
     <div class="lab">${esc(f.label)}${f.help ? `<small>${esc(f.help)}</small>` : ""}</div>
-    <div class="ctl">${ctl}${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
+    <div class="ctl">${ctl}
+      ${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
+      ${f.key === "companion.voice.voice" ? `<button type="button" class="reset" data-copy-windows-voice title="Copy the selected Windows/SAPI5 voice from Coach voice. Windows default leaves the name empty.">Copy Windows voice</button>` : ""}
       ${!isDef && !isApp(f.key) ? `<button class="reset" data-reset="${esc(f.key)}" title="Remove it from config.json and use the default (${esc(JSON.stringify(f.def))})">Use default</button>` : ""}</div></div>`;
 }
 
@@ -109,6 +111,13 @@ export function bindField(f: Field): void {
     if (f.type === "bool") (el.parentElement!.querySelector(".state") as HTMLElement).textContent = el.checked ? "On" : "Off";
     setEdit(f, read());
   });
+  if (f.key === "companion.voice.voice") {
+    el.parentElement!.querySelector<HTMLButtonElement>("[data-copy-windows-voice]")!.onclick = () => {
+      const picker = document.getElementById("sv-voice") as HTMLSelectElement | null;
+      el.value = picker?.value ?? live.appSettings.speech?.voiceName ?? "";
+      setEdit(f, el.value);
+    };
+  }
   if (f.type === "range") el.addEventListener("input", () => {
     (el.nextElementSibling as HTMLElement).textContent = el.value;
     setEdit(f, read());

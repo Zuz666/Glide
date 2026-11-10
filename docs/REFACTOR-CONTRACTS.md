@@ -77,6 +77,10 @@ they don't spell out.
 
 ## Recorded changes
 
+- **Copy Windows voice (contract 8):** the standalone speech process's Voice name field can copy the Windows/SAPI5 selection from Coach voice. This is an ordinary unsaved edit, with Save and Revert unchanged; copying Windows default clears the name. The saved Windows selection is used when the picker is not visible, including settings search or another speech provider. No new persisted setting or IPC.
+
+- **Compact voice-copy action (contract 8):** Copy Windows voice uses the same underlined action style as Use default and appears immediately before it, after the restart indicator. Copy/save behavior is unchanged.
+
 - **SAPI5 verification follow-up (no interface change):** the standalone sender uses the caller's already-checked text pipe under the voice lock instead of re-reading optional process/pipe attributes. Push-to-talk state tests no longer instantiate a partial native voice or assert the removed `!` transport command; they retain tap/hold, deferred-answer and interruption coverage through the voice interface.
 
 - **Speech text visibility (contract 8):** Voice settings displays the prepared sample beside its button and speaks that exact value. The last spoken text appears below the actual voice/time, survives settings re-renders within the session, and is not overwritten by failed playback attempts. Online playback records it only after playback starts; native speech records it on successful completion. No persisted setting or IPC shape changes. The Silero setup description now says “CIS-language voices.”
