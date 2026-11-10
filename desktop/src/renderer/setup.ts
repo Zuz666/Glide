@@ -257,16 +257,15 @@ async function nextTalk(): Promise<boolean> {
 
 // ---- 3. the coach's voice -------------------------------------------------------------------------------------
 function drawVoice(host: HTMLElement): void {
-  const vs = speech.voices();
   host.innerHTML = head("The coach's voice", "The coach says the next step, warnings and its answers out loud, so your eyes stay on the game.")
     + `<div class="su-choices">`
-    + choice("su-voice", "windows", pick.voice, "A Windows voice", "Free and offline, from the voices installed on this PC.", "Recommended")
+    + choice("su-voice", "windows", pick.voice, "Windows voices (SAPI5)", "Offline speech from installed Windows and third-party SAPI5 voices, including SileroTTS.", "Recommended")
     + (pick.voice === "windows" ? `<div class="su-more"><div class="row"><span class="help">Voice</span><select id="su-wvoice" aria-label="Windows voice">
-        <option value="">Windows default</option>${vs.map((v) => `<option ${v.name === pick.voiceName ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></div></div>` : "")
-    + choice("su-voice", "online", pick.voice, "A natural online voice", "Edge-TTS is free without a key; other services may charge per line on your account. If a service fails, that line uses the Windows voice.")
+        <option value="">Windows default</option>${pick.voiceName ? `<option value="${esc(pick.voiceName)}" selected>${esc(pick.voiceName)}</option>` : ""}</select></div></div>` : "")
+    + choice("su-voice", "online", pick.voice, "A natural online voice", "Edge-TTS is experimental and free without registration or a key; other services may charge per line. If a service fails, that line uses the Windows SAPI5 voice.")
     + (pick.voice === "online" ? `<div class="su-more"><div class="row"><span class="help">Service</span><select id="su-tts" aria-label="Voice service">
-        ${[["edge", "Edge-TTS (free, no key)"], ["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"], ["azure", "Azure Speech (free tier)"], ["google", "Google Cloud"]].map(([v, l]) => `<option value="${v}" ${v === pick.tts ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        ${pick.tts === "edge" ? `<p class="help">Free online, no API key. Text is sent to Microsoft. This unofficial service may fail or limit usage; the Windows voice remains the fallback.</p>
+        ${[["edge", "Edge-TTS (experimental, free)"], ["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"], ["azure", "Azure Speech (free tier)"], ["google", "Google Cloud"]].map(([v, l]) => `<option value="${v}" ${v === pick.tts ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        ${pick.tts === "edge" ? `<p class="help">Experimental support, still being worked on. Free online, no registration or API key. Text is sent to Microsoft. Natural-sounding and multilingual voices are available; the unofficial service may fail or limit usage. Windows SAPI5 remains the fallback.</p>
           <div class="row"><span class="help">Voice</span><select id="su-edge-voice" aria-label="Edge-TTS voice"><option value="${esc(pick.edgeVoice)}">${esc(pick.edgeVoice || "Choose a voice")}</option></select></div>
           <div class="row"><span class="help">Show all voice languages</span><label class="switch"><input type="checkbox" id="su-edge-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label></div>
           <div class="row"><span class="help">Multilingual voices only</span><label class="switch"><input type="checkbox" id="su-edge-multilingual-only" aria-label="Multilingual voices only"><span class="track"></span><span class="state">Off</span></label></div>
@@ -277,7 +276,18 @@ function drawVoice(host: HTMLElement): void {
     + (pick.voice === "off" ? "" : `<p class="help">Samples and voice filtering use the saved language in Settings &gt; Language. Sample translation needs an available LLM; otherwise it stays English.</p><div class="row su-sample"><button type="button" class="btn" id="su-sample">${icon("volume-2")}Play a sample</button></div>`);
   onChoice(host, "su-voice", (v) => { pick.voice = v as typeof pick.voice; drawVoice(host); });
   const wv = document.getElementById("su-wvoice") as HTMLSelectElement | null;
-  if (wv) wv.onchange = () => { pick.voiceName = wv.value; };
+  if (wv) {
+    wv.onchange = () => { pick.voiceName = wv.value; };
+    wv.disabled = true;
+    call("tts:voices", "windows").then((voices) => {
+      if (!voices || !wv.isConnected) return;
+      const selected = wv.value;
+      wv.innerHTML = `<option value="">Windows default</option>`
+        + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
+        + (selected && !voices.some((v) => v.id === selected) ? `<option value="${esc(selected)}">${esc(selected)} (not installed)</option>` : "");
+      wv.value = selected;
+    }).finally(() => { if (wv.isConnected) wv.disabled = false; });
+  }
   const tts = document.getElementById("su-tts") as HTMLSelectElement | null;
   if (tts) tts.onchange = () => { pick.tts = tts.value as TtsProvider; drawVoice(host); };
   const ev = document.getElementById("su-edge-voice") as HTMLSelectElement | null;
@@ -304,8 +314,6 @@ function drawVoice(host: HTMLElement): void {
     });
   }
   bindOpen(host);
-  if (pick.voice === "windows" && !vs.length && window.speechSynthesis)
-    speechSynthesis.addEventListener("voiceschanged", () => drawVoice(host), { once: true });
   const s = document.getElementById("su-sample");
   if (s) s.onclick = async () => { if (await saveVoice()) speech.say(await voiceSample(), true); };
 }

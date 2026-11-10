@@ -1,0 +1,220 @@
+// Persistent native SAPI5 playback. Speech stays on stdin, never in process arguments or diagnostics.
+import { spawn } from "child_process";
+import type { ChildProcessWithoutNullStreams } from "child_process";
+import { createInterface } from "readline";
+import type { Interface } from "readline";
+import type { SpeechSettings, Voice } from "../shared/ipc";
+
+const READY_TIMEOUT_MS = 15000;
+const VOICES_TIMEOUT_MS = 15000;
+
+type SpeechOptions = Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
+type Command = { id: number; op: "voices" }
+  | { id: number; op: "speak"; text: string; voice: string; rate: number; volume: number };
+type Pending = {
+  command: Command;
+  sent: boolean;
+  timer?: NodeJS.Timeout;
+  reject: (error: Error) => void;
+} & ({ kind: "voices"; resolve: (voices: Voice[]) => void }
+  | { kind: "speak"; callerId: string; resolve: (result: { voice: string }) => void });
+
+interface Worker {
+  child: ChildProcessWithoutNullStreams;
+  lines: Interface;
+  ready: boolean;
+  closed: boolean;
+  readyTimer?: NodeJS.Timeout;
+  pending: Map<number, Pending>;
+}
+
+/** Owns one lazy worker; a failed utterance is never replayed after a process restart. */
+export class WindowsTts {
+  private worker?: Worker;
+  private nextId = 1;
+  private disposed = false;
+
+  constructor(private readonly scriptPath: string, private readonly note?: (line: string) => void) {}
+
+  voices(): Promise<Voice[]> {
+    return new Promise((resolve, reject) => {
+      const worker = this.start();
+      const command: Command = { id: this.nextId++, op: "voices" };
+      this.enqueue(worker, { kind: "voices", command, sent: false, resolve, reject });
+    });
+  }
+
+  speak(id: string, text: string, settings: SpeechOptions): Promise<{ voice: string }> {
+    return new Promise((resolve, reject) => {
+      const worker = this.start();
+      for (const pending of worker.pending.values()) {
+        if (pending.kind === "speak" && pending.callerId === id) {
+          reject(new Error("Windows TTS: speech request ID is already pending"));
+          return;
+        }
+      }
+      const multiplier = typeof settings.rate === "number" && Number.isFinite(settings.rate) && settings.rate > 0
+        ? settings.rate : 1;
+      const volume = typeof settings.volume === "number" && Number.isFinite(settings.volume) ? settings.volume : 1;
+      const command: Command = { id: this.nextId++, op: "speak", text, voice: settings.voiceName || "",
+        rate: Math.max(-10, Math.min(10, Math.round(10 * Math.log10(multiplier)))),
+        volume: Math.max(0, Math.min(100, Math.round(volume * 100))) };
+      this.enqueue(worker, { kind: "speak", callerId: id, command, sent: false, resolve, reject });
+    });
+  }
+
+  stop(id?: string): void {
+    const worker = this.worker;
+    if (!worker || worker.closed) return;
+    const sent: number[] = [];
+    for (const [requestId, pending] of worker.pending) {
+      if (pending.kind !== "speak" || (id !== undefined && pending.callerId !== id)) continue;
+      if (pending.sent) sent.push(requestId);
+      // Remove before ready can flush the queue, and before synchronous stream failure callbacks can run.
+      this.remove(worker, requestId);
+      pending.reject(new Error("Windows TTS: speech cancelled"));
+    }
+    if (!sent.length || !worker.ready) return;
+    if (id === undefined) {
+      this.write(worker, { id: this.nextId++, op: "cancel" });
+    } else {
+      for (const target of sent) this.write(worker, { id: this.nextId++, op: "cancel", target });
+    }
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.worker) this.fail(this.worker, new Error("Windows TTS: host disposed"));
+  }
+
+  private start(): Worker {
+    if (this.disposed) throw new Error("Windows TTS: host disposed");
+    if (this.worker) return this.worker;
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", this.scriptPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    const worker: Worker = { child, lines, ready: false, closed: false, pending: new Map() };
+    this.worker = worker;
+    worker.readyTimer = setTimeout(() => {
+      this.fail(worker, new Error("Windows TTS: worker startup timed out waiting for ready"));
+    }, READY_TIMEOUT_MS);
+    child.on("error", (error) => this.fail(worker, new Error(`Windows TTS: worker process error (${error.message})`)));
+    child.on("exit", (code, signal) => {
+      this.fail(worker, new Error(`Windows TTS: worker exited (${signal || code || "unknown"})`));
+    });
+    child.on("close", () => this.fail(worker, new Error("Windows TTS: worker process closed")));
+    child.stdin.on("error", () => this.fail(worker, new Error("Windows TTS: worker input failed")));
+    child.stdout.on("error", () => this.fail(worker, new Error("Windows TTS: worker output failed")));
+    child.stderr.on("error", () => this.fail(worker, new Error("Windows TTS: worker diagnostic stream failed")));
+    // Drain diagnostics without retaining native tracebacks, which can contain spoken text.
+    child.stderr.resume();
+    lines.on("line", (line) => this.receive(worker, line));
+    lines.on("close", () => this.fail(worker, new Error("Windows TTS: worker output closed")));
+    lines.on("error", () => this.fail(worker, new Error("Windows TTS: worker output failed")));
+    return worker;
+  }
+
+  private enqueue(worker: Worker, pending: Pending): void {
+    worker.pending.set(pending.command.id, pending);
+    if (worker.ready) this.send(worker, pending);
+  }
+
+  private send(worker: Worker, pending: Pending): void {
+    if (worker.closed || !worker.pending.has(pending.command.id)) return;
+    pending.sent = true;
+    if (pending.kind === "voices") {
+      pending.timer = setTimeout(() => {
+        if (worker.pending.get(pending.command.id) !== pending) return;
+        this.remove(worker, pending.command.id);
+        pending.reject(new Error("Windows TTS: loading voices timed out"));
+      }, VOICES_TIMEOUT_MS);
+    }
+    this.write(worker, pending.command);
+  }
+
+  private write(worker: Worker, command: Command | { id: number; op: "cancel"; target?: number }): void {
+    if (worker.closed) return;
+    try {
+      worker.child.stdin.write(`${JSON.stringify(command)}\n`, "utf8", (error) => {
+        if (error) this.fail(worker, new Error("Windows TTS: could not send request to worker"));
+      });
+    } catch {
+      this.fail(worker, new Error("Windows TTS: could not send request to worker"));
+    }
+  }
+
+  private receive(worker: Worker, line: string): void {
+    if (worker.closed || this.worker !== worker || !line.trim()) return;
+    let message: { event?: string; id?: number; voice?: string; voices?: Voice[]; error?: string };
+    try {
+      message = JSON.parse(line.replace(/^\uFEFF/, ""));
+      if (!message || typeof message !== "object") throw new Error("Invalid response");
+    } catch {
+      this.fail(worker, new Error("Windows TTS: invalid worker response"));
+      return;
+    }
+    if (message.event === "fatal") {
+      this.fail(worker, new Error(`Windows TTS: ${typeof message.error === "string" ? message.error : "native worker failed"}`));
+      return;
+    }
+    if (message.event === "ready") {
+      if (worker.ready) return;
+      worker.ready = true;
+      clearTimeout(worker.readyTimer);
+      worker.readyTimer = undefined;
+      for (const pending of worker.pending.values()) this.send(worker, pending);
+      return;
+    }
+    if (typeof message.id !== "number") return;
+    const pending = worker.pending.get(message.id);
+    if (!pending || !pending.sent) return;
+    if (message.event === "started" && pending.kind === "speak") {
+      if (typeof message.voice === "string") {
+        // A diagnostics consumer must not interrupt playback or leave promises unresolved.
+        try { this.note?.(`[voice] SAPI5 started: ${message.voice.replace(/[\r\n]/g, " ")}`); } catch { /* logging only */ }
+      }
+      return;
+    }
+    if (message.event === "error" || message.event === "cancelled") {
+      this.remove(worker, message.id);
+      pending.reject(message.event === "cancelled" ? new Error("Windows TTS: speech cancelled")
+        : new Error(`Windows TTS: ${typeof message.error === "string" ? message.error : "native speech failed"}`));
+      return;
+    }
+    if (message.event === "voices" && pending.kind === "voices") {
+      this.remove(worker, message.id);
+      if (!Array.isArray(message.voices) || !message.voices.every(voice => voice
+        && typeof voice.id === "string" && typeof voice.name === "string")) {
+        pending.reject(new Error("Windows TTS: invalid voice catalogue"));
+      } else {
+        pending.resolve(message.voices);
+      }
+    } else if (message.event === "done" && pending.kind === "speak") {
+      this.remove(worker, message.id);
+      if (typeof message.voice !== "string") pending.reject(new Error("Windows TTS: missing completed voice name"));
+      else pending.resolve({ voice: message.voice });
+    }
+  }
+
+  private remove(worker: Worker, id: number): void {
+    const pending = worker.pending.get(id);
+    if (pending?.timer) clearTimeout(pending.timer);
+    worker.pending.delete(id);
+  }
+
+  private fail(worker: Worker, error: Error): void {
+    if (worker.closed) return;
+    worker.closed = true;
+    // Late events from a failed child may arrive after a later request has started its replacement.
+    if (this.worker === worker) this.worker = undefined;
+    clearTimeout(worker.readyTimer);
+    for (const [id, pending] of worker.pending) {
+      this.remove(worker, id);
+      pending.reject(error);
+    }
+    worker.lines.close();
+    try { worker.child.stdin.end(); } catch { /* already closed */ }
+    try { worker.child.kill(); } catch { /* already exited */ }
+  }
+}

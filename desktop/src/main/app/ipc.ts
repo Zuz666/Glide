@@ -1,6 +1,7 @@
 // What the windows can ask the main process (window.glide.invoke, preload.ts), by area, and the engine's events
 // forwarded to them. Channel names and arguments are an interface: the renderer calls them as they are here.
 import { app, dialog, ipcMain, shell } from "electron";
+import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import * as addon from "../addon";
@@ -13,6 +14,7 @@ import { listWhisperModels, Speech } from "../speech";
 import type { AppSettingsPatch, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
+import type { WindowsTts } from "../windows-tts";
 import { Updater } from "../updater";
 import { configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveConfig } from "./config";
 import { isOwnPage } from "./assets";
@@ -25,6 +27,7 @@ export interface IpcDeps {
   engine: Engine;
   updater: Updater;
   speech: Speech;
+  windowsTts: WindowsTts;
   sampler: ResourceSampler;
   mainWindow: MainWindow;
   overlay: Overlay;
@@ -101,6 +104,7 @@ function appChannels(d: IpcDeps): void {
     }
     const prevHome = engineHome();
     settings.merge(patch);
+    if (settings.current.muted) d.windowsTts.stop();
     d.applyOverlaySettings();
     d.updateTray();
     if (patch.autoUpdate !== undefined) updater.start(settings.current.autoUpdate !== false);
@@ -153,7 +157,19 @@ function appChannels(d: IpcDeps): void {
       ttsActive--;
     }
   });
-  handle("tts:voices", (provider) => ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region));
+  handle("tts:windowsSpeak", async (id, text, options) => {
+    if (settings.current.muted) throw new Error("Windows SAPI5 speech is muted");
+    try {
+      return await d.windowsTts.speak(id, String(text || "").slice(0, 4000), options);
+    } catch (error) {
+      const message = (error as Error).message;
+      if (!message.includes("speech cancelled")) engine.note(`[voice] SAPI5 failed: ${message}`);
+      throw error;
+    }
+  });
+  handle("tts:windowsStop", (id) => d.windowsTts.stop(id));
+  handle("tts:voices", (provider) => provider === "windows" ? d.windowsTts.voices()
+    : ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region));
 
   handle("res:watch", (on: boolean) => (on ? sampler.start() : sampler.stop()));
   handle("update:get", () => updater.status);
@@ -322,6 +338,19 @@ function folderChannels({ engine, mainWindow }: IpcDeps): void {
       throw new Error(`only a folder on this PC or a web page opens from Glide: ${t}`);
     }
     return shell.openPath(t);
+  });
+  // A fixed system control-panel action, not a general command or file-launch endpoint.
+  handle("shell:speechPanel", () => {
+    const windir = process.env.WINDIR;
+    if (process.platform !== "win32" || !windir) throw new Error("The SAPI5 speech panel is available only on Windows");
+    const system = path.join(windir, "System32");
+    const panel = path.join(system, "Speech", "SpeechUX", "sapi.cpl");
+    if (!fs.statSync(panel, { throwIfNoEntry: false })?.isFile()) throw new Error("The Windows SAPI5 speech control panel is not installed");
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(path.join(system, "control.exe"), [panel], { detached: true, stdio: "ignore" });
+      child.once("error", reject);
+      child.once("spawn", () => { child.unref(); resolve(); });
+    });
   });
   handle("data:import", async (from: string) => {
     // copy another Glide folder's data/ and config.json into the engine home (the old folder is left as it is)

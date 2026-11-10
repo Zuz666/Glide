@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """The narrator (desktop/src/renderer/narrator.ts), compiled with the project's TypeScript beside stand-ins for the
-bridge and the page, and run under Node with a stand-in speechSynthesis and Audio whose lines end after a set time
-(on a virtual clock: no real time passes).
+bridge and the page, and run under Node with native speech IPC and Audio stand-ins whose lines end on a virtual clock.
 
-The coach's lines behave as they always have: Windows voice lines go straight to speechSynthesis in order, an
-interrupting line cancels what's being said, muted says nothing, online voices fetch every line's audio at once and
-play them in order. The Guides page's tagged lines (speakAndWait) resolve when they've been spoken, at once when
-muted, and when cancel(tag) or stop() drops them; cancel(tag) never drops a coach line, not even one speechSynthesis
-had queued behind the tagged line.
+Coach and Guides lines play in order. Interrupt, mute and tag cancellation release waiting callers immediately;
+late synthesis or cancellation replies cannot disturb a newer line. Online synthesis is prefetched, and failed
+online requests use native Windows speech. No real audio, application settings or network access is used.
 
 Needs node and desktop/node_modules (skips with 77 without them)."""
 import json
@@ -30,9 +27,8 @@ if not node or not desktop_ts.available():
 
 STUBS = {
     "bridge.ts": """
-export const glide: { invoke(ch: string, ...a: unknown[]): Promise<{ data: Uint8Array; mime: string }> } =
-  (window as any).glide;
-export const call = (..._a: unknown[]) => Promise.resolve(undefined);
+export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any> } = (window as any).glide;
+export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": "export const toast = (..._a: unknown[]) => undefined;\n",
@@ -72,30 +68,27 @@ const log = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.window = globalThis;
 globalThis.document = { getElementById: () => null };
-class Utterance { constructor(text) { this.text = text; this.voice = null; this.rate = 1; this.volume = 1; } }
-globalThis.SpeechSynthesisUtterance = Utterance;
-const synth = {
-  q: [], cur: null, speaking: false, pending: false,
-  getVoices: () => [{ name: "Microsoft Zira" }],
-  addEventListener() {}, removeEventListener() {},
-  upd() { this.speaking = !!this.cur; this.pending = this.q.length > 0; },
-  speak(u) { log.push("speak:" + u.text); this.q.push(u); this.upd(); if (!this.cur) this.next(); },
-  next() {
-    const u = this.q.shift(); this.cur = u || null; this.upd(); if (!u) return;
-    log.push("start:" + u.text);
-    u._t = setTimeout(() => {
-      if (this.cur !== u) return;
-      log.push("end:" + u.text); this.cur = null; this.upd(); if (u.onend) u.onend({}); this.next();
+globalThis.crypto ||= (await import("node:crypto")).webcrypto;
+const native = new Map(), lateNativeRejections = [];
+let deferNativeCancellation = false;
+function nativeSpeak(id, text) {
+  return new Promise((resolve, reject) => {
+    log.push("start:" + text);
+    const timer = setTimeout(() => {
+      native.delete(id); log.push("end:" + text); resolve({ voice: "Installed native voice" });
     }, DUR);
-  },
-  cancel() {
-    const all = [this.cur, ...this.q].filter(Boolean);
-    if (this.cur) clearTimeout(this.cur._t);
-    this.q = []; this.cur = null; this.upd(); log.push("cancel");
-    for (const u of all) setTimeout(() => { if (u.onerror) u.onerror({}); }, 0);   // Chromium: an error each, later
-  },
-};
-globalThis.speechSynthesis = synth;
+    native.set(id, { text, timer, reject });
+  });
+}
+function nativeStop(id) {
+  for (const [key, turn] of native) {
+    if (id !== undefined && id !== key) continue;
+    native.delete(key); clearTimeout(turn.timer); log.push("cancel:" + turn.text);
+    const reject = () => turn.reject(new Error("speech cancelled"));
+    if (deferNativeCancellation) lateNativeRejections.push(reject); else reject();
+  }
+  return Promise.resolve();
+}
 const dec = new TextDecoder();
 globalThis.Blob = class { constructor(parts) { this.text = dec.decode(parts[0]); } };
 const urls = new Map();
@@ -111,7 +104,18 @@ globalThis.Audio = class {
   }
   pause() { if (this.paused) return; this.paused = true; log.push("pause:" + this.text); if (this.onpause) this.onpause(); }
 };
-globalThis.glide = { invoke: (ch, text) => { log.push("synth:" + text); return sleep(10).then(() => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg" })); } };
+let releaseSlowSynthesis;
+globalThis.glide = { invoke: (ch, ...a) => {
+  if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
+  if (ch === "tts:windowsStop") return nativeStop(a[0]);
+  if (ch !== "tts:synth") return Promise.resolve();
+  const text = a[0];
+  log.push("synth:" + text);
+  const audio = () => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg" });
+  if (text === "slow-guide") return new Promise(resolve => { releaseSlowSynthesis = () => resolve(audio()); });
+  if (text === "cloud-failure") return Promise.reject(new Error("TTS #77: service unavailable"));
+  return sleep(10).then(audio);
+} };
 
 const { speech } = await import(process.argv[2]);
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
@@ -150,10 +154,26 @@ await sleep(DUR * 2); take("cancel_win");
 speech.say("coach3"); await sleep(10); speech.cancel("g");
 await sleep(DUR * 2); take("cancel_other_win");
 
+// A delayed cancellation response must not advance or clear the newer native turn.
+deferNativeCancellation = true;
+p = mark(speech.speakAndWait("late-guide", "g"), "resolved:late-guide");
+speech.say("new-coach1"); speech.say("new-coach2");
+await sleep(5); speech.cancel("g"); await p; await sleep(5);
+lateNativeRejections.splice(0).forEach(reject => reject());
+deferNativeCancellation = false;
+await sleep(DUR * 3); take("late_native_cancel");
+
 // the coach, online voice: every line fetched at once, played in order
 speech.configure(false, ONLINE);
 speech.say("o1"); speech.say("o2");
 await sleep(DUR * 3); take("coach_online");
+// Cancelling while synthesis is pending must let another line play before the stale response arrives.
+p = mark(speech.speakAndWait("slow-guide", "g"), "resolved:slow-guide");
+speech.say("fast-coach1"); speech.say("fast-coach2");
+await sleep(2); t = Date.now(); speech.cancel("g"); await p; out.slow_cancel_ms = Date.now() - t;
+await sleep(20); releaseSlowSynthesis();
+await sleep(DUR * 3); take("late_synthesis");
+await speech.speakAndWait("cloud-failure", "g"); take("fallback");
 // tagged online lines: cancel stops the one playing, drops the queued one, the coach's next line plays
 speech.say("o3");
 p = mark(speech.speakAndWait("og1", "g"), "resolved:og1");
@@ -189,24 +209,23 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 # the coach's lines, as before
-assert got["coach_win"] == ["speak:a", "start:a", "speak:b", "end:a", "start:b", "end:b"], got["coach_win"]
-assert got["coach_interrupt"] == ["speak:a", "start:a", "cancel", "speak:c", "start:c", "end:c"], got["coach_interrupt"]
-assert got["coach_muted"] == ["cancel"] and got["muted_ms"] < 20 and got["muted_can"] is False and got["can"] is True, got
+assert got["coach_win"] == ["start:a", "end:a", "start:b", "end:b"], got["coach_win"]
+assert got["coach_interrupt"] == ["start:a", "cancel:a", "start:c", "end:c"], got["coach_interrupt"]
+assert got["coach_muted"] == [] and got["muted_ms"] < 20 and got["muted_can"] is False and got["can"] is True, got
 assert got["empty_ms"] < 20, got
 assert got["coach_online"] == ["synth:o1", "synth:o2", "play:o1", "ended:o1", "play:o2", "ended:o2"], got["coach_online"]
 
 # a tagged line waits its turn and resolves at its end
-assert got["tagged_win"] == ["speak:coach1", "start:coach1", "end:coach1", "speak:guide1", "start:guide1",
-                             "end:guide1", "resolved:guide1"], got["tagged_win"]
+assert got["tagged_win"] == ["start:coach1", "end:coach1", "start:guide1", "end:guide1", "resolved:guide1"], got["tagged_win"]
 assert got["tagged_ms"] >= 2 * 80 - 5, got["tagged_ms"]
 
 # cancel: at once, the tagged lines dropped, the coach line said in full
 c = got["cancel_win"]
-assert c[:4] == ["speak:guide2", "start:guide2", "speak:coach2", "cancel"], c
-assert "end:guide2" not in c and "speak:guide3" not in c and "end:coach2" in c, c
+assert c[:3] == ["start:guide2", "cancel:guide2", "start:coach2"], c
+assert "end:guide2" not in c and "start:guide3" not in c and "end:coach2" in c, c
 assert c.index("resolved:guide2") < c.index("end:coach2") and "resolved:guide3" in c, c
 assert got["cancel_ms"] < 20, got["cancel_ms"]
-assert got["cancel_other_win"] == ["speak:coach3", "start:coach3", "end:coach3"], got["cancel_other_win"]
+assert got["cancel_other_win"] == ["start:coach3", "end:coach3"], got["cancel_other_win"]
 
 c = got["cancel_online"]
 c = [x for x in c if not x.startswith("synth:")]
@@ -214,4 +233,12 @@ assert c[:4] == ["play:o3", "ended:o3", "play:og1", "pause:og1"] and c[-2:] == [
 assert sorted(c[4:-2]) == ["resolved:og1", "resolved:og2"] and "play:og2" not in c, c
 assert "resolved:og5" in got["stop_online"], got["stop_online"]
 assert "resolved:guide6" in got["mute_win"] and "end:guide6" not in got["mute_win"], got["mute_win"]
+c = got["late_native_cancel"]
+assert [x for x in c if x.startswith(("start:", "end:"))] == [
+    "start:late-guide", "start:new-coach1", "end:new-coach1", "start:new-coach2", "end:new-coach2"], c
+c = got["late_synthesis"]
+assert [x for x in c if x.startswith(("play:", "ended:"))] == [
+    "play:fast-coach1", "ended:fast-coach1", "play:fast-coach2", "ended:fast-coach2"], c
+assert got["slow_cancel_ms"] < 20 and "resolved:slow-guide" in c, c
+assert got["fallback"] == ["synth:cloud-failure", "start:cloud-failure", "end:cloud-failure"], got["fallback"]
 print("OK")

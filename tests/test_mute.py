@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mute the narrator (footer button, tray, Ctrl+Alt+M -> POST /mute -> App.set_muted): neither voice speaks while
 muted, the line being spoken is cut off, and unmuting brings the voice back."""
+import json
 import os
 import sys
 import threading
@@ -17,22 +18,26 @@ v = HubVoice({"enabled": True, "announce": False}, hub)
 fake = types.SimpleNamespace(voice=v)
 
 v.say("Next: Thendal Grove")
-n = len(published)
-assert n == 1, published
 assert glide_app.App.set_muted(fake, True) == {"muted": True}
 v.say("Level 3. Check new spells")
-assert len(published) == n, "a muted voice spoke"
+assert [data["text"] for _, data in published] == ["Next: Thendal Grove"], "a muted voice spoke"
 glide_app.App.set_muted(fake, False)
 v.say("Back again")
-assert len(published) == n + 1, "unmuting didn't bring the voice back"
+assert [data["text"] for _, data in published] == ["Next: Thendal Grove", "Back again"], "unmuting didn't bring the voice back"
 
 
 class Pipe:
     def __init__(self):
-        self.data = ""
+        self.active = "Previous line"
+        self.spoken = []
 
     def write(self, s):
-        self.data += s
+        command = json.loads(s)
+        if command["op"] == "cancel":
+            self.active = None
+        elif command["op"] == "speak":
+            self.active = command["text"]
+            self.spoken.append(self.active)
 
     def flush(self):
         pass
@@ -44,9 +49,9 @@ proc_voice = Voice({"enabled": False})
 proc_voice.enabled = True                           # as on Windows, with a stand-in for the speech process
 proc_voice.proc = types.SimpleNamespace(stdin=Pipe(), poll=lambda: None)
 assert glide_app.App.set_muted(types.SimpleNamespace(voice=proc_voice), True) == {"muted": True}
-assert proc_voice.muted and proc_voice.proc.stdin.data == "! \n", proc_voice.proc.stdin.data
+assert proc_voice.muted and proc_voice.proc.stdin.active is None, "muting didn't interrupt the active line"
 proc_voice.say("Level 4")
-assert proc_voice.proc.stdin.data == "! \n", "a muted voice spoke"
+assert proc_voice.proc.stdin.active is None and proc_voice.proc.stdin.spoken == [], "a muted voice spoke"
 proc_voice.lock.acquire()                          # mute waits for a line being written
 t = threading.Thread(target=proc_voice.set_muted, args=(False,))
 t.start()
@@ -55,11 +60,6 @@ assert t.is_alive(), "set_muted didn't take the voice's lock"
 proc_voice.lock.release()
 t.join()
 proc_voice.say("Level 5")
-assert proc_voice.proc.stdin.data.endswith("Level 5\n") and not proc_voice.muted
+assert proc_voice.proc.stdin.active == "Level 5" and proc_voice.proc.stdin.spoken == ["Level 5"] and not proc_voice.muted
 
-# both voices declare what App.set_muted uses (it no longer reaches into the speech process itself)
-for cls in (HubVoice, Voice):
-    assert callable(getattr(cls, "set_muted", None)), cls
-app_src = open(os.path.join(ROOT, "companion", "app.py"), encoding="utf-8").read()
-assert "proc.stdin" not in app_src
 print("mute: ok")

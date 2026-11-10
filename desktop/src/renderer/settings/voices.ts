@@ -10,8 +10,8 @@ import { live } from "../state.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
-  ["windows", "Windows voices (offline, free)", ""],
-  ["edge", "Edge-TTS (online, free, no key)", ""],
+  ["windows", "Windows voices (SAPI5, offline)", ""],
+  ["edge", "Edge-TTS (experimental, free online)", ""],
   ["openai", "OpenAI (gpt-4o-mini-tts)", "OPENAI_API_KEY"],
   ["elevenlabs", "ElevenLabs", "ELEVENLABS_API_KEY"],
   ["azure", "Azure Speech (neural voices)", "AZURE_SPEECH_KEY"],
@@ -33,13 +33,12 @@ const voiceList = (help: string, id: string, shown: string) =>
 /** The controls only this provider has. */
 function providerFields(prov: string, sp: SpeechSettings): string {
   if (prov === "windows") {
-    const vs = speech.voices();
-    return field("Voice", "Windows voices on this PC. More: Windows Settings > Time &amp; language > Speech > Add voices.",
-      `<select id="sv-voice"><option value="">Windows default</option>${vs.map((v) => `<option ${v.name === sp.voiceName ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select>`);
+    return field("Voice", "Installed Windows and third-party SAPI5 voices, including SileroTTS. Reload after installing a voice.",
+      `<select id="sv-voice"><option value="">Windows default</option>${sp.voiceName ? `<option value="${esc(sp.voiceName)}" selected>${esc(sp.voiceName)}</option>` : ""}</select> <button class="btn" id="sv-windows-load">Reload voices</button>`);
   }
   if (prov === "edge") {
     const voice = edgeVoice(sp);
-    return voiceList("Filtered by the saved speech language; the current voice stays visible. Free online, no API key; text is sent to Microsoft. This unofficial service may fail or limit usage; the Windows voice is used if it fails.", voice, voice || "Choose a voice")
+    return voiceList("Experimental support, still being worked on. Free online, no registration or API key; text is sent to Microsoft. Natural-sounding and multilingual voices are available. The unofficial service may fail; the selected Windows SAPI5 voice is the fallback.", voice, voice || "Choose a voice")
       + field("Show all voice languages", "Off: filter by the selected coach language.", `<label class="switch"><input type="checkbox" id="sv-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label>`)
       + field("Multilingual voices only", "Show voices marked Multilingual, regardless of locale. Language support varies by voice.", `<label class="switch"><input type="checkbox" id="sv-multilingual-only" aria-label="Multilingual voices only"><span class="track"></span><span class="state">Off</span></label>`);
   }
@@ -107,8 +106,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   if (VOICE_LIST[prov]) bindVoiceList(prov, sp as Obj, save);
   if (prov === "elevenlabs") $("sv-e-model").onchange = (e) => save({ elevenlabs: { ...(sp.elevenlabs || {}), model: (e.target as HTMLSelectElement).value } });
   if (prov === "azure") $("sv-a-region").onchange = (e) => save({ azure: { ...(sp.azure || {}), region: (e.target as HTMLInputElement).value.trim() } });
-  if (prov === "windows" && !speech.voices().length && window.speechSynthesis)
-    speechSynthesis.addEventListener("voiceschanged", () => renderVoices(g, host), { once: true });
+  if (prov === "windows") bindWindowsVoices();
 }
 
 /** The provider's voice list: Load voices fills it, a pick saves it in the provider's own settings. */
@@ -145,4 +143,26 @@ function bindVoiceList(prov: string, sp: Obj, save: (patch: Obj) => Promise<void
   };
   $("sv-load").onclick = () => load(true);
   if (prov === "edge") void load(false);
+}
+
+/** Native enumeration includes third-party SAPI5 engines that the browser's voice list omits. */
+function bindWindowsVoices(): void {
+  const select = $("sv-voice") as HTMLSelectElement;
+  const button = $("sv-windows-load") as HTMLButtonElement;
+  const load = async () => {
+    const selected = select.value;
+    select.disabled = button.disabled = true;
+    try {
+      const voices = await call("tts:voices", "windows");
+      if (!voices || !select.isConnected) return;
+      select.innerHTML = `<option value="">Windows default</option>`
+        + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
+        + (selected && !voices.some((v) => v.id === selected) ? `<option value="${esc(selected)}">${esc(selected)} (not installed)</option>` : "");
+      select.value = selected;
+    } finally {
+      if (select.isConnected) select.disabled = button.disabled = false;
+    }
+  };
+  button.onclick = load;
+  void load();
 }

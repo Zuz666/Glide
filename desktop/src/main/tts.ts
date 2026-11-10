@@ -1,6 +1,5 @@
-// Online text-to-speech for the coach's voice: Edge, OpenAI, ElevenLabs, Azure Speech and Google Cloud. The window asks
-// for audio (tts:synth) and plays it; Windows voices are spoken in the window itself (speechSynthesis). Keys come from
-// the encrypted key store or the environment and never reach the window.
+// Online speech synthesis: requests audio and returns an MP3 to the renderer for playback.
+// Native Windows SAPI5 enumeration and playback live in windows-tts.ts.
 
 import type { SpeechSettings, TtsProvider, Voice } from "../shared/ipc";
 
