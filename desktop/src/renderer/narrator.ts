@@ -54,11 +54,12 @@ class Narrator {
     this.volume = Number(sp.volume ?? 1);
   }
 
-  /** Record the actual line and voice; log the voice once per session and whenever it changes. */
-  private noteVoice(name: string, text: string): void {
+  /** Observe speech without playing it; an older reconnect replay must not replace a newer line. */
+  noteVoice(name: string, text: string, at = Date.now()): void {
+    if (at < this.lastVoiceAt) return;
     if (name !== this.lastVoice) call("app:note", `[voice] speaking with ${name}`);
     this.lastVoice = name;
-    this.lastVoiceAt = Date.now();
+    this.lastVoiceAt = at;
     this.lastText = text;
     const el = document.getElementById("sv-last");
     if (el) el.textContent = voiceLastLine();

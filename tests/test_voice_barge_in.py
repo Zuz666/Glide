@@ -48,7 +48,7 @@ export function $<T = any>(id: string): T {
     "state.ts": "export const live: any = { engineState: \"\", engineToken: \"\", engineUrl: null };\n",
     "status.ts": "export const refreshStatus = () => undefined;\n",
     "types.ts": """
-export type { LiteInitEvent, PttEvent, SpeakEvent } from "./engine.js";
+export type { LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "./engine.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
 export interface EngineStatus { state: string; detail: string; port: number; url: string | null; token: string }
@@ -190,6 +190,22 @@ fire("speak", { text: "tap", interrupt: false });
 await sleep(20); fire("ptt", { state: "listening" }); await sleep(50); fire("ptt", { state: "idle" });
 await sleep(DUR * 2); take("tap");
 out.barged = { before: speech.bargedSince(0), tap: speech.bargedSince(t) };
+
+// A completed standalone turn is an observation, not another speech request.
+const reportedAt = Date.now();
+fire("voice_spoken", { voice: "Eugene (Russian)", text: "Путь свободен.", at: reportedAt });
+out.standalone = [speech.lastVoice, speech.lastText, speech.lastVoiceAt];
+take("standalone_audio");
+// Reconnecting must not replace a newer record with an older retained completion.
+fire("voice_spoken", { voice: "Old voice", text: "Old text", at: reportedAt - 1 });
+out.after_old_status = [speech.lastVoice, speech.lastText, speech.lastVoiceAt];
+speech.configure(false, WIN);
+p = speech.speakAndWait("in-app sample", "sample");
+await sleep(10);
+fire("voice_spoken", { voice: "Eugene (Russian)", text: "Следующая цель.", at: Date.now() });
+await p;
+take("sample_during_status");
+out.after_sample = speech.lastText;
 console.log(JSON.stringify(out));
 """
 
@@ -241,4 +257,10 @@ assert got["win_after"] == ["start:c", "end:c"], got["win_after"]
 c = got["tap"]
 assert c == ["synth:tap", "play:tap", "ended:tap"], c
 assert got["barged"] == {"before": True, "tap": False}, got["barged"]
+
+assert got["standalone"][:2] == ["Eugene (Russian) (SAPI5)", "Путь свободен."], got["standalone"]
+assert got["standalone"][2] > 0 and got["standalone_audio"] == [], got
+assert got["after_old_status"] == got["standalone"], got["after_old_status"]
+assert got["sample_during_status"] == ["start:in-app sample", "end:in-app sample"], got["sample_during_status"]
+assert got["after_sample"] == "in-app sample", got["after_sample"]
 print("OK")

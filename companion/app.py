@@ -211,7 +211,8 @@ class App:
         if args.app and cfg["voice"].get("output", "app") == "app":
             from voice import HubVoice
             return HubVoice(vcfg, self.hub, announce=False)      # the desktop app speaks ("speak" events)
-        return Voice(vcfg, log_dir=LIVE_DIR, announce=False)
+        return Voice(vcfg, log_dir=LIVE_DIR, announce=False,
+                     on_spoken=lambda data: self.hub.publish("voice_spoken", data))
 
     def _coach_deps(self, llm_cfg):
         """What the coach uses from the app, handed over when it is built: the model catalog, reminders, the player

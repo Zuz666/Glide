@@ -43,12 +43,13 @@ class Hub:
         self.snapshot = {}
         self.side = {}                  # the last of each SIDE_KINDS event: part of the state for init and /api/state
         self._first_client = []         # one-shot callbacks for the first event-stream client
+        self._spoken = None            # serialized completion, replayed after init; never a speech command
 
     def publish(self, kind, data):
         """"state" replaces the snapshot, "message" joins the feed, a SIDE_KINDS kind ("community") replaces that key
-        of the state; other kinds ("speak") only go to the clients connected now (the desktop app's voice). The
-        light stream gets the state's LITE_KEYS and no SIDE_KINDS events. A client too slow to keep up (its queue
-        full) is dropped; its stream then ends so it reconnects."""
+        of the state; "voice_spoken" retains the last completion for reconnecting clients. Other kinds ("speak")
+        only go to clients connected now. The light stream gets the state's LITE_KEYS and no SIDE_KINDS events.
+        A client too slow to keep up (its queue full) is dropped; its stream then ends so it reconnects."""
         payload = sse(kind, data)
         lite = payload
         if kind == "state":
@@ -62,6 +63,10 @@ class Hub:
                 self.snapshot = data
             elif kind in SIDE_KINDS:
                 self.side[kind] = data
+            elif kind == "voice_spoken":
+                if self._spoken is not None and data["at"] < self._spoken[0]:
+                    return
+                self._spoken = (data["at"], payload)
             for q in list(self.clients):
                 p = lite if q in self.lite else payload
                 if p is None:
@@ -88,6 +93,8 @@ class Hub:
                 self.lite.add(q)
                 state = lite_state(state)
             init = sse("init", {"state": state, "messages": self.messages})
+            if self._spoken is not None:
+                q.put_nowait(self._spoken[1])
             hooks, self._first_client = self._first_client, []
         for fn in hooks:
             t = threading.Timer(FIRST_CLIENT_DELAY_S, fn)

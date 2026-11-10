@@ -164,6 +164,14 @@ export interface SpeakEvent {
   tone?: string;                  // in character, how to deliver this one line (also folded into style); ElevenLabs v3 acts it
 }
 
+/** event: voice_spoken: a completed standalone SAPI5 turn, never a command to play it again.
+ * Replayed to reconnecting clients; at is the completion time in Unix milliseconds. */
+export interface VoiceSpokenEvent {
+  voice: string;
+  text: string;
+  at: number;
+}
+
 export interface GuideElement { tag: string; map?: number; x?: number; y?: number; quest?: number; name?: string;
   where?: string; done?: boolean }
 export interface GuideStep { index?: number; text?: string; elements: GuideElement[] }

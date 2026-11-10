@@ -6,7 +6,7 @@ import { speech } from "./narrator.js";
 import { sessionBar } from "./session-bar.js";
 import { live } from "./state.js";
 import { refreshStatus } from "./status.js";
-import { EngineStatus, LiteInitEvent, PttEvent, SpeakEvent } from "./types.js";
+import { EngineStatus, LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "./types.js";
 
 export const ENGINE_LABEL: Record<string, string> = { stopped: "Stopped", building: "Building", starting: "Starting", running: "Running",
                                                       stopping: "Stopping", crashed: "Stopped with an error" };
@@ -88,6 +88,13 @@ function connectEvents(url: string): void {
     try {
       const d: SpeakEvent = JSON.parse((e as MessageEvent).data);
       speech.say(String(d.text || ""), !!d.interrupt, d.style ? String(d.style) : "", d.tone ? String(d.tone) : "");
+    } catch { /* ignore */ }
+  });
+  events.addEventListener("voice_spoken", (e) => {
+    try {
+      const d: VoiceSpokenEvent = JSON.parse((e as MessageEvent).data);
+      if (typeof d.voice === "string" && typeof d.text === "string" && Number.isFinite(d.at))
+        speech.noteVoice(`${d.voice} (SAPI5)`, d.text, d.at);
     } catch { /* ignore */ }
   });
 }
