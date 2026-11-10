@@ -442,7 +442,7 @@ export interface InvokeMap {
   "update:download": () => void;
   // config.json, API keys and custom endpoints
   "config:get": () => Obj;
-  "config:set": (patch: Obj) => Obj;
+  "config:set": (patch: Obj, liveChanges?: Obj) => Obj;
   "keys:list": () => { known: KnownKey[]; status: KeyStatus[] };
   "keys:set": (env: string, value: string) => KeyStatus[];
   "endpoint:test": (baseUrl: string, keyEnv: string) => EndpointTest;

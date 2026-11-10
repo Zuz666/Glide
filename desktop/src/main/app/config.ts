@@ -75,20 +75,27 @@ export interface RunningEngine {
 }
 
 /** Save a patch of config.json. The engine owns the file (docs/REFACTOR-CONTRACTS.md, contract 5): while it runs,
- * it saves the patch (POST /settings {"save": patch}), so its own writes (model picks, sliders) and the app's never
- * cross. With no coach running (or one that didn't take it), the app merges it in itself (updateConfig). */
-export async function saveConfig(patch: Obj, engine: RunningEngine): Promise<Obj> {
+ * it saves the patch (POST /settings {"save": patch}), so its own writes and the app's never cross.
+ * Explicit live changes require an engine-confirmed combined save: rejection/disconnection must not become a
+ * local save for restart. Ordinary save-only callers retain the existing local fallback. */
+export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}): Promise<Obj> {
+  const applying = Object.keys(liveChanges).length > 0;
+  if (applying && (engine.state !== "running" || !engine.url)) throw new Error("The coach is not connected; your edits are kept.");
   if (engine.state === "running" && engine.url) {
     const speechPatch = speechModelPatch(deepMerge(readConfig(), patch));
     if (speechPatch) patch = deepMerge(patch, speechPatch);
     try {
       const r = await fetch(engine.url + "/settings", {
-        method: "POST", headers: { "X-Glide-Token": engine.token }, body: JSON.stringify({ save: patch }),
+        method: "POST", headers: { "X-Glide-Token": engine.token }, body: JSON.stringify({ save: patch, ...liveChanges }),
         signal: AbortSignal.timeout(5000),
       });
-      const body = (await r.json()) as { ok?: boolean; applied?: { saved?: boolean } };
-      if (r.ok && body.applied?.saved === true) return readConfig();
-    } catch { /* the coach is going away: save it here */ }
+      const body = (await r.json()) as { ok?: boolean; error?: string; applied?: { saved?: boolean } };
+      if (r.ok && body.applied?.saved === true && (!applying || body.ok === true)) return readConfig();
+      if (applying) throw new Error(body.error || "The coach did not confirm the combined settings save; your edits are kept.");
+    } catch (error) {
+      if (applying) throw error;
+      // Save-only caller: the coach is going away, so save it here.
+    }
   }
   // not taken (stopped, starting, or config.json unreadable: updateConfig then says why and leaves the file alone)
   return updateConfig(patch, (text, attribution) => engine.note(text, attribution));

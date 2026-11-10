@@ -193,6 +193,52 @@ async function configChecks() {
   } } }, stopped);
   await config.saveConfig({ companion: { voice: { volume: 80 } } }, stopped);
   assert.strictEqual(config.readConfig().companion.llm.fast_reasoning_effort, "low");
+
+  // A mixed Save applies the live model while normalizing the language fallback in the same write.
+  const http = require("http");
+  let selectedModel = "a-model", refuse = false;
+  write(p, JSON.stringify({ companion: {
+    llm: { fast_model: selectedModel }, voice: { language: "en" },
+    ptt: { whisper_model: "small.en" }, overlay: { drag_key: "ALT" },
+  } }));
+  const server = http.createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const body = JSON.parse(raw);
+    if (refuse || body.fast_model !== "c-model") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "live selection refused" }));
+    }
+    write(p, JSON.stringify(store.deepMerge(JSON.parse(read(p)), body.save)));
+    selectedModel = body.fast_model;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, applied: { saved: true, fast_model: selectedModel } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const running = { state: "running", url: `http://127.0.0.1:${server.address().port}`, token: "test", note() {} };
+  const mixed = { companion: {
+    llm: { fast_model: "c-model" }, voice: { language: "ru" },
+    overlay: { drag_key: "CTRL" },
+  } };
+  try {
+    const next = await config.saveConfig(mixed, running, { fast_model: "c-model" });
+    assert.strictEqual(selectedModel, "c-model", "mixed Save must apply its model, not silently save for restart");
+    assert.strictEqual(next.companion.ptt.whisper_model, "small", "Russian needs multilingual Whisper");
+    assert.strictEqual(next.companion.voice.language, "ru");
+    assert.strictEqual(next.companion.overlay.drag_key, "CTRL");
+    refuse = true;
+    const before = read(p);
+    await assert.rejects(config.saveConfig({ companion: {
+      llm: { fast_model: "bad-model" }, voice: { language: "de" }, overlay: { drag_key: "SHIFT" },
+    } }, running, { fast_model: "bad-model" }), /live selection refused/);
+    assert.strictEqual(read(p), before, "a refused combined Save must not fall back to a local write");
+    assert.strictEqual(selectedModel, "c-model");
+    await assert.rejects(config.saveConfig(mixed, stopped, { fast_model: "c-model" }), /not connected/);
+    assert.strictEqual(read(p), before);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 (async () => {

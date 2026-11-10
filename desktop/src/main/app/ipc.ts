@@ -189,8 +189,8 @@ function appChannels(d: IpcDeps): void {
 
 function configChannels({ engine, overlay, ensureSpeech }: IpcDeps): void {
   handle("config:get", () => readConfig());
-  handle("config:set", async (patch: Obj) => {
-    const next = await saveConfig(patch, engine);      // through the running coach, which owns the file
+  handle("config:set", async (patch: Obj, liveChanges?: Obj) => {
+    const next = await saveConfig(patch, engine, liveChanges); // validation + persistence before app side effects
     overlay.readDragKey();
     const companion = patch.companion as Obj | undefined;
     if (companion?.ptt || (companion?.voice as Obj | undefined)?.language !== undefined) ensureSpeech();
