@@ -83,7 +83,7 @@ const DUR = 400;
 const log = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.window = globalThis;
-globalThis.document = { getElementById: () => null };
+globalThis.document = Object.assign(new EventTarget(), { getElementById: () => null });
 globalThis.crypto ||= (await import("node:crypto")).webcrypto;
 const native = new Map();
 function nativeSpeak(id, text) {

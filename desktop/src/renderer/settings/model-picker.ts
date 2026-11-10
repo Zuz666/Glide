@@ -6,6 +6,7 @@ import { Group } from "../settings-schema.js";
 import { engineGet, enginePost, live } from "../state.js";
 import { Obj } from "../types.js";
 import { edits, getPath } from "./fields.js";
+import { AUTO_THINKING_HELP } from "./thinking-help.js";
 
 const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3 };
 const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter" };
@@ -81,13 +82,13 @@ export async function bindModelReasoning(host: HTMLElement): Promise<void> {
         select.innerHTML = effortOptions(levels, effort);
         select.disabled = !levels.length && effort === "auto";
         if (note) {
-          note.textContent = `${reasoningHelp(info)} Save to apply.`;
+          note.innerHTML = `${esc(reasoningHelp(info))} ${AUTO_THINKING_HELP} Save to apply.`;
           note.title = info?.note || "";
         }
       };
       show();
       if (!url || live.engineState !== "running") {
-        if (note) note.textContent = `Reasoning lookup is unavailable while the coach is not connected. You can still edit model ids. ${EFFORT_HELP} Save to apply.`;
+        if (note) note.innerHTML = `Reasoning lookup is unavailable while the coach is not connected. You can still edit model ids. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
         return;
       }
       try {
@@ -110,7 +111,7 @@ export async function bindModelReasoning(host: HTMLElement): Promise<void> {
       // Reuse bindField's change handler, including its default and dirty-state semantics.
       select.dispatchEvent(new Event("change", { bubbles: true }));
       select.disabled = true;
-      if (note) note.textContent = `Reasoning resets to Auto when the model changes. ${EFFORT_HELP} Save to apply.`;
+      if (note) note.innerHTML = `Reasoning resets to Auto when the model changes. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
       timer = window.setTimeout(() => { if (!signal.aborted && row.isConnected) void load(); }, 250);
     }, { signal });
     signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
@@ -140,7 +141,7 @@ function roleHtml(models: Obj, [path, key, label, help]: [string, string, string
         <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(models.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div>
         <label class="help" for="mp-effort-${path}">Reasoning effort</label>
         <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>${effortOptions(levels, effort)}</select>
-        <div class="mcost" title="${esc(info?.note || "")}">${esc(reasoningHelp(info))} Changes save immediately.</div></div></div>`;
+        <div class="mcost" title="${esc(info?.note || "")}">${esc(reasoningHelp(info))} ${AUTO_THINKING_HELP} Changes save immediately.</div></div></div>`;
 }
 
 function listHtml(models: Obj): string {

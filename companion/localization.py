@@ -68,7 +68,7 @@ class Localizer:
         return message
 
     def deliver(self, message, emit):
-        """App-originated messages never wait for network on capture or hotkey threads."""
+        """Queue localization so capture, hotkey and settings callers never wait for provider requests."""
         if (self.language == "en" or not self.needs_localization(message)
                 or getattr(self._active, "value", False)):
             emit(self.message(message))

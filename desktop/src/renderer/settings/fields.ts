@@ -5,6 +5,7 @@ import { Field, SCHEMA } from "../settings-schema.js";
 import { live } from "../state.js";
 import { languageCode } from "../speech-language.js";
 import { Obj } from "../types.js";
+import { AUTO_THINKING_HELP, THINKING_HELP } from "./thinking-help.js";
 
 /** field key -> unsaved control value; null stages removing a config override */
 export const edits: Map<string, unknown> = new Map();
@@ -43,6 +44,8 @@ const current = (f: Field) => (edits.has(f.key) ? edits.get(f.key) ?? f.def : st
 const controlId = (f: Field) => `f_${f.key.replace(/[^a-z0-9]/gi, "_")}`;
 const canReset = (f: Field) => !(edits.has(f.key) && edits.get(f.key) === null)
   && (rawStored(f) != null || JSON.stringify(current(f)) !== JSON.stringify(f.def));
+const resetTitle = (f: Field) => `${edits.has(f.key) && edits.get(f.key) === null ? "Default selected; Save to apply"
+  : canReset(f) ? "Select the default; Save to apply" : "Already using the default"} (${JSON.stringify(f.def)})`;
 
 function setEdit(f: Field, v: unknown): void {
   const base = stored(f) ?? f.def;
@@ -72,7 +75,7 @@ export function updateDirty(): void {
     if (reset) {
       const resettable = canReset(f);
       reset.disabled = !resettable;
-      reset.title = `${resettable ? "Remove it from config.json and use" : "Already using"} the default (${JSON.stringify(f.def)})`;
+      reset.title = resetTitle(f);
     }
   });
 }
@@ -108,12 +111,15 @@ function controlHtml(f: Field, id: string, v: unknown): string {
 export function fieldHtml(f: Field): string {
   const ctl = controlHtml(f, controlId(f), current(f));
   const resettable = canReset(f);
+  const thinking = f.key === "companion.llm.tune_thinking";
+  const help = thinking ? esc(f.help).replace("lightweight", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">lightweight</button>`) : esc(f.help);
+  const effort = f.key.endsWith("_reasoning_effort");
   return `<div class="field${edits.has(f.key) ? " changed" : ""}" data-key="${esc(f.key)}">
-    <div class="lab">${esc(f.label)}${f.help ? `<small>${esc(f.help)}</small>` : ""}</div>
+    <div class="lab">${esc(f.label)}${f.help ? `<small>${help}${effort ? ` ${AUTO_THINKING_HELP}` : ""}</small>` : ""}</div>
     <div class="ctl">${ctl}
       ${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
       ${f.key === "companion.voice.voice" ? `<button type="button" class="reset" data-copy-windows-voice title="Copy the selected Windows/SAPI5 voice from Coach voice. Windows default leaves the name empty.">Copy Windows voice</button>` : ""}
-      ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(`${resettable ? "Remove it from config.json and use" : "Already using"} the default (${JSON.stringify(f.def)})`)}">Use default</button>` : ""}</div></div>`;
+      ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(resetTitle(f))}">Use default</button>` : ""}</div></div>${thinking ? THINKING_HELP : ""}`;
 }
 
 /** Follow the control drawn by fieldHtml: each change is an edit (or no longer one when it's back to the stored value). */

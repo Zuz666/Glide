@@ -381,7 +381,7 @@ function aiMore(ai: Exclude<Ai, "none">): string {
         ${choice("su-q", "best", pick.quality, "Best answers", xf === xd ? `${esc(short(xf))} for everything: better answers, and costs more.`
           : `${esc(short(xf))} and ${esc(short(xd))}: better answers, and costs more.`)}
       </div>
-      <p class="help">Any other model, and what each costs an hour: Settings &gt; AI models &amp; keys.</p></div>`;
+      <p class="help">Any other model, and what each costs an hour: Settings &gt; AI models.</p></div>`;
 }
 
 /** Try the pasted key (or the saved one); a working pasted key is saved. */

@@ -56,9 +56,13 @@ export const SCHEMA: Tab[] = [
     ],
   },
   {
-    id: "models", title: "AI models & keys", groups: [
-      { title: "API keys", special: "keys",
-        intro: "Keys are encrypted with your Windows account and passed to the coach when it starts. They are never written to config.json. Changes apply on the next coach restart." },
+    id: "keys", title: "API keys", groups: [
+      { title: "Service API keys", special: "keys",
+        intro: "Credentials for AI models, speech recognition, speech synthesis and search. Keys are encrypted with your Windows account and passed to the coach when it starts. They are never written to config.json. Changes apply on the next coach restart." },
+    ],
+  },
+  {
+    id: "models", title: "AI models", groups: [
       { title: "Choose models", special: "model-picker",
         intro: "Every model your keys and endpoints can use, cheapest first within each provider, with what it would cost an hour at your usage. Choose reasoning effort separately for each role; changes apply to the next call." },
       { title: "Model ids", intro: "Or type an id: claude-… (Anthropic), gemini:<id> (Gemini API), vendor/model (OpenRouter), ep:<endpoint>:<model> (custom endpoint).",
@@ -72,20 +76,19 @@ export const SCHEMA: Tab[] = [
           { key: L + "deep_reasoning_effort", label: "Deep reasoning effort", type: "select",
             options: [["auto", "Auto"]], help: "Supported levels for the deep model above. Save to apply." },
         ] },
-      { title: "AI behavior", fields: [
+      { title: "Custom endpoints", special: "endpoints",
+        intro: "Any OpenAI-compatible server: a local Ollama (http://127.0.0.1:11434/v1) or LM Studio (http://127.0.0.1:1234/v1), OpenAI, Groq, Mistral, DeepSeek, Together… Their models join the list above as ep:<id>:<model>." },
+      { title: "AI behavior & requests", fields: [
           { key: L + "voice_question_model", label: "Spoken questions use", type: "select",
             options: [["fast", "the fast model"], ["deep", "the deep model"]],
             help: "Chooses the AI role that answers push-to-talk questions after speech recognition. This does not select the recognizer or the speaking voice. Typed questions use Deep; automatic callouts use Fast." },
           { key: L + "enabled", label: "AI coach on", type: "bool",
             help: "Off: only simple rule-based callouts, with no API calls." },
-        ] },
-      { title: "Custom endpoints", special: "endpoints",
-        intro: "Any OpenAI-compatible server: a local Ollama (http://127.0.0.1:11434/v1) or LM Studio (http://127.0.0.1:1234/v1), OpenAI, Groq, Mistral, DeepSeek, Together… Their models join the list above as ep:<id>:<model>." },
-      { title: "Requests", fields: [
-        { key: L + "timeout", label: "Request timeout (s)", type: "number" },
+        { key: L + "timeout", label: "AI request timeout (s)", type: "number",
+          help: "Timeout for each request to an AI model, including coach answers and message translation. Retries and multi-step answers can take longer overall. This is not the local coach's settings-save timeout." },
         { key: L + "busy_retry_s", label: "Retry a busy model after (s)", type: "number", step: 0.5 },
         { key: L + "tune_thinking", label: "Automatic thinking tuning", type: "bool",
-          help: "When reasoning effort is Auto, keep fast Claude and Gemini calls lightweight. Explicit effort selections take priority." },
+          help: "With Auto effort, use model-specific defaults and keep supported fast Claude and Gemini calls lightweight. Explicit effort overrides this; OpenAI-compatible endpoints and OpenRouter are unaffected." },
       ] },
       { title: "Prompt caching", fields: [
         { key: L + "prompt_cache", label: "Prompt caching", type: "bool",

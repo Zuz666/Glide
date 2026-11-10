@@ -1,4 +1,4 @@
-// Settings > AI models & keys > API keys: each known key (and each custom endpoint's), whether it's set, a box to
+// Settings > API keys: each known key (and each custom endpoint's), whether it's set, a box to
 // paste a new one, and how to get it. Values go to the main process and never come back.
 import { call } from "../bridge.js";
 import { esc, toast } from "../dom.js";

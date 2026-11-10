@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -242,6 +243,80 @@ class LocalizationTests(unittest.TestCase):
                 self.assertTrue(done.wait(2))
                 self.assertEqual(said, ["Bereit."])
         self.assertEqual(len(provider.bodies), 2)
+
+    def test_settings_response_does_not_wait_for_announcement_translation(self):
+        def check_response(translation_fails):
+            with tempfile.TemporaryDirectory() as home:
+                entered, release, replied, delivered = (threading.Event() for _ in range(4))
+                messages, response, errors = [], [], []
+
+                def emit(message):
+                    messages.append(message)
+                    if message.get("kind") == "info":
+                        delivered.set()
+
+                coach, provider, _messages, _usage = make_coach("de", emit=emit)
+                if translation_fails:
+                    provider.failure = RuntimeError("translator unavailable")
+                fetch = provider.fetch
+
+                def blocked_fetch(*args):
+                    entered.set()
+                    if not release.wait(10):
+                        raise RuntimeError("test did not release translation")
+                    return fetch(*args)
+
+                provider.fetch = blocked_fetch
+                running = types.SimpleNamespace(args=types.SimpleNamespace(sim=False), coach=coach, catalog=None)
+                handler = dashboard.post_json(lambda body: app.App.on_settings(running, body),
+                                              lambda applied: {"applied": applied})
+                server = dashboard.serve(dashboard.Hub(), 0, {("POST", "/settings"): handler}, token="test-token")
+                model = "ep:test:new-model"
+
+                def save():
+                    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=8)
+                    try:
+                        connection.request("POST", "/settings", json.dumps({
+                            "save": {"companion": {"llm": {"fast_model": model}}}, "fast_model": model}),
+                            {"X-Glide-Token": "test-token"})
+                        result = connection.getresponse()
+                        response.append((result.status, json.loads(result.read())))
+                    except Exception as error:
+                        errors.append(error)
+                    finally:
+                        connection.close()
+                        replied.set()
+
+                with patch.object(app, "ROOT", home):
+                    caller = threading.Thread(target=save, daemon=True)
+                    caller.start()
+                    try:
+                        self.assertTrue(entered.wait(2), "translation reached the provider")
+                        self.assertTrue(replied.wait(2), "settings confirmation must not wait for translation")
+                        self.assertFalse(errors, errors)
+                        self.assertEqual(response, [(200, {"ok": True, "applied": {
+                            "fast_model": model, "saved": True}})])
+                        self.assertEqual(app.glideconfig.load(home)["llm"]["fast_model"], model)
+                        self.assertEqual(coach.cfg["fast_model"], model)
+                        self.assertFalse(delivered.is_set(), "announcement remains pending")
+                    finally:
+                        release.set()
+                        caller.join(3)
+                        server.shutdown()
+                        server.server_close()
+                    self.assertTrue(delivered.wait(2))
+                announcements = [message for message in messages if message.get("kind") == "info"]
+                self.assertEqual(len(announcements), 1, "one announcement after the save")
+                self.assertTrue(announcements[0]["speak"])
+                if translation_fails:
+                    self.assertIn("new-model", announcements[0]["text"], "failed translation keeps English")
+                else:
+                    self.assertEqual(announcements[0]["text"], "Bereit.")
+                    self.assertIn("new-model", announcements[0]["original_text"])
+
+        for translation_fails in (False, True):
+            with self.subTest(translation_fails=translation_fails):
+                check_response(translation_fails)
 
     def test_localize_route_requires_token_and_returns_effective_language(self):
         coach, provider, _messages, _usage = make_coach()
