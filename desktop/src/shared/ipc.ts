@@ -22,7 +22,7 @@ export interface AppInfo {
 export type TtsProvider = "windows" | "edge" | "openai" | "elevenlabs" | "azure" | "google";
 export interface SpeechSettings {
   provider?: TtsProvider;
-  voiceName?: string;             // Windows voice
+  voiceName?: string;                      // installed SAPI5 voice's display name; empty = Windows default
   rate?: number;
   volume?: number;
   edge?: { voice?: string };
@@ -413,6 +413,8 @@ export interface InvokeMap {
   "app:mute": (muted: boolean) => boolean;
   "tts:synth": (text: string, style?: string, tone?: string) => { mime: string; data: Uint8Array };
   "tts:voices": (provider: TtsProvider) => Voice[];
+  "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">) => { voice: string };
+  "tts:windowsStop": (id?: string) => void;
   "res:watch": (on: boolean) => void;
   "update:get": () => UpdateStatus;
   "update:check": () => void;
@@ -436,6 +438,7 @@ export interface InvokeMap {
   "dialog:folder": (title: string, defaultPath?: string) => string | null;
   "data:import": (from: string) => boolean;
   "shell:open": (target: string) => string | void;
+  "shell:speechPanel": () => void;
   // offline speech recognition
   "speech:status": () => SpeechStatus;
   "speech:install": () => SpeechStatus;

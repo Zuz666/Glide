@@ -12,13 +12,14 @@ import * as addon from "./addon";
 import { Engine } from "./engine";
 import { GameIcons, iconId } from "./game-icons";
 import { LogFile } from "./logfile";
-import { isDev, logsDir, syncEngine } from "./paths";
+import { isDev, logsDir, shippedEngine, syncEngine } from "./paths";
 import { ResourceSampler } from "./resources";
 import { loadSecrets, secretsProblem } from "./secrets";
 import { showUpdateSplash } from "./splash";
 import { Speech } from "./speech";
 import { appSettingsProblem } from "./store";
 import { Updater } from "./updater";
+import { WindowsTts } from "./windows-tts";
 import { ICON } from "./app/assets";
 import { companionSection, engineHome, engineOptions, readConfig, updateConfig } from "./app/config";
 import { registerIpc } from "./app/ipc";
@@ -66,6 +67,7 @@ const engine = new Engine();
 engine.file = new LogFile(logsDir());
 const updater = new Updater((m) => engine.note(m));
 const speechMgr = new Speech(engine);
+const windowsTts = new WindowsTts(path.join(shippedEngine, "companion", "sapi5.ps1"), (line) => engine.note(line));
 const sampler = new ResourceSampler();
 
 const mainWindow = new MainWindow(() => !quitting && !!settings.current.closeToTray && tray.exists);
@@ -113,6 +115,7 @@ function pushMute(): void {
 function setMuted(muted: boolean): void {
   settings.current.muted = muted;
   settings.save();
+  if (muted) windowsTts.stop();
   broadcast("app:settings", settings.current);         // the window's voices stop and stay quiet
   pushMute();
   tray.update();
@@ -212,9 +215,14 @@ async function start(): Promise<void> {
   } catch (e) {
     engine.note(`could not prepare the engine home ${engineHome()}: ${(e as Error).message}`);
   }
-  registerIpc({ engine, updater, speech: speechMgr, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
+  registerIpc({ engine, updater, speech: speechMgr, windowsTts, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
                 installUpdate, applyOverlaySettings, updateTray: () => tray.update(), ensureSpeech });
   mainWindow.create();
+  mainWindow.win!.webContents.on("render-process-gone", () => windowsTts.stop());
+  mainWindow.win!.webContents.once("destroyed", () => windowsTts.stop());
+  mainWindow.win!.webContents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {
+    if (mainFrame && !inPlace) windowsTts.stop();
+  });
   tray.create();
   applyOverlaySettings();
   globalShortcut.register(OVERLAY_SHORTCUT, () => overlay.setUnlocked(!overlay.unlocked));
@@ -238,7 +246,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => mainWindow.show());
   app.whenReady().then(start);
-  app.on("before-quit", () => { quitting = true; sampler.stop(); });
+  app.on("before-quit", () => { quitting = true; sampler.stop(); windowsTts.dispose(); });
   app.on("quit", () => engine.file?.flushSync());        // the last lines (the coach stopping) reach the file
   // stop the coach first, then quit for real (app.quit, not app.exit: a downloaded update installs on quit)
   let engineStopped = false;

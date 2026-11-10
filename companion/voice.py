@@ -1,8 +1,9 @@
-"""Text-to-speech through Windows' built-in speech engine (one persistent PowerShell process).
+"""Native SAPI5 speech through one persistent PowerShell worker, shared with the desktop app.
 
-The script is run with -File so its arguments reach $args (with -Command they don't, which left the
-volume at 0). Errors go to data/live/voice.log; the process is restarted if it dies.
+Commands and completion diagnostics use UTF-8 JSON lines. The worker keeps installed COM voice tokens alive,
+including third-party engines; errors go to voice.log, and a later say() restarts a dead process.
 """
+import json
 import os
 import subprocess
 import sys
@@ -14,27 +15,6 @@ import settings
 import log as console
 from localization import TEXT_RESOURCES
 
-PS = r"""
-$ErrorActionPreference = 'Continue'
-[Console]::InputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Speech
-$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$s.SetOutputToDefaultAudioDevice()
-$s.Rate = [int]$args[0]
-$s.Volume = [int]$args[1]
-if ($args.Count -gt 2 -and $args[2]) {
-  try { $s.SelectVoice($args[2]) } catch { [Console]::Error.WriteLine("voice not found: " + $args[2]) }
-}
-[Console]::Error.WriteLine("voice ready: " + $s.Voice.Name + " rate " + $s.Rate + " volume " + $s.Volume)
-while ($true) {
-  $line = [Console]::In.ReadLine()
-  if ($line -eq $null) { break }
-  try {
-    if ($line.StartsWith('!')) { $s.SpeakAsyncCancelAll(); $line = $line.Substring(1) }
-    if ($line.Length -gt 0) { [void]$s.SpeakAsync($line) }
-  } catch { [Console]::Error.WriteLine($_.Exception.Message) }
-}
-"""
 
 
 def _announce(voice, localize=None):
@@ -108,6 +88,7 @@ class Voice:
     def __init__(self, cfg, log_dir=None, *, announce=True):
         self.cfg = cfg
         self.proc = None
+        self._sequence = 0
         self.muted = False
         self.lock = threading.Lock()
         self.log_path = os.path.join(log_dir or tempfile.gettempdir(), "voice.log")
@@ -123,44 +104,44 @@ class Voice:
 
     def _start(self):
         try:
-            script = os.path.join(tempfile.gettempdir(), "glide_voice.ps1")
-            with open(script, "w", encoding="utf-8-sig") as fh:
-                fh.write(PS)
-            log = open(self.log_path, "a", encoding="utf-8")
-            self.proc = subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
-                 str(int(self.opt.get("rate"))), str(int(self.opt.get("volume"))),
-                 self.opt.get("voice") or ""],
-                stdin=subprocess.PIPE, stdout=log, stderr=log, text=True, encoding="utf-8",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sapi5.ps1")
+            with open(self.log_path, "a", encoding="utf-8") as log:
+                self.proc = subprocess.Popen(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script],
+                    stdin=subprocess.PIPE, stdout=log, stderr=log, text=True, encoding="utf-8",
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except Exception as e:
             console.log("voice", "disabled: %s" % e)
             self.proc = None
 
+    def _send(self, op, **fields):
+        """Called under the voice lock; one complete command cannot interleave with a mute or another line."""
+        self._sequence += 1
+        self.proc.stdin.write(json.dumps({"id": self._sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
+        self.proc.stdin.flush()
+
     def set_muted(self, muted):
-        """Mute or unmute; muting cuts off the line being spoken (the speech process's "!" = interrupt)."""
+        """Mute or unmute; muting cancels the active native turn and all queued lines."""
         with self.lock:
             self.muted = bool(muted)
             stdin = self.proc.stdin if self.proc is not None else None
             if self.muted and stdin is not None:
                 try:
-                    stdin.write("! \n")
-                    stdin.flush()
+                    self._send("cancel")
                 except Exception as e:  # noqa: BLE001 - a dead process is restarted by the next say()
                     console.log_once("voice.mute", e)
         return self.muted
 
     def hush(self):
-        """The player started talking (push-to-talk): cut off the line being said and what's queued ("!"). Never
-        waits long for the lock (say() may be restarting the speech process): the push-to-talk thread calls it."""
+        """The player started talking: cancel active and queued speech. Never wait long for the lock
+        (say() may be restarting the speech process): the push-to-talk thread calls it."""
         if not self.lock.acquire(timeout=0.05):
             return
         try:
             stdin = self.proc.stdin if self.proc is not None else None
             if stdin is not None:
                 try:
-                    stdin.write("! \n")
-                    stdin.flush()
+                    self._send("cancel")
                 except Exception as e:  # noqa: BLE001 - a dead process is restarted by the next say()
                     console.log_once("voice.hush", e)
         finally:
@@ -182,8 +163,8 @@ class Voice:
             if stdin is None:
                 return
             try:
-                stdin.write(("!" if interrupt else "") + line + "\n")
-                stdin.flush()
+                self._send("speak", text=line, voice=self.opt.get("voice") or "",
+                           rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt))
             except Exception as e:
                 console.log("voice", "write failed: %s" % e)
                 self.proc = None

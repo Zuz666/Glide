@@ -10,12 +10,13 @@ const INVOKE = new Set<InvokeChannel>([
   "engine:get", "engine:log", "engine:start", "engine:stop", "engine:restart",
   // the app: its info and settings, the voice, the resource meter, updates and release notes
   "app:info", "app:settings:get", "app:settings:set", "app:note", "app:logs", "app:changelog", "app:mute",
-  "tts:synth", "tts:voices", "res:watch", "update:get", "update:check", "update:install", "update:download",
+  "tts:synth", "tts:voices", "tts:windowsSpeak", "tts:windowsStop", "res:watch",
+  "update:get", "update:check", "update:install", "update:download",
   // config.json, API keys and custom endpoints
   "config:get", "config:set", "keys:list", "keys:set", "endpoint:test", "keys:test",
   // the addon and folders
   "addon:status", "addon:detect", "addon:install", "addon:rxpImport", "addon:rxpImports", "addon:rxpRoutes",
-  "addon:rxpFacts", "dialog:folder", "data:import", "shell:open",
+  "addon:rxpFacts", "dialog:folder", "data:import", "shell:open", "shell:speechPanel",
   // offline speech recognition
   "speech:status", "speech:install", "speech:models", "speech:download", "speech:delete",
   // the overlay

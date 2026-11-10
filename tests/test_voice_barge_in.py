@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Talking over the coach: the Coach page (desktop/src/renderer/coach.ts) with the real narrator (narrator.ts), compiled
 with the project's TypeScript beside stand-ins for the bridge and the page, and run under Node with a stand-in event
-stream, speechSynthesis and Audio whose lines end after a set time (on a virtual clock: no real time passes).
+stream, native Windows speech IPC and Audio whose lines end on a virtual clock: no real audio or network calls.
 
 Holding push-to-talk (the engine's "ptt" event, "listening", still held 150 ms later: a brush of the key isn't
 talking) stops the line being said and drops the queued ones, with an online voice and a Windows voice alike, like
 talking over someone on a call; the coach's next line (its answer) is said as usual, and "transcribing" and "idle"
 stop nothing. A Guides page line waiting its turn, or being said, resolves its speakAndWait then (the page doesn't
-hang; the Guides walk sees bargedSince and pauses on its step). A speak event's tone reaches tts:synth as
-its third argument, after the style; a Windows voice says the words alone.
+hang; the Guides walk sees bargedSince and pauses on its step).
 
 Needs node and desktop/node_modules (skips with 77 without them)."""
 import json
@@ -31,9 +30,9 @@ if not node or not desktop_ts.available():
 
 STUBS = {
     "bridge.ts": """
-export const glide: { invoke(ch: string, ...a: unknown[]): Promise<{ data: Uint8Array; mime: string }>;
+export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any>;
                       on(ch: string, fn: (p: any) => void): () => void } = (window as any).glide;
-export const call = (..._a: unknown[]) => Promise.resolve(undefined);
+export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": """
@@ -84,30 +83,25 @@ const log = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.window = globalThis;
 globalThis.document = { getElementById: () => null };
-class Utterance { constructor(text) { this.text = text; this.voice = null; this.rate = 1; this.volume = 1; } }
-globalThis.SpeechSynthesisUtterance = Utterance;
-const synth = {
-  q: [], cur: null, speaking: false, pending: false,
-  getVoices: () => [{ name: "Microsoft Zira" }],
-  addEventListener() {}, removeEventListener() {},
-  upd() { this.speaking = !!this.cur; this.pending = this.q.length > 0; },
-  speak(u) { log.push("speak:" + u.text); this.q.push(u); this.upd(); if (!this.cur) this.next(); },
-  next() {
-    const u = this.q.shift(); this.cur = u || null; this.upd(); if (!u) return;
-    log.push("start:" + u.text);
-    u._t = setTimeout(() => {
-      if (this.cur !== u) return;
-      log.push("end:" + u.text); this.cur = null; this.upd(); if (u.onend) u.onend({}); this.next();
+globalThis.crypto ||= (await import("node:crypto")).webcrypto;
+const native = new Map();
+function nativeSpeak(id, text) {
+  return new Promise((resolve, reject) => {
+    log.push("start:" + text);
+    const timer = setTimeout(() => {
+      native.delete(id); log.push("end:" + text); resolve({ voice: "Installed native voice" });
     }, DUR);
-  },
-  cancel() {
-    const all = [this.cur, ...this.q].filter(Boolean);
-    if (this.cur) clearTimeout(this.cur._t);
-    this.q = []; this.cur = null; this.upd(); log.push("cancel");
-    for (const u of all) setTimeout(() => { if (u.onerror) u.onerror({}); }, 0);   // Chromium: an error each, later
-  },
-};
-globalThis.speechSynthesis = synth;
+    native.set(id, { text, timer, reject });
+  });
+}
+function nativeStop(id) {
+  for (const [key, turn] of native) {
+    if (id !== undefined && id !== key) continue;
+    native.delete(key); clearTimeout(turn.timer); log.push("cancel:" + turn.text);
+    turn.reject(new Error("speech cancelled"));
+  }
+  return Promise.resolve();
+}
 const dec = new TextDecoder();
 globalThis.Blob = class { constructor(parts) { this.text = dec.decode(parts[0]); } };
 const urls = new Map();
@@ -123,10 +117,12 @@ globalThis.Audio = class {
   }
   pause() { if (this.paused) return; this.paused = true; log.push("pause:" + this.text); if (this.onpause) this.onpause(); }
 };
-// tts:synth: logged with every argument the narrator passes ("text|style|tone")
 globalThis.glide = {
   invoke: (ch, ...a) => {
-    log.push("synth:" + a.join("|"));
+    if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
+    if (ch === "tts:windowsStop") return nativeStop(a[0]);
+    if (ch !== "tts:synth") return Promise.resolve();
+    log.push("synth:" + a[0]);
     return sleep(10).then(() => ({ data: new TextEncoder().encode(a[0]), mime: "audio/mpeg" }));
   },
   on: () => () => {},
@@ -150,7 +146,7 @@ const take = (name) => { out[name] = log.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
 let t, p;
 
-// online voice: the line being played stops, the queued ones are dropped; the tone goes to tts:synth after the style
+// Online voice: the line being played stops and queued lines are dropped.
 speech.configure(false, ONLINE);
 fire("speak", { text: "o1", interrupt: false, style: "Gruff. This line: sly.", tone: "sly" });
 fire("speak", { text: "o2", interrupt: false });
@@ -219,32 +215,30 @@ finally:
 
 assert got["stream"] == "http://engine/events?lite=1", got["stream"]
 
-# online (its "cancel" is the narrator silencing speechSynthesis too): o1 stops where it is, o2 and o3 never play;
-# the session bar says Listening
-online = lambda name: [x for x in got[name] if x != "cancel"]  # noqa: E731
-c = online("online")
-assert c[:3] == ["synth:o1|Gruff. This line: sly.|sly", "synth:o2", "synth:o3|Gruff."], c
+# Online: o1 stops where it is, o2 and o3 never play; the session bar says Listening.
+c = got["online"]
+assert c[:3] == ["synth:o1", "synth:o2", "synth:o3"], c
 assert c[3:] == ["play:o1", "pause:o1"], c
 assert got["shown"] == {"hidden": False, "cls": "sb-ptt listening"}, got["shown"]
 assert got["after"] == ["synth:answer", "play:answer", "ended:answer"], got["after"]
 
 # the Guides page's lines resolve at once, waiting or being said
-c = online("tagged_online")
+c = got["tagged_online"]
 assert c[:3] == ["synth:o4", "synth:guide1", "play:o4"] and "pause:o4" in c and "resolved:guide1" in c, c
 assert "play:guide1" not in c and 150 <= got["wait_ms"] <= 160, (c, got["wait_ms"])
-c = online("tagged_playing")
+c = got["tagged_playing"]
 assert c == ["synth:guide2", "play:guide2", "pause:guide2", "resolved:guide2"] and 150 <= got["said_ms"] <= 160, (
     c, got["said_ms"])
 
-# Windows: a cancelled, b and the Guides line never said; the words alone (no tone); the next line is said
+# Windows: a is interrupted, queued coach and Guides lines never start, and the next answer plays normally.
 c = got["win"]
-assert c[:4] == ["speak:a", "start:a", "speak:b", "cancel"], c
-assert "resolved:guide3" in c and not {"end:a", "start:b", "speak:guide3"} & set(c), c
+assert c[:2] == ["start:a", "cancel:a"], c
+assert "resolved:guide3" in c and not {"end:a", "start:b", "start:guide3"} & set(c), c
 assert 150 <= got["win_ms"] <= 160, got["win_ms"]
-assert got["win_after"] == ["speak:c", "start:c", "end:c"], got["win_after"]
+assert got["win_after"] == ["start:c", "end:c"], got["win_after"]
 
 # a brush of the key: the line plays to its end; the earlier presses count as talking over it, the tap doesn't
-c = online("tap")
+c = got["tap"]
 assert c == ["synth:tap", "play:tap", "ended:tap"], c
 assert got["barged"] == {"before": True, "tap": False}, got["barged"]
 print("OK")
