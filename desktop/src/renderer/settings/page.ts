@@ -7,7 +7,7 @@ import { currentPage, show, whenShown } from "../nav.js";
 import { MANIFEST } from "../settings-manifest.js";
 import { Field, Group, SCHEMA } from "../settings-schema.js";
 import { languageCode } from "../speech-language.js";
-import { enginePost, JSON_HEADERS, live } from "../state.js";
+import { live } from "../state.js";
 import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
 import { bindModelReasoning } from "./model-picker.js";
@@ -185,24 +185,13 @@ async function saveSettings(restart: boolean): Promise<void> {
       appPatch = merge(appPatch, { speech: { edge: { voice: next.id } } });
     }
   }
-  // The running engine validates, persists and applies live fields in one request.
-  // Never discard drafts or claim success after an HTTP error or failed local write.
+  // One main-process path owns normalization, persistence, live apply and post-save app actions.
+  // Failed combined saves preserve drafts and never silently fall back to a local write.
   if (Object.keys(cfgPatch).length) {
-    if (!restart && live.engineUrl && live.engineState === "running" && Object.keys(tunable).length) {
-      try {
-        const response = await enginePost("/settings", { save: cfgPatch, ...tunable }, JSON_HEADERS);
-        const result = await response.json();
-        if (!response.ok || !result.ok || !result.applied?.saved) throw new Error(result.error || "Settings were not applied");
-        live.config = (await call("config:get")) || live.config;
-      } catch (e) {
-        toast(`Couldn't save and apply settings: ${(e as Error).message}. Your edits are kept.`, true);
-        return;
-      }
-    } else {
-      const saved = await call("config:set", cfgPatch);
-      if (!saved) return;
-      live.config = saved;
-    }
+    const applyLive = !restart && live.engineState === "running" && !!live.engineUrl;
+    const saved = await call("config:set", cfgPatch, applyLive ? tunable : undefined);
+    if (!saved) return;
+    live.config = saved;
   }
   if (Object.keys(appPatch).length) {
     const saved = await call("app:settings:set", appPatch);
