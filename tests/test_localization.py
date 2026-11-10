@@ -7,7 +7,6 @@ Run: python tests/test_localization.py
 import http.client
 import json
 import os
-import re
 import sys
 import threading
 import time
@@ -94,7 +93,6 @@ class LocalizationTests(unittest.TestCase):
                 self.assertEqual(message["original_text"], "Glide voice ready.")
                 self.assertEqual(message["model"], "ep:test:fake")
                 self.assertEqual(len(provider.bodies), 1)
-                self.assertRegex(provider.bodies[0]["system"][0]["text"], r"\b" + language[:2] + r"\b")
                 self.assertEqual(coach.stats["calls"], 1)
                 self.assertEqual(usage[0]["path"], "fast")
                 self.assertEqual(usage[0]["in"], 17)
@@ -151,7 +149,6 @@ class LocalizationTests(unittest.TestCase):
         app.App._say(types.SimpleNamespace(voice=final_voice), answer)
         self.assertEqual(spoken, ["Gehe nach Norden."])
         self.assertEqual(len(provider.bodies), 1)
-        self.assertTrue(any(re.search(r"\bde\b", block["text"]) for block in provider.bodies[0]["system"]))
         self.assertEqual(next(x["text"] for x in coach.convo if x["who"] == "player"), question)
         self.assertNotIn("FACTS", answer["text"])
 

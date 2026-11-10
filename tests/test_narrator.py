@@ -98,6 +98,7 @@ URL.revokeObjectURL = () => {};
 globalThis.Audio = class {
   constructor(url) { this.text = urls.get(url); this.paused = false; }
   play() {
+    if (this.text === "blocked-audio") return Promise.reject(new Error("Playback blocked"));
     log.push("play:" + this.text);
     setTimeout(() => { if (!this.paused) { log.push("ended:" + this.text); if (this.onended) this.onended(); } }, DUR);
     return Promise.resolve();
@@ -174,6 +175,10 @@ await sleep(2); t = Date.now(); speech.cancel("g"); await p; out.slow_cancel_ms 
 await sleep(20); releaseSlowSynthesis();
 await sleep(DUR * 3); take("late_synthesis");
 await speech.speakAndWait("cloud-failure", "g"); take("fallback");
+// A rejected audio player must not replace the last voice/text that really played.
+out.before_rejected = [speech.lastVoice, speech.lastVoiceAt, speech.lastText];
+await speech.speakAndWait("blocked-audio", "g"); take("rejected_online");
+out.after_rejected = [speech.lastVoice, speech.lastVoiceAt, speech.lastText];
 // tagged online lines: cancel stops the one playing, drops the queued one, the coach's next line plays
 speech.say("o3");
 p = mark(speech.speakAndWait("og1", "g"), "resolved:og1");
@@ -241,4 +246,5 @@ assert [x for x in c if x.startswith(("play:", "ended:"))] == [
     "play:fast-coach1", "ended:fast-coach1", "play:fast-coach2", "ended:fast-coach2"], c
 assert got["slow_cancel_ms"] < 20 and "resolved:slow-guide" in c, c
 assert got["fallback"] == ["synth:cloud-failure", "start:cloud-failure", "end:cloud-failure"], got["fallback"]
+assert got["after_rejected"] == got["before_rejected"], got
 print("OK")

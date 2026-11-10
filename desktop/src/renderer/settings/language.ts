@@ -53,7 +53,7 @@ export function renderLanguage(_g: Group, host: HTMLElement): void {
       `<button class="language-help-trigger" type="button" popovertarget="language-provider-help" aria-label="Language support" title="Language support"><span aria-hidden="true">i</span></button>`)
     + `<details class="keyhow"><summary>How to set up speech synthesis (TTS)</summary>
       <p class="keyfree"><b>Offline speech · Windows SAPI5</b></p>
-      <ol><li>Install a Windows voice or a third-party SAPI5 engine for your language. SileroTTS offers local Russian and other Russia/CIS-language voices.</li><li>In Voice settings, choose Windows voices (SAPI5), reload the voice list, select an installed voice and play a sample. No cloud TTS connection is needed.</li></ol>
+      <ol><li>Install a Windows voice or a third-party SAPI5 engine for your language. SileroTTS offers local CIS-language voices.</li><li>In Voice settings, choose Windows voices (SAPI5), reload the voice list, select an installed voice and play a sample. No cloud TTS connection is needed.</li></ol>
       <div class="row"><button type="button" class="btn primary" id="language-silero">${icon("external-link")}SileroTTS for Windows</button></div>
       <p><b>Online speech · Edge-TTS (experimental)</b></p>
       <p>Support is still being worked on. This free online service needs no registration or API key and offers natural-sounding voices, including multilingual models. It is unofficial and can fail or limit requests; Glide then uses the selected Windows SAPI5 voice.</p>

@@ -39,7 +39,7 @@ export async function voiceSample(): Promise<string> {
     return body.text;
   } catch (error) {
     console.warn("Voice sample localization failed", error);
-    toast("Translation unavailable; playing the English sample.");
+    toast("Translation unavailable; using the English sample.");
     return SAMPLE;
   }
 }

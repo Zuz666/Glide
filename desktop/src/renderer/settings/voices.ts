@@ -1,5 +1,5 @@
 // Settings > Voice > Coach voice: the narrator's voice service and its voice, speed and volume, a sample, and the
-// voice the last line was spoken with. Saved to the app settings as each control changes.
+// last spoken text and voice. Saved to the app settings as each control changes.
 import { updateAppSettings } from "../app-settings.js";
 import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
@@ -74,8 +74,8 @@ export function renderVoices(g: Group, host: HTMLElement): void {
     + providerFields(prov, sp)
     + field("Speed", "", `<input type="range" id="sv-rate" min="0.5" max="2" step="0.05" value="${sp.rate ?? 1}"><span class="rangeval">${sp.rate ?? 1}</span>`)
     + field("Volume", "", `<input type="range" id="sv-vol" min="0" max="1" step="0.05" value="${sp.volume ?? 1}"><span class="rangeval">${sp.volume ?? 1}</span>`)
-    + field("Try it", "Uses the saved speech language; save language changes above first. The coach uses this voice when Spoken by is set to this app.", `<button class="btn" id="sv-test">${icon("volume-2")}Play a sample</button>`)
-    + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<span id="sv-last" class="help">${esc(voiceLastLine())}</span>`);
+    + field("Try it", "Uses the saved speech language; save language changes above first. The coach uses this voice when Spoken by is set to this app.", `<button class="btn" id="sv-test" disabled>${icon("volume-2")}Play a sample</button><span id="sv-sample" class="help voice-text" aria-live="polite">Preparing sample…</span>`)
+    + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
   $("sv-prov").onchange = async (e) => {
     const provider = (e.target as HTMLSelectElement).value;
@@ -94,7 +94,14 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   });
   range("sv-rate", "rate");
   range("sv-vol", "volume");
-  $("sv-test").onclick = async () => speech.say(await voiceSample(), true);
+  const sampleButton = host.querySelector<HTMLButtonElement>("#sv-test")!;
+  const sampleText = host.querySelector<HTMLElement>("#sv-sample")!;
+  void voiceSample().then((text) => {
+    if (!sampleButton.isConnected) return;
+    sampleText.textContent = text;
+    sampleButton.disabled = false;
+    sampleButton.onclick = () => speech.say(text, true);
+  });
   if (prov === "windows") $("sv-voice").onchange = (e) => save({ voiceName: (e.target as HTMLSelectElement).value });
   if (prov === "openai") {
     call("tts:voices", "openai").then((vs) => {

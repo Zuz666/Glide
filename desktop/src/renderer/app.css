@@ -133,6 +133,9 @@ main { flex: 1; min-width: 0; position: relative; display: block; }
 .reset { background: none; border: 0; color: var(--ink-3); cursor: pointer; font: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; padding: 0; }
 .reset:hover { color: var(--gold); }
 .rangeval { min-width: 48px; font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 650; }
+#sv-sample { flex: 1 1 240px; min-width: 0; }
+.voice-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.voice-last { display: grid; gap: 6px; min-width: 0; max-width: 100%; }
 /* On-demand language-provider help: native popover handles Escape, outside click and focus return. */
 .field .ctl.language-tool { flex-direction: column; align-items: flex-start; }
 .language-help-trigger { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; margin-left: 5px; padding: 0; vertical-align: super; border: 1px solid var(--edge); border-radius: 50%; background: transparent; color: var(--ink-3); font: 600 11px Georgia, serif; cursor: pointer; }

@@ -40,6 +40,7 @@ class Narrator {
   private bargedAt = 0;
   lastVoice = "";
   lastVoiceAt = 0;
+  lastText = "";
   private lastError = 0;
 
   /** Settings apply to newly queued lines. Muting stops the active line and drops the queue. */
@@ -53,13 +54,19 @@ class Narrator {
     this.volume = Number(sp.volume ?? 1);
   }
 
-  /** Log the actual voice in use, once per session and whenever it changes. */
-  private noteVoice(name: string): void {
+  /** Record the actual line and voice; log the voice once per session and whenever it changes. */
+  private noteVoice(name: string, text: string): void {
     if (name !== this.lastVoice) call("app:note", `[voice] speaking with ${name}`);
     this.lastVoice = name;
     this.lastVoiceAt = Date.now();
+    this.lastText = text;
     const el = document.getElementById("sv-last");
     if (el) el.textContent = voiceLastLine();
+    const line = document.getElementById("sv-last-text");
+    if (line) {
+      line.textContent = text;
+      line.hidden = false;
+    }
   }
 
   private voiceError(message: string): void {
@@ -147,7 +154,7 @@ class Narrator {
     line.nativeId = crypto.randomUUID();
     try {
       const result = await glide.invoke("tts:windowsSpeak", line.nativeId, line.text, line.windows);
-      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`);
+      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, line.text);
     } catch (error) {
       if (this.current === line && !line.cancelled) {
         this.voiceError(`Windows SAPI5 voice failed: ${ipcError(error)}`);
@@ -185,7 +192,6 @@ class Narrator {
     a.volume = Math.max(0, Math.min(1, line.windows.volume ?? 1));
     a.playbackRate = line.windows.rate ?? 1;
     a.preservesPitch = true;
-    this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`);
     call("app:note", `[voice] playback start provider=${line.provider} audio_bytes=${blob.size}`);
     await new Promise<void>((resolve) => {
       let finished = false;
@@ -198,7 +204,9 @@ class Narrator {
       a.onended = () => finish("ended");
       a.onerror = () => finish(`failed media_code=${a.error?.code || 0}`);
       a.onpause = () => finish("paused");
-      a.play().catch((e: unknown) => finish(`rejected reason=${e instanceof Error
+      a.play().then(() => {
+        if (this.current === line) this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, line.text);
+      }).catch((e: unknown) => finish(`rejected reason=${e instanceof Error
         && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`));
     });
     URL.revokeObjectURL(url);
