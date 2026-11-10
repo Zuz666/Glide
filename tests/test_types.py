@@ -21,7 +21,7 @@ import sys
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-KNOWN = {"app.py": 13, "capture.py": 3, "dashboard.py": 2, "gear.py": 1, "health.py": 1, "icons.py": 4,
+KNOWN = {"app.py": 11, "capture.py": 3, "dashboard.py": 2, "gear.py": 1, "health.py": 1, "icons.py": 4,
          "kb_refresh.py": 3, "reminders.py": 4, "rules.py": 3, "state.py": 3, "talents.py": 1}
 
 exe = shutil.which("pyright")

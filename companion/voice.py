@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import Callable
+from typing import IO, Callable
 
 import settings
 import log as console
@@ -114,11 +114,11 @@ class Voice:
             console.log("voice", "disabled: %s" % e)
             self.proc = None
 
-    def _send(self, op, **fields):
-        """Called under the voice lock; one complete command cannot interleave with a mute or another line."""
+    def _send(self, stdin: IO[str], op: str, **fields):
+        """Use the caller's checked pipe under the voice lock so commands cannot interleave."""
         self._sequence += 1
-        self.proc.stdin.write(json.dumps({"id": self._sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
-        self.proc.stdin.flush()
+        stdin.write(json.dumps({"id": self._sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
+        stdin.flush()
 
     def set_muted(self, muted):
         """Mute or unmute; muting cancels the active native turn and all queued lines."""
@@ -127,7 +127,7 @@ class Voice:
             stdin = self.proc.stdin if self.proc is not None else None
             if self.muted and stdin is not None:
                 try:
-                    self._send("cancel")
+                    self._send(stdin, "cancel")
                 except Exception as e:  # noqa: BLE001 - a dead process is restarted by the next say()
                     console.log_once("voice.mute", e)
         return self.muted
@@ -141,7 +141,7 @@ class Voice:
             stdin = self.proc.stdin if self.proc is not None else None
             if stdin is not None:
                 try:
-                    self._send("cancel")
+                    self._send(stdin, "cancel")
                 except Exception as e:  # noqa: BLE001 - a dead process is restarted by the next say()
                     console.log_once("voice.hush", e)
         finally:
@@ -163,7 +163,7 @@ class Voice:
             if stdin is None:
                 return
             try:
-                self._send("speak", text=line, voice=self.opt.get("voice") or "",
+                self._send(stdin, "speak", text=line, voice=self.opt.get("voice") or "",
                            rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt))
             except Exception as e:
                 console.log("voice", "write failed: %s" % e)

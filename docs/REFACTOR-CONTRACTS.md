@@ -77,6 +77,8 @@ they don't spell out.
 
 ## Recorded changes
 
+- **SAPI5 verification follow-up (no interface change):** the standalone sender uses the caller's already-checked text pipe under the voice lock instead of re-reading optional process/pipe attributes. Push-to-talk state tests no longer instantiate a partial native voice or assert the removed `!` transport command; they retain tap/hold, deferred-answer and interruption coverage through the voice interface.
+
 - **Speech text visibility (contract 8):** Voice settings displays the prepared sample beside its button and speaks that exact value. The last spoken text appears below the actual voice/time, survives settings re-renders within the session, and is not overwritten by failed playback attempts. Online playback records it only after playback starts; native speech records it on successful completion. No persisted setting or IPC shape changes. The Silero setup description now says “CIS-language voices.”
 
 - **Russian prose spelling (contract 8):** translated notices/samples and native model-generated coach answers share a Cyrillic spelling instruction for ordinary Russian prose, including foreign proper names and the product name **Глайд войс**. This is a model instruction, not a second translation pass or a local transliteration engine. Other languages retain the existing name-preservation rule; machine identifiers, directives, raw diagnostics and verbatim user input remain unchanged. English fallback without an available model is unchanged.
