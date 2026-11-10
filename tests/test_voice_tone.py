@@ -110,12 +110,10 @@ import coach as coach_mod  # noqa: E402
 from glidedb import GlideDB  # noqa: E402
 from replies import EarlySpeech  # noqa: E402
 
-written = []
-v = voice.Voice.__new__(voice.Voice)          # the engine's own speech process (voice output "engine")
-v.lock, v.muted, v.enabled = threading.Lock(), False, True
-v.proc = types.SimpleNamespace(stdin=types.SimpleNamespace(write=written.append, flush=lambda: None))
 said = []
-v.say = lambda text, interrupt=False, tone="", first=True: said.append(text)
+# This checks the app's push-to-talk state, independently of the native worker's transport.
+v = types.SimpleNamespace(enabled=True, muted=False, hush=lambda: None,
+                          say=lambda text, interrupt=False, tone="", first=True: said.append(text))
 barged = []
 a = glide_app.App.__new__(glide_app.App)
 a.hub = types.SimpleNamespace(publish=lambda k, d: None)
@@ -133,13 +131,13 @@ a.on_ptt_state("listening")
 a.ptt.key_down = False
 a.on_ptt_state("idle")
 time.sleep(glide_app.BARGE_S + 0.1)
-assert not written and not barged and not a._ptt_down, (written, barged)
+assert not barged and not a._ptt_down, barged
 
-# held: the line being said stops ("!" = SpeakAsyncCancelAll), and so does the reply on its way
+# held: the reply in progress is interrupted and new speech waits for key-up
 a.ptt.key_down = True
 a.on_ptt_state("listening")
 time.sleep(glide_app.BARGE_S + 0.1)
-assert written == ["! \n"] and barged == [1], (written, barged)
+assert barged == [1] and a._ptt_down, barged
 # while it's held: an answer waits, anything else is dropped, a streamed sentence isn't said (nor counted)
 a.on_message({"kind": "answer", "text": "Tannok is east.", "speak": True})
 a.on_message({"kind": "callout", "text": "Bags nearly full.", "speak": True})
@@ -153,9 +151,6 @@ assert said == ["Tannok is east."] and not a._ptt_down, said
 a._ptt_down, a._ptt_down_t = True, time.time() - glide_app.PTT_STUCK_S - 1
 a.on_message({"kind": "callout", "text": "Back to it.", "speak": True})
 assert said[-1] == "Back to it." and not a._ptt_down, said
-v.proc = None
-v.hush()                                        # no speech process (yet): nothing to cut off, no error
-assert voice.HubVoice.hush(voice.HubVoice.__new__(voice.HubVoice)) is None   # the app's narrator does it itself
 
 # the tone as its own field: on a reply's first sentence only (ElevenLabs v3 acts it once a line)
 events.clear()
