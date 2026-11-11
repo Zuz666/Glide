@@ -2,7 +2,7 @@
 // while locked; Ctrl+Alt+O (or the tray / Settings) unlocks it to move it and change its width.
 import { glide as g } from "./bridge.js";
 import { $ } from "./dom.js";
-import { AppSettings, CoachMessage, LiteInitEvent, LiteState, PttEvent, TtsStatus } from "./types.js";
+import { AppSettings, CoachMessage, LiteInitEvent, LiteState, PttEvent, ThinkingEvent, TtsStatus } from "./types.js";
 
 const SHOWN = new Set(["callout", "answer", "banter", "review", "briefing", "reminder"]);   // msg_kinds.COACH_SAID
 let es: EventSource | null = null;
@@ -10,34 +10,55 @@ let url: string | null = null;
 let settings: AppSettings = {};
 let lastMsgAt = 0;
 let ttsHoldTimer: number | undefined;
+let currentTts: TtsStatus | null | undefined = null;
+let thinkingRole: string | null = null;
 
-function showTts(s: TtsStatus | null | undefined): void {
+function renderActivityPill(): void {
   window.clearTimeout(ttsHoldTimer);
   const el = $("tts");
-  if (!s || (s.phase !== "generating" && s.phase !== "speaking" && s.phase !== "fallback" && s.phase !== "error")) {
-    el.hidden = true;
-    el.className = "";
+  const s = currentTts;
+  const activeTts = s && (s.phase === "generating" || s.phase === "speaking" || s.phase === "fallback" || s.phase === "error");
+  if (activeTts) {
+    const isTimedHold = s.phase === "error" || (s.phase === "fallback" && s.holding);
+    const remaining = isTimedHold ? 5000 - Math.max(0, Date.now() - (s.updatedAt || Date.now())) : 1;
+    if (!isTimedHold || remaining > 0) {
+      $("ttsl").textContent = s.phase === "generating" ? "TTS synth…"
+        : s.phase === "speaking" ? "Speaking"
+        : s.phase === "fallback" ? "SAPI5 fallback"
+        : "TTS error";
+      el.className = s.phase;
+      el.hidden = false;
+      if (isTimedHold) {
+        ttsHoldTimer = window.setTimeout(() => {
+          if (currentTts === s) currentTts = null;
+          renderActivityPill();
+        }, remaining);
+      }
+      return;
+    }
+  }
+  if (thinkingRole) {
+    $("ttsl").textContent = "AI thinking…";
+    el.className = "thinking";
+    el.hidden = false;
     return;
   }
-  const isTimedHold = s.phase === "error" || (s.phase === "fallback" && s.holding);
-  const remaining = isTimedHold ? 5000 - Math.max(0, Date.now() - (s.updatedAt || Date.now())) : 1;
-  if (isTimedHold && remaining <= 0) {
-    el.hidden = true;
-    el.className = "";
-    return;
-  }
-  $("ttsl").textContent = s.phase === "generating" ? "Generating…"
-    : s.phase === "speaking" ? "Speaking"
-    : s.phase === "fallback" ? "SAPI5 fallback"
-    : "TTS error";
-  el.className = s.phase;
-  el.hidden = false;
-  if (isTimedHold) {
-    ttsHoldTimer = window.setTimeout(() => {
-      el.hidden = true;
-      el.className = "";
-    }, remaining);
-  }
+  el.hidden = true;
+  el.className = "";
+}
+
+function showTts(s: TtsStatus | null | undefined): void {
+  currentTts = s;
+  renderActivityPill();
+}
+
+function showLink(issue?: string | null, status?: string | null): void {
+  const el = $("link");
+  const hasIssue = Boolean(issue);
+  el.hidden = !hasIssue;
+  el.className = status === "error" ? "error" : "";
+  $("linkl").textContent = issue || "";
+  $("box").classList.toggle("link-lost", hasIssue);
 }
 
 function apply(s: AppSettings): void {
@@ -61,6 +82,9 @@ function connect(u: string | null): void {
   es?.close();
   es = null;
   if (!u) {
+    thinkingRole = null;
+    renderActivityPill();
+    showLink(null);
     $("state").textContent = "coach not running";
     fit();
     return;
@@ -70,6 +94,14 @@ function connect(u: string | null): void {
   const onState = (s: LiteState) => {
     if (!s) return;
     $("step").textContent = s.overlay_step || (s.frames ? `L${s.level ?? "?"}  ${s.zone || ""}` : "Glide: waiting for the game (is the data strip on?)");
+    const c = s.coach;
+    if (c) {
+      if ("thinking" in c) {
+        thinkingRole = c.thinking || null;
+        renderActivityPill();
+      }
+      showLink(c.link_issue, c.link_status);
+    }
     fit();
   };
   es.addEventListener("init", (e) => {
@@ -79,6 +111,10 @@ function connect(u: string | null): void {
     if (last) showMsg(last);
   });
   es.addEventListener("state", (e) => onState(JSON.parse((e as MessageEvent).data)));
+  es.addEventListener("thinking", (e) => {
+    thinkingRole = (JSON.parse((e as MessageEvent).data) as ThinkingEvent).role || null;
+    renderActivityPill();
+  });
   es.addEventListener("ptt", (e) => {
     const st = (JSON.parse((e as MessageEvent).data) as PttEvent).state;
     document.body.classList.toggle("ptt-listening", st === "listening");
@@ -91,6 +127,8 @@ function connect(u: string | null): void {
     if (SHOWN.has(m.kind)) showMsg(m);
   });
   es.onerror = () => {
+    thinkingRole = null;
+    renderActivityPill();
     $("state").textContent = "reconnecting…";
     fit();
   };

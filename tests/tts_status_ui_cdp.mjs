@@ -217,6 +217,32 @@ try {
         'Horizontal jitter on ' + baseline[i].id + ' during phase=' + st.phase + ': dLeft=' + dLeft + ', dWidth=' + dWidth);
     }
   }
+  // Verify SAPI5 generation latency propagates through tts:status -> speech.onTtsStatus -> voiceLastLine().
+  const narratorMod = await import('/renderer/narrator.js');
+  narratorMod.speech.configure(false, { provider: 'windows', voiceName: 'Xenia (Russian)' });
+  // Simulate an active SAPI5 sample line receiving its started synthMs from WindowsTts via TtsStatus.
+  let resolveSapi5;
+  const origInvoke = window.glide.invoke;
+  window.glide.invoke = async (ch, ...args) => {
+    if (ch === 'tts:windowsSpeak') {
+      const reqId = args[0];
+      emit('tts:status', {
+        provider: 'windows', voiceLabel: 'SAPI5 · Xenia', fullVoice: 'Windows SAPI5 (Xenia (Russian))',
+        phase: 'speaking', requestId: reqId, actualVoice: 'Xenia (Russian)', synthMs: 2294, updatedAt: Date.now(),
+      });
+      check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s,'),
+        'Expected immediate SAPI5 generation time on started, got: ' + narratorMod.voiceLastLine());
+      return new Promise((r) => { resolveSapi5 = () => r({ voice: 'Xenia (Russian)' }); });
+    }
+    return origInvoke(ch, ...args);
+  };
+  const sampleDone = narratorMod.speech.speakAndWait('Тестовая фраза.', 'sample');
+  await until(() => !!resolveSapi5);
+  resolveSapi5();
+  await sampleDone;
+  window.glide.invoke = origInvoke;
+  check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s,'),
+    'Expected SAPI5 generation time retained after completion, got: ' + narratorMod.voiceLastLine());
 
   // Saved sessionBarOrder migration: legacy order with "models" but no "stt"/"tts" places "stt","tts" right after "models".
   sbOrder.orderSessionBar(['cost', 'time', 'models', 'grow', 'translation', 'mute', 'mode']);
@@ -255,6 +281,72 @@ try {
     && document.getElementById('set-body').scrollTop > 200
     && inSetBodyView('[data-group="voice:Push-to-talk"]'), 'STT chip did not scroll Push-to-talk into view after async panel load');
 
+
+  // Deep-link navigation for missing voice & model API keys and unconfigured custom endpoints.
+  const [keysMod, voicesMod, endpointsMod, mpMod] = await Promise.all([
+    import('/renderer/settings/keys.js'),
+    import('/renderer/settings/voices.js'),
+    import('/renderer/settings/endpoints.js'),
+    import('/renderer/settings/model-picker.js'),
+  ]);
+  page.registerPanels({
+    keys: keysMod.renderKeys,
+    voices: voicesMod.renderVoices,
+    endpoints: endpointsMod.renderEndpoints,
+    'model-picker': mpMod.renderModelPicker,
+  });
+  await window.glide.invoke('app:settings:set', { speech: { provider: 'elevenlabs' } });
+  page.openSettingsTab('voice', 'tts');
+  await until(() => !!document.querySelector('#sv-key-note button[data-jump-target="key:ELEVENLABS_API_KEY"]'),
+    'Expected ElevenLabs voice service to render clickable ELEVENLABS_API_KEY jump link');
+  document.querySelector('#sv-key-note button[data-jump-target="key:ELEVENLABS_API_KEY"]').click();
+  await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'keys'
+    && !!document.querySelector('[data-key-row="ELEVENLABS_API_KEY"].jump-target')
+    && inSetBodyView('[data-key-row="ELEVENLABS_API_KEY"]')
+    && document.activeElement?.getAttribute('data-env') === 'ELEVENLABS_API_KEY',
+    'Voice jump failed');
+
+  // Model ids: missing ANTHROPIC_API_KEY jumps to ANTHROPIC_API_KEY row; missing ep:srv jumps to Custom endpoints.
+  page.openSettingsTab('models', 'fast');
+  await until(() => !!document.querySelector('[data-model-req="fast"] button[data-jump-target="key:ANTHROPIC_API_KEY"]'),
+    'Expected unconfigured Anthropic fast_model to render ANTHROPIC_API_KEY jump link');
+  document.querySelector('[data-model-req="fast"] button[data-jump-target="key:ANTHROPIC_API_KEY"]').click();
+  await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'keys'
+    && document.activeElement?.getAttribute('data-env') === 'ANTHROPIC_API_KEY',
+    'Expected model missing-key link to focus ANTHROPIC_API_KEY input');
+
+  page.openSettingsTab('models', 'fast');
+  await until(() => !!document.querySelector('[data-key="companion.llm.fast_model"] input'));
+  const fastInp = document.querySelector('[data-key="companion.llm.fast_model"] input');
+  fastInp.value = 'ep:missing-srv:gpt-4o';
+  fastInp.dispatchEvent(new Event('input', { bubbles: true }));
+  await until(() => !!document.querySelector('[data-model-req="fast"] button[data-jump-target="Custom endpoints"]'),
+    'Expected unconfigured ep:missing-srv model to render Custom endpoints jump link');
+  document.querySelector('[data-model-req="fast"] button[data-jump-target="Custom endpoints"]').click();
+  await until(() => inSetBodyView('[data-group="models:Custom endpoints"]'),
+    'Expected Custom endpoints jump link to scroll Custom endpoints group into view');
+
+  // Non-OpenAI endpoint configured with key_env="OPENAI_API_KEY" must require GLIDE_ENDPOINT_PROXY_KEY (not saved OPENAI_API_KEY).
+  fastInp.value = 'ep:proxy:gpt-4o';
+  fastInp.dispatchEvent(new Event('input', { bubbles: true }));
+  await until(() => !!document.querySelector('[data-model-req="fast"] button[data-jump-target="key:GLIDE_ENDPOINT_PROXY_KEY"]'),
+    'Expected non-OpenAI endpoint with key_env=OPENAI_API_KEY to require GLIDE_ENDPOINT_PROXY_KEY');
+  document.querySelector('[data-model-req="fast"] button[data-jump-target="key:GLIDE_ENDPOINT_PROXY_KEY"]').click();
+  await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'keys'
+    && document.activeElement?.getAttribute('data-env') === 'GLIDE_ENDPOINT_PROXY_KEY',
+    'Expected non-OpenAI endpoint key jump to focus GLIDE_ENDPOINT_PROXY_KEY input');
+
+  // Session bar TTS chip in phase="no-key" jumps straight to that provider's API key row.
+  nav.show('coach');
+  emit('tts:status', {
+    provider: 'elevenlabs', voiceLabel: 'ElevenLabs · George', fullVoice: 'ElevenLabs (eleven_flash_v2_5 · JBFqnCBsd6RMkjVDRZzb)',
+    phase: 'no-key', updatedAt: 9000,
+  });
+  ttsEl.click();
+  await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'keys'
+    && inSetBodyView('[data-key-row="ELEVENLABS_API_KEY"]')
+    && document.activeElement?.getAttribute('data-env') === 'ELEVENLABS_API_KEY',
+    'Expected No API key session-bar TTS chip click to jump directly to ELEVENLABS_API_KEY');
   return 'main-ok';
 })()`,
   });
@@ -305,13 +397,27 @@ try {
   const check = (cond, why) => { if (!cond) throw Error(why); };
   const raf = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
+  let activeEs = null;
+  window.EventSource = class {
+    constructor(u) { this.url = u; this.handlers = new Map(); activeEs = this; }
+    addEventListener(type, fn) {
+      if (!this.handlers.has(type)) this.handlers.set(type, new Set());
+      this.handlers.get(type).add(fn);
+    }
+    dispatch(type, payload) {
+      for (const fn of this.handlers.get(type) || []) fn({ data: JSON.stringify(payload) });
+    }
+    close() {}
+  };
   await import('/renderer/overlay.js');
+  emit('engine:state', { state: 'running', url: 'http://127.0.0.1:59999', port: 59999, detail: '', token: 't' });
   await raf();
 
   const box = document.getElementById('box');
   const tts = document.getElementById('tts');
-  check(tts, 'Expected inline #tts badge in overlay.html');
-  check(tts.hidden, '#tts must be hidden when idle (ready)');
+  const link = document.getElementById('link');
+  check(tts && link, 'Expected inline #tts and #link badges in overlay.html');
+  check(tts.hidden && link.hidden, '#tts and #link must be hidden when idle and healthy');
 
   for (const collapsed of [false, true]) {
     emit('app:settings', { overlay: { collapsed, opacity: 0.85, fontSize: 13 } });
@@ -319,7 +425,7 @@ try {
     const baseHeight = Math.round(box.getBoundingClientRect().height * 10) / 10;
 
     for (const [phase, expectedText] of [
-      ['generating', 'Generating…'],
+      ['generating', 'TTS synth…'],
       ['speaking', 'Speaking'],
       ['fallback', 'SAPI5 fallback'],
       ['error', 'TTS error'],
@@ -346,6 +452,56 @@ try {
       const h = Math.round(box.getBoundingClientRect().height * 10) / 10;
       check(Math.abs(h - baseHeight) === 0, 'Overlay height changed returning to ' + idlePhase);
     }
+    // Verify AI thinking… (LLM turn) -> TTS synth… -> Speaking -> idle AND #link ("Game data stopped 4m ago") with 0 px height bounce!
+    activeEs.dispatch('thinking', { role: 'question' });
+    await raf();
+    check(!tts.hidden && tts.classList.contains('thinking') && tts.textContent.trim() === 'AI thinking…',
+      'Expected AI thinking… pill during LLM question turn, got: ' + tts.textContent);
+    check(Math.abs(Math.round(box.getBoundingClientRect().height * 10) / 10 - baseHeight) === 0,
+      'Overlay height bounced during AI thinking… (collapsed=' + collapsed + ')');
+
+    emit('tts:status', {
+      provider: 'edge', voiceLabel: 'Edge · Svetlana', fullVoice: 'Edge-TTS (ru-RU-SvetlanaNeural)',
+      phase: 'generating', updatedAt: Date.now(),
+    });
+    await raf();
+    check(tts.textContent.trim() === 'TTS synth…', 'Active TTS synth… must take precedence over AI thinking…');
+    activeEs.dispatch('thinking', { role: null });
+    emit('tts:status', {
+      provider: 'edge', voiceLabel: 'Edge · Svetlana', fullVoice: 'Edge-TTS (ru-RU-SvetlanaNeural)',
+      phase: 'ready', updatedAt: Date.now(),
+    });
+    await raf();
+    check(tts.hidden, 'Expected #tts hidden once both AI thinking and TTS return to idle');
+
+    // Game data link loss indicator (#link) in both warn and error states with 0 px vertical bounce.
+    activeEs.dispatch('state', {
+      overlay_step: 'L12  Turn in Kobold Camp Cleanup',
+      frames: 45,
+      coach: { link_issue: 'Game data stopped 4m ago', link_status: 'warn', thinking: null },
+    });
+    await raf();
+    const afterStepHeight = Math.round(box.getBoundingClientRect().height * 10) / 10;
+    check(!link.hidden && link.textContent.trim() === 'Game data stopped 4m ago' && box.classList.contains('link-lost'),
+      'Expected visible Game data stopped 4m ago badge, got: ' + link.textContent);
+    activeEs.dispatch('state', {
+      overlay_step: 'L12  Turn in Kobold Camp Cleanup',
+      frames: 45,
+      coach: { link_issue: 'Addon mismatch', link_status: 'error', thinking: null },
+    });
+    await raf();
+    check(!link.hidden && link.classList.contains('error') && link.textContent.trim() === 'Addon mismatch',
+      'Expected Addon mismatch error badge');
+    activeEs.dispatch('state', {
+      overlay_step: 'L12  Turn in Kobold Camp Cleanup',
+      frames: 46,
+      coach: { link_issue: null, link_status: null, thinking: null },
+    });
+    await raf();
+    check(link.hidden && !box.classList.contains('link-lost'), 'Expected #link hidden when frames resume');
+    const clearHeight = Math.round(box.getBoundingClientRect().height * 10) / 10;
+    check(Math.abs(clearHeight - afterStepHeight) === 0,
+      'Overlay height bounced across #link show/hide (collapsed=' + collapsed + '): ' + afterStepHeight + ' -> ' + clearHeight);
   }
   // Post-fallback hold on overlay auto-hides after 5 s from updatedAt without vertical height bounce.
   emit('tts:status', {
@@ -355,7 +511,7 @@ try {
   check(!tts.hidden, '#tts should still show just before 5s hold expiry');
   await new Promise((r) => setTimeout(r, 90));
   check(tts.hidden, '#tts must auto-hide once 5s overlay hold expires');
-  return 'OK: 48px session bar, split Fast/Deep + STT + TTS navigation, migration, 0px horizontal shift, and 0px overlay height bounce';
+  return 'OK: 48px session bar, TTS synth latency, AI thinking -> TTS synth -> Speaking, #link addon loss, and 0px bounce';
 })()`,
   });
   if (overlayResult.exceptionDetails) {

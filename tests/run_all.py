@@ -44,6 +44,7 @@ _HEAVY = ("test_golden.py", "test_navmesh.py", "test_rxp_explorer.py", "test_rxp
           "test_models.py")
 SLOTS = 2            # tests at once per -j while the long ones have priority
 RISE = 1.25          # a recorded time rises at most this much per run (and falls at once)
+_PAID_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
 _REF = re.compile(r"^(HEAD|FETCH_HEAD|ORIG_HEAD|[0-9a-f]{7,40})([~^].*)?$|/|[~^]")   # --changed REF, not a word
 
 
@@ -189,7 +190,7 @@ def _fast_loop(tests, base):
     pick = set(affected.affected(files, deps, repo)[0])
     rel = {t: os.path.relpath(t, ROOT).replace(os.sep, "/") for t in tests}
     chosen = [t for t in tests if rel[t] in pick]
-    env = {k: v for k, v in os.environ.items() if k != "GLIDE_TYPES_FILES"}
+    env = {k: ("" if k in _PAID_KEYS else v) for k, v in os.environ.items() if k != "GLIDE_TYPES_FILES"}
     sub = affected.pyright_files(files, repo)
     if sub is not None:   # test_types checks only the engine files the change can reach
         env["GLIDE_TYPES_FILES"] = "\n".join(sub)
@@ -210,7 +211,8 @@ def main():
     tests = collect("smoke_*.py" if smoke else "test_*.py")
     if o["words"]:
         tests = [t for t in tests if any(w in os.path.relpath(t, HERE).lower() for w in o["words"])]
-    env = {k: v for k, v in os.environ.items() if k != "GLIDE_TYPES_FILES"}   # a full run checks the whole engine
+    env = {k: ("" if not smoke and k in _PAID_KEYS else v)
+           for k, v in os.environ.items() if k != "GLIDE_TYPES_FILES"}   # a full run checks the whole engine
     if o["changed"] and not smoke:
         tests, env, note = _fast_loop(tests, o["changed"])
         print(note, flush=True)

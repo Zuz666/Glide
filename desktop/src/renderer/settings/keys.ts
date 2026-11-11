@@ -29,7 +29,7 @@ function keyGuide(env: string, g: KeyGuide): string {
 function keyRowHtml(s: KeyStatus, k: KnownKey | undefined): string {
   const st = s.saved ? `<div class="keystate saved">Saved, ending ${esc(s.hint.replace("…", ""))}</div>` : s.fromEnv ? `<div class="keystate env" title="Set as a Windows environment variable">From a Windows environment variable, ending ${esc(s.hint.replace("…", ""))}</div>` : `<div class="keystate none">Not set</div>`;
   const plan = k?.guide?.plan ? PLAN[k.guide.plan] : null;
-  return `<div class="keyrow"><div><b>${esc(k?.label || s.env)}</b>${plan ? ` <span class="plan ${plan[1]}">${plan[0]}</span>` : ""}<span class="k">${esc(k?.help || "Key for a custom endpoint.")}</span></div>
+  return `<div class="keyrow" data-key-row="${esc(s.env)}"><div><b>${esc(k?.label || s.env)}</b>${plan ? ` <span class="plan ${plan[1]}">${plan[0]}</span>` : ""}<span class="k">${esc(k?.help || "Key for a custom endpoint.")}</span></div>
       <div><input type="password" data-env="${esc(s.env)}" placeholder="${s.saved || s.fromEnv ? "Paste a new key to replace it" : "Paste the key"}" autocomplete="off" aria-label="${esc(s.env)}">${st}</div>
       <div class="row"><button class="btn" data-save="${esc(s.env)}">Save key</button>${s.saved ? `<button class="btn ghost danger" data-del="${esc(s.env)}">Remove</button>` : ""}</div>
       ${k?.guide ? keyGuide(s.env, k.guide) : ""}</div>`;

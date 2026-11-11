@@ -13,6 +13,7 @@ export type WindowsSpeechEvent = {
   type: "submitted" | "started" | "done" | "cancelled" | "error";
   id: string;
   voice?: string;
+  elapsedMs?: number;
 };
 
 const HOLD_MS = 8000;
@@ -93,6 +94,9 @@ type ActiveRequest = {
   state: "generating" | "handoff" | "speaking" | "fallback";
   owner?: object;
   fallbackVoice?: string;
+  requestId?: string;
+  actualVoice?: string;
+  synthMs?: number;
   detail?: string;
   timer?: NodeJS.Timeout;
 };
@@ -263,7 +267,14 @@ export class TtsStatusCoordinator {
     const existing = this.active.get(ev.id);
     if (existing?.state === "fallback") {
       if (ev.type === "started" || ev.type === "done") {
-        if (ev.voice) existing.fallbackVoice = shortSapi5Voice(ev.voice) || existing.fallbackVoice;
+        if (ev.voice) {
+          existing.fallbackVoice = shortSapi5Voice(ev.voice) || existing.fallbackVoice;
+          existing.actualVoice = ev.voice;
+        }
+        if (ev.type === "started") {
+          existing.requestId = ev.id;
+          if (typeof ev.elapsedMs === "number") existing.synthMs = ev.elapsedMs;
+        }
         this.publish();
       } else if (ev.type === "cancelled") {
         clearTimeout(existing.timer);
@@ -289,7 +300,12 @@ export class TtsStatusCoordinator {
       this.publish();
     } else if (ev.type === "started") {
       this.clearHold();
-      this.active.set(ev.id, { state: "speaking" });
+      this.active.set(ev.id, {
+        state: "speaking",
+        requestId: ev.id,
+        ...(ev.voice ? { actualVoice: ev.voice } : {}),
+        ...(typeof ev.elapsedMs === "number" ? { synthMs: ev.elapsedMs } : {}),
+      });
       this.publish();
     } else if (ev.type === "done" || ev.type === "cancelled") {
       clearTimeout(existing?.timer);
@@ -340,11 +356,11 @@ export class TtsStatusCoordinator {
     let fallbackVoice: string | undefined;
     let detail: string | undefined = edge?.detail;
     let holding: boolean | undefined;
+    let activeEntry: ActiveRequest | undefined;
 
     if (s.muted) {
       phase = "muted";
     } else {
-      let activeEntry: ActiveRequest | undefined;
       let bestRank = 0;
       for (const entry of this.active.values()) {
         const rank = entry.state === "fallback" ? 3 : entry.state === "speaking" ? 2 : 1;
@@ -389,6 +405,9 @@ export class TtsStatusCoordinator {
       ...(workerState ? { workerState } : {}),
       ...(edge ? { readySlots: edge.readySlots, totalSlots: edge.totalSlots } : {}),
       ...(fallbackVoice ? { fallbackVoice } : {}),
+      ...(activeEntry?.requestId ? { requestId: activeEntry.requestId } : {}),
+      ...(activeEntry?.actualVoice ? { actualVoice: activeEntry.actualVoice } : {}),
+      ...(typeof activeEntry?.synthMs === "number" ? { synthMs: activeEntry.synthMs } : {}),
       ...(detail ? { detail } : {}),
       ...(holding ? { holding: true } : {}),
       updatedAt: holding && this.hold ? this.hold.updatedAt : now,

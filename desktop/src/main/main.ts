@@ -120,7 +120,9 @@ function setMuted(muted: boolean): void {
   settings.current.muted = muted;
   settings.save();
   if (muted) windowsTts.stop();
-  edgeTts.configure(!muted && settings.current.speech?.provider === "edge");
+  const sp = settings.current.speech;
+  windowsTts.configure(!muted && (sp?.provider || "windows") === "windows", sp?.voiceName);
+  edgeTts.configure(!muted && sp?.provider === "edge");
   broadcast("app:settings", settings.current);         // the window's voices stop and stay quiet
   pushMute();
   tray.update();
@@ -220,7 +222,9 @@ async function start(): Promise<void> {
   } catch (e) {
     engine.note(`could not prepare the engine home ${engineHome()}: ${(e as Error).message}`);
   }
-  edgeTts.configure(!settings.current.muted && settings.current.speech?.provider === "edge");
+  const sp0 = settings.current.speech;
+  windowsTts.configure(!settings.current.muted && (sp0?.provider || "windows") === "windows", sp0?.voiceName);
+  edgeTts.configure(!settings.current.muted && sp0?.provider === "edge");
   registerIpc({ engine, updater, speech: speechMgr, windowsTts, edgeTts, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
                 installUpdate, applyOverlaySettings, updateTray: () => tray.update(), ensureSpeech });
   mainWindow.create();

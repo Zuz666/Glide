@@ -41,4 +41,12 @@ assert set(re.findall(r'"(\w+)":', speak)) == set(declared("SpeakEvent")), speak
 # the dashboard stays checked: @ts-check in the page, and the build runs its check
 assert "// @ts-check" in read("companion", "static", "dashboard.js")
 assert re.search(r"\btsc -b [^&]*\btsconfig\.dashboard\.json\b", json.loads(read("desktop", "package.json"))["scripts"]["build"])
+# desktop/src/shared/*.ts is compiled to dist/shared/*.js by both CJS (main) and ESM (renderer) builds;
+# runtime exports in .ts files there break main at startup when renderer's ESM build overwrites them (use .mts or src/main/).
+shared_dir = os.path.join(ROOT, "desktop", "src", "shared")
+for fname in sorted(os.listdir(shared_dir)):
+    if fname.endswith(".ts") and not fname.endswith(".d.ts"):
+        src = read("desktop", "src", "shared", fname)
+        bad = re.findall(r"^\s*export\s+(?:const|let|var|async\s+function|function|class|enum|default)\b", src, re.M)
+        assert not bad, "runtime export in type-only desktop/src/shared/%s: %r" % (fname, bad)
 print("ok")

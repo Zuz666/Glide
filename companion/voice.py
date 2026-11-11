@@ -166,7 +166,9 @@ class Voice:
                         turn = self._pending.get(ident)
                         if turn is None:
                             continue
-                        if event["event"] != "started":
+                        if event["event"] == "started":
+                            turn["synth_ms"] = round((time.monotonic() - turn["submitted"]) * 1000)
+                        else:
                             self._pending.pop(ident)
                         if isinstance(event.get("voice"), str):
                             turn["attribution"]["voice"] = event["voice"]
@@ -175,7 +177,10 @@ class Voice:
                     if event["event"] == "done" and isinstance(event.get("voice"), str):
                         if self.on_spoken is not None:
                             try:
-                                self.on_spoken({"voice": event["voice"], "text": turn["text"], "at": at})
+                                spoken_payload = {"voice": event["voice"], "text": turn["text"], "at": at}
+                                if turn.get("synth_ms") is not None:
+                                    spoken_payload["synth_ms"] = turn["synth_ms"]
+                                self.on_spoken(spoken_payload)
                             except Exception as e:  # the UI must not stop the native reader
                                 console.log_once("voice.status", e)
         except Exception as e:

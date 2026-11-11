@@ -239,7 +239,8 @@ class App:
             gear_fn=lambda: (self.rules.upgrades, self.rules.rewards, self.state.gear["W"], self.rules.bag_items),
             system_fn=lambda: self.rules.addon_status,
             speak_fn=self.speak_early,
-            watched_fn=lambda: self.rules.watched)
+            watched_fn=lambda: self.rules.watched,
+            on_thinking=lambda role: self.hub.publish("thinking", {"role": role}))
 
     # ------------------------------------------------------------------------------------------
     def on_message(self, m):
@@ -681,8 +682,12 @@ class App:
         nb = getattr(self, "navbuild", None)
         s["navbuild"] = dict(nb.status, needed=None) if nb is not None else None
         s["models"] = self._model_status()
+        import health as health_mod
+        lk = health_mod.link_check(self)
         s["coach"] = {**self.coach.stats, "mode": ("offline: " + self.coach.suspended) if self.coach.suspended
-                      else ("claude" if self.coach.enabled else "offline")}
+                      else ("claude" if self.coach.enabled else "offline"),
+                      "thinking": self.coach.thinking, "link_issue": lk["short"],
+                      "link_status": lk["status"] if lk["short"] else None}
         s["kb"] = self._kb_status
         if self.pack is not None:
             s["why"], s["pace"] = self._why_panel(s)

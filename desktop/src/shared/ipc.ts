@@ -76,6 +76,9 @@ export interface TtsStatus {
   readySlots?: number;
   totalSlots?: number;
   fallbackVoice?: string;
+  requestId?: string;
+  actualVoice?: string;
+  synthMs?: number;
   detail?: string;
   holding?: boolean;
   updatedAt: number;

@@ -13,7 +13,7 @@
 import { call, glide, ipcError } from "./bridge.js";
 import { toast } from "./dom.js";
 import { Obj, SpeechSettings } from "./types.js";
-import type { LogAttribution } from "./types.js";
+import type { LogAttribution, TtsStatus } from "../shared/ipc.js";
 import { edgeSpeech } from "./edge-speech.js";
 import type { EdgeStream } from "./edge-speech.js";
 
@@ -26,6 +26,7 @@ interface Line {
   windows: Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
   requestId: string;
   attribution?: LogAttribution;
+  synthMs?: number;
   nativeId?: string;
   player?: HTMLAudioElement;
   tag?: string;
@@ -48,6 +49,9 @@ class Narrator {
   lastVoice = "";
   lastVoiceAt = 0;
   lastText = "";
+  lastSynthMs: number | null = null;
+  private lastRequestId = "";
+  private sapiSynthMs = new Map<string, number>();
   private lastError = 0;
 
   /** Settings apply to newly queued lines. Muting stops the active line and drops the queue. */
@@ -62,11 +66,13 @@ class Narrator {
   }
 
   /** Observe speech without playing it; an older reconnect replay must not replace a newer line. */
-  noteVoice(name: string, text: string, at = Date.now()): void {
+  noteVoice(name: string, text: string, at = Date.now(), synthMs: number | null = null, requestId = ""): void {
     if (at < this.lastVoiceAt) return;
     this.lastVoice = name;
     this.lastVoiceAt = at;
     this.lastText = text;
+    this.lastSynthMs = synthMs;
+    this.lastRequestId = requestId;
     const el = document.getElementById("sv-last");
     if (el) el.textContent = voiceLastLine();
     const line = document.getElementById("sv-last-text");
@@ -75,6 +81,20 @@ class Narrator {
       line.hidden = false;
     }
   }
+  onTtsStatus(s: TtsStatus): void {
+    if (s.requestId && typeof s.synthMs === "number") {
+      if (this.sapiSynthMs.size >= 32) {
+        const oldest = this.sapiSynthMs.keys().next().value;
+        if (oldest !== undefined) this.sapiSynthMs.delete(oldest);
+      }
+      this.sapiSynthMs.set(s.requestId, s.synthMs);
+      const cur = this.current;
+      if (cur && cur.nativeId === s.requestId && (s.phase === "speaking" || s.phase === "fallback") && s.actualVoice) {
+        this.noteVoice(`${s.actualVoice} (SAPI5)`, cur.text, Date.now(), s.synthMs, s.requestId);
+      }
+    }
+  }
+
 
   private voiceError(message: string): void {
     if (Date.now() - this.lastError <= 60_000) return;
@@ -156,9 +176,13 @@ class Narrator {
     if (line.provider === "edge") {
       line.edge = edgeSpeech.start(text, line.requestId);
     } else if (line.provider !== "windows") {
+      const synthStarted = performance.now();
       line.audio = glide.invoke("tts:synth", text, style, tone, line.requestId)
         .then((r) => {
           line.attribution = r.attribution;
+          line.synthMs = typeof r.attribution?.elapsed_ms === "number"
+            ? r.attribution.elapsed_ms
+            : Math.max(0, Math.round(performance.now() - synthStarted));
           return new Blob([r.data as BlobPart], { type: r.mime });
         })
         .catch((e) => {
@@ -174,7 +198,9 @@ class Narrator {
     line.nativeId = line.requestId;
     try {
       const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text, line.windows);
-      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text);
+      const synthMs = this.sapiSynthMs.get(line.requestId) ?? null;
+      this.sapiSynthMs.delete(line.requestId);
+      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text, Date.now(), synthMs, line.requestId);
       return true;
     } catch (error) {
       if (this.current === line && !line.cancelled) {
@@ -202,7 +228,7 @@ class Narrator {
       // Failure discards every unstarted accepted file, including one whose next() just resolved.
       if (stream.terminal && stream.terminal.reason !== "complete") break;
       const result = await this.play(fragment.blob, line, line.text.slice(fragment.start, fragment.end),
-        fragment.attribution, () => { unstarted = fragment.end; }, stream);
+        fragment.attribution, () => { unstarted = fragment.end; }, stream, fragment.synthMs);
       if (this.current !== line || line.cancelled) return;
       if (result.failed) {
         stream.cancel();
@@ -225,6 +251,11 @@ class Narrator {
       const ok = await this.windowsSay(line, line.text.slice(unstarted));
       if (!line.cancelled) this.reportPlayback(line, ok ? "ended" : "error");
     } else if (line.reportedPlaying) {
+      if (terminal?.reason === "complete" && this.lastRequestId === line.requestId && stream.synthMs !== undefined) {
+        this.lastSynthMs = stream.synthMs;
+        const el = document.getElementById("sv-last");
+        if (el) el.textContent = voiceLastLine();
+      }
       this.reportPlayback(line, "ended");
     }
   }
@@ -259,7 +290,7 @@ class Narrator {
   }
 
   private async play(blob: Blob, line: Line, text = line.text, source = line.attribution,
-    onStart?: () => void, stream?: EdgeStream): Promise<{ started: boolean; failed: boolean }> {
+    onStart?: () => void, stream?: EdgeStream, fragmentSynthMs?: number): Promise<{ started: boolean; failed: boolean }> {
     const url = URL.createObjectURL(blob);
     const a = new Audio(url);
     line.player = a;
@@ -301,7 +332,8 @@ class Narrator {
         onStart?.();
         call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
           { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });
-        this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, text);
+        this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, text,
+          Date.now(), fragmentSynthMs ?? line.synthMs ?? null, line.requestId);
       }).catch((e: unknown) => {
         if (finished) return;
         failed = true;
@@ -337,8 +369,15 @@ export function speakLabel(sp: Obj): string {
   return v ? `SAPI5, ${v}` : "Windows SAPI5";
 }
 
-/** "Last line spoken with" (Settings > Voice): the voice and the time. */
+export function fmtSynthDuration(ms: number | null): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "";
+  return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+}
+
+/** "Last line spoken with" (Settings > Voice): the voice, online synthesis latency, and time. */
 export function voiceLastLine(): string {
   if (!speech.lastVoice) return "nothing spoken yet this session";
-  return `${speech.lastVoice}, ${new Date(speech.lastVoiceAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  const dur = fmtSynthDuration(speech.lastSynthMs);
+  const synth = dur ? `, generated in ${dur}` : "";
+  return `${speech.lastVoice}${synth}, ${new Date(speech.lastVoiceAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }

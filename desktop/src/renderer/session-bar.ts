@@ -4,8 +4,10 @@ import { taskBar } from "./activity.js";
 import { call, glide } from "./bridge.js";
 import { $, cap } from "./dom.js";
 import { renderReminders } from "./memory.js";
+import { speech } from "./narrator.js";
 import { currentPage } from "./nav.js";
 import { liveGameChanged } from "./rxp-browser.js";
+import { TTS_PROVIDER_KEY } from "./settings/key-links.js";
 import { openSettingsTab } from "./settings/page.js";
 import { refreshWalkMapPanel } from "./settings/walk-map.js";
 import { wireSessionBarOrder } from "./session-bar-order.js";
@@ -127,7 +129,7 @@ function ttsPhaseLabel(s: TtsStatus): string {
   if (s.phase === "muted") return "Muted";
   if (s.phase === "no-key") return "No API key";
   if (s.phase === "connecting") return s.totalSlots ? `Connecting (${s.readySlots ?? 0}/${s.totalSlots})` : "Connecting…";
-  if (s.phase === "generating") return "Generating…";
+  if (s.phase === "generating") return "Synthesizing…";
   if (s.phase === "speaking") return "Speaking";
   if (s.phase === "fallback") return s.fallbackVoice ? `Fallback · ${s.fallbackVoice}` : "SAPI5 fallback";
   if (s.phase === "error") return "TTS error";
@@ -136,15 +138,18 @@ function ttsPhaseLabel(s: TtsStatus): string {
 
 export function showTtsStatus(s: TtsStatus): void {
   const wrap = $("sb-speak-wrap");
+  speech.onTtsStatus(s);
   const stateText = ttsPhaseLabel(s);
   $("sb-speak").textContent = s.voiceLabel;
   $("sb-speak-state").textContent = stateText;
   wrap.dataset.phase = s.phase;
+  wrap.dataset.provider = s.provider;
+  const missingKey = s.phase === "no-key" ? TTS_PROVIDER_KEY[s.provider] : "";
   const workerLine = s.workerState
     ? ` (worker: ${s.workerState}${s.totalSlots ? `, ${s.readySlots ?? 0}/${s.totalSlots} slots` : ""})`
     : "";
   wrap.title = `Coach voice: ${s.fullVoice}\nStatus: ${stateText}${workerLine}`
-    + `${s.detail ? `\nDiagnostic: ${s.detail}` : ""}\nClick to open Voice settings.`;
+    + `${s.detail ? `\nDiagnostic: ${s.detail}` : ""}\n${missingKey ? `Click to set ${missingKey} in API keys.` : "Click to open Voice settings."}`;
 }
 
 export function refreshTtsStatus(): void {
@@ -155,7 +160,12 @@ export function wireSessionBar(): void {
   $("sb-fast-btn").onclick = () => openSettingsTab("models", "fast");
   $("sb-deep-btn").onclick = () => openSettingsTab("models", "deep");
   $("sb-listen-wrap").onclick = () => openSettingsTab("voice", "stt");
-  $("sb-speak-wrap").onclick = () => openSettingsTab("voice", "tts");
+  $("sb-speak-wrap").onclick = () => {
+    const wrap = $("sb-speak-wrap");
+    const env = wrap.dataset.phase === "no-key" ? TTS_PROVIDER_KEY[wrap.dataset.provider || ""] : "";
+    if (env) openSettingsTab("keys", `key:${env}`);
+    else openSettingsTab("voice", "tts");
+  };
   $("sb-translation").onclick = () => openSettingsTab("language");
   glide.on("tts:status", showTtsStatus);
   refreshTtsStatus();

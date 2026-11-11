@@ -112,14 +112,21 @@ export function fieldHtml(f: Field): string {
   const ctl = controlHtml(f, controlId(f), current(f));
   const resettable = canReset(f);
   const thinking = f.key === "companion.llm.tune_thinking";
-  const help = thinking ? esc(f.help).replace("lightweight", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">lightweight</button>`) : esc(f.help);
+  const pttToggle = f.key === "app:engineArgs.noPtt";
+  const hasKeyNote = f.key === "companion.ptt.engine" || f.key === "companion.llm.recall_meaning";
+  const help = thinking
+    ? esc(f.help).replace("lightweight", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">lightweight</button>`)
+    : pttToggle
+      ? esc(f.help).replace("Voice settings", `<button type="button" class="reset settings-jump" data-jump-tab="voice" data-jump-target="stt">Voice settings</button>`)
+      : esc(f.help);
   const effort = f.key.endsWith("_reasoning_effort");
   return `<div class="field${edits.has(f.key) ? " changed" : ""}" data-key="${esc(f.key)}">
     <div class="lab">${esc(f.label)}${f.help ? `<small>${help}${effort ? ` ${AUTO_THINKING_HELP}` : ""}</small>` : ""}</div>
     <div class="ctl">${ctl}
       ${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
       ${f.key === "companion.voice.voice" ? `<button type="button" class="reset" data-copy-windows-voice title="Copy the selected Windows/SAPI5 voice from Coach voice. Windows default leaves the name empty.">Copy Windows voice</button>` : ""}
-      ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(resetTitle(f))}">Use default</button>` : ""}</div></div>${thinking ? THINKING_HELP : ""}`;
+      ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(resetTitle(f))}">Use default</button>` : ""}
+      ${hasKeyNote ? `<span data-field-key-note hidden></span>` : ""}</div></div>${thinking ? THINKING_HELP : ""}`;
 }
 
 /** Follow the control drawn by fieldHtml: each change is an edit (or no longer one when it's back to the stored value). */

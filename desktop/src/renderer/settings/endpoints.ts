@@ -5,12 +5,11 @@ import { $, esc, icon, toast } from "../dom.js";
 import { Group } from "../settings-schema.js";
 import { enginePost, JSON_HEADERS, live } from "../state.js";
 import { getPath, merge } from "./fields.js";
+import { endpointKeyEnv } from "./key-links.js";
 import { openSettingsTab, renderSettings } from "./page.js";
 
 interface Endpoint { id: string; label?: string; base_url: string; key_env?: string }
 const unsavedEndpoints = new WeakSet<HTMLElement>();
-/** The key's variable: its own key_env, else one named after the id (the main process names it the same way). */
-const keyEnvFor = (e: Endpoint) => e.key_env || `GLIDE_ENDPOINT_${e.id.toUpperCase().replace(/-/g, "_")}_KEY`;
 const PRESETS: [string, Endpoint][] = [
   ["Ollama (local)", { id: "ollama", label: "Ollama", base_url: "http://127.0.0.1:11434/v1" }],
   ["LM Studio (local)", { id: "lmstudio", label: "LM Studio", base_url: "http://127.0.0.1:1234/v1" }],
@@ -25,7 +24,7 @@ function endpointHtml(e: Endpoint, i: number): string {
       <span class="lbl">Id</span><input data-k="id" value="${esc(e.id)}" spellcheck="false" placeholder="ollama" aria-label="Endpoint id">
       <span class="lbl">Name</span><input data-k="label" value="${esc(e.label || "")}" placeholder="Ollama (local)" aria-label="Endpoint name">
       <span class="lbl">Base URL</span><input data-k="base_url" value="${esc(e.base_url)}" spellcheck="false" placeholder="http://127.0.0.1:11434/v1" aria-label="Base URL">
-      <span class="lbl">Key</span><span class="help">Set <code>${esc(keyEnvFor(e))}</code> in <button type="button" class="reset" data-endpoint-keys>API keys</button>. Local servers don't need one.</span>
+      <span class="lbl">Key</span><span class="help">Set <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}"><code>${esc(endpointKeyEnv(e))}</code></button> in <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}">API keys</button>. Local servers don't need one.</span>
       <div class="actions"><button class="btn" data-act="test">${icon("search")}Test and list models</button><button class="btn ghost danger" data-act="del">Remove</button>
         <span data-out></span></div>
       <div class="models" data-models></div></div>`;
@@ -39,8 +38,9 @@ export function renderEndpoints(g: Group, host: HTMLElement): void {
      <p class="help" id="ep-key-note" ${unsavedEndpoints.has(host) ? "" : "hidden"}>Save endpoints before opening API keys, so your changes are kept and new endpoint keys appear there.</p>`;
   host.querySelectorAll<HTMLButtonElement>("[data-endpoint-keys]").forEach((button) => {
     button.disabled = unsavedEndpoints.has(host);
-    button.title = button.disabled ? "Save endpoints before opening API keys" : "Open service API keys";
-    button.onclick = () => openSettingsTab("keys");
+    const env = button.dataset.keyEnv || "";
+    button.title = button.disabled ? "Save endpoints before opening API keys" : `Open ${env || "service"} in API keys`;
+    button.onclick = () => openSettingsTab("keys", env ? `key:${env}` : undefined);
   });
   const markUnsaved = () => {
     unsavedEndpoints.add(host);
@@ -87,7 +87,7 @@ export function renderEndpoints(g: Group, host: HTMLElement): void {
 async function testEndpoint(el: HTMLElement, e: Endpoint): Promise<void> {
   const out = el.querySelector<HTMLElement>("[data-out]")!;
   out.textContent = "Testing…";
-  const r = await call("endpoint:test", e.base_url, keyEnvFor(e));
+  const r = await call("endpoint:test", e.base_url, endpointKeyEnv(e));
   if (!r) return;
   out.innerHTML = r.ok ? `<span class="ok">Reachable, ${r.models!.length} models</span>` : `<span class="bad">${esc(r.error)}</span>`;
   const m = el.querySelector<HTMLElement>("[data-models]")!;

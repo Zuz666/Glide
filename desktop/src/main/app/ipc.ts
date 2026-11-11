@@ -90,6 +90,7 @@ export function registerIpc(d: IpcDeps): void {
   });
   d.edgeTts?.onStatusChange?.(() => ttsStatus.refresh());
   d.windowsTts?.onStatusChange?.((event) => ttsStatus.onWindowsEvent(event));
+  d.windowsTts?.onWorkerChange?.(() => ttsStatus.refresh());
   type StatusOwner = { cleanup: () => void;
     navigation: (event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void };
   const statusOwners = new Map<WebContents, StatusOwner>();
@@ -160,7 +161,9 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
     const prevHome = engineHome();
     settings.merge(patch);
     if (settings.current.muted) d.windowsTts.stop();
-    d.edgeTts.configure(!settings.current.muted && settings.current.speech?.provider === "edge");
+    const sp = settings.current.speech;
+    d.windowsTts.configure?.(!settings.current.muted && (sp?.provider || "windows") === "windows", sp?.voiceName);
+    d.edgeTts.configure(!settings.current.muted && sp?.provider === "edge");
     ttsStatus.refresh();
     d.applyOverlaySettings();
     d.updateTray();

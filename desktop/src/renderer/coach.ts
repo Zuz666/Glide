@@ -6,7 +6,7 @@ import { speech } from "./narrator.js";
 import { sessionBar } from "./session-bar.js";
 import { live } from "./state.js";
 import { refreshStatus } from "./status.js";
-import { EngineStatus, LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "./types.js";
+import { EngineStatus, LiteInitEvent, LiteState, PttEvent, SpeakEvent, ThinkingEvent, VoiceSpokenEvent } from "./types.js";
 
 export const ENGINE_LABEL: Record<string, string> = { stopped: "Stopped", building: "Building", starting: "Starting", running: "Running",
                                                       stopping: "Stopping", crashed: "Stopped with an error" };
@@ -57,15 +57,32 @@ function hideDashboard(): void {
   f.removeAttribute("src");
   $("dash-empty").style.display = "";
   speech.stop();
+  pttState = "idle";
+  thinkingRole = null;
+  renderPttChip();
   sessionBar(null);
 }
 
-/** Push-to-talk as it happens, in the session bar: a pulsing gold "Listening" while the key is held. */
-function showPtt(state: PttEvent["state"]): void {
+let pttState: PttEvent["state"] = "idle";
+let thinkingRole: string | null = null;
+
+/** Push-to-talk and LLM answer generation in the session bar: Listening -> Transcribing -> AI thinking…. */
+function renderPttChip(): void {
   const el = $("sb-ptt");
-  el.hidden = state === "idle";
-  el.className = `sb-ptt ${state}`;
-  $("sb-ptt-l").textContent = state === "transcribing" ? "Transcribing" : "Listening";
+  if (pttState !== "idle") {
+    el.hidden = false;
+    el.className = `sb-ptt ${pttState}`;
+    $("sb-ptt-l").textContent = pttState === "transcribing" ? "Transcribing" : "Listening";
+    return;
+  }
+  if (thinkingRole === "question") {
+    el.hidden = false;
+    el.className = "sb-ptt thinking";
+    $("sb-ptt-l").textContent = "AI thinking…";
+    return;
+  }
+  el.hidden = true;
+  el.className = "sb-ptt idle";
 }
 
 const BARGE_MS = 150;            // as the engine's BARGE_S
@@ -74,15 +91,38 @@ let bargeTimer = 0;
 /** The light stream: the session bar's keys of the state, and the speak and push-to-talk events. */
 function connectEvents(url: string): void {
   events = new EventSource(url + "/events?lite=1");
-  events.addEventListener("init", (e) => { try { sessionBar((JSON.parse((e as MessageEvent).data) as LiteInitEvent).state); } catch { /* ignore */ } });
-  events.addEventListener("state", (e) => { try { sessionBar(JSON.parse((e as MessageEvent).data)); } catch { /* ignore */ } });
+  events.addEventListener("init", (e) => {
+    try {
+      const st = (JSON.parse((e as MessageEvent).data) as LiteInitEvent).state;
+      thinkingRole = st?.coach?.thinking || null;
+      renderPttChip();
+      sessionBar(st);
+    } catch { /* ignore */ }
+  });
+  events.addEventListener("state", (e) => {
+    try {
+      const st = JSON.parse((e as MessageEvent).data) as LiteState;
+      if (st?.coach && "thinking" in st.coach) {
+        thinkingRole = st.coach.thinking || null;
+        renderPttChip();
+      }
+      sessionBar(st);
+    } catch { /* ignore */ }
+  });
+  events.addEventListener("thinking", (e) => {
+    try {
+      thinkingRole = (JSON.parse((e as MessageEvent).data) as ThinkingEvent).role || null;
+      renderPttChip();
+    } catch { /* ignore */ }
+  });
   events.addEventListener("ptt", (e) => {
     try {
       const state = (JSON.parse((e as MessageEvent).data) as PttEvent).state;
       // the player talks over the coach: it stops, like on a call (held BARGE_MS: a brush of the key isn't talking)
       if (bargeTimer) { clearTimeout(bargeTimer); bargeTimer = 0; }
       if (state === "listening") bargeTimer = window.setTimeout(() => { bargeTimer = 0; speech.bargeIn(); }, BARGE_MS);
-      showPtt(state);
+      pttState = state;
+      renderPttChip();
     } catch { /* ignore */ }
   });
   events.addEventListener("speak", (e) => {
@@ -95,7 +135,7 @@ function connectEvents(url: string): void {
     try {
       const d: VoiceSpokenEvent = JSON.parse((e as MessageEvent).data);
       if (typeof d.voice === "string" && typeof d.text === "string" && Number.isFinite(d.at))
-        speech.noteVoice(`${d.voice} (SAPI5)`, d.text, d.at);
+        speech.noteVoice(`${d.voice} (SAPI5)`, d.text, d.at, typeof d.synth_ms === "number" ? d.synth_ms : null);
     } catch { /* ignore */ }
   });
 }

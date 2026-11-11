@@ -198,14 +198,34 @@ export function engineOptions(): EngineOptions {
            noArchive: !!a.noArchive, noKb: !!a.noKb };
 }
 
-/** Keys of custom endpoints in config.json (llm.endpoints[].key_env), so the settings page can set them. */
+const ENDPOINT_VENDOR_HOSTS: Record<string, readonly string[]> = {
+  ANTHROPIC_API_KEY: ["api.anthropic.com"], OPENROUTER_API_KEY: ["openrouter.ai"],
+  GEMINI_API_KEY: ["generativelanguage.googleapis.com"], GOOGLE_API_KEY: ["generativelanguage.googleapis.com"],
+  OPENAI_API_KEY: ["api.openai.com"], GROQ_API_KEY: ["api.groq.com"], DEEPGRAM_API_KEY: ["api.deepgram.com"],
+  TAVILY_API_KEY: [], BRAVE_API_KEY: [], ELEVENLABS_API_KEY: [], AZURE_SPEECH_KEY: [], GOOGLE_TTS_API_KEY: [],
+};
+
+/** Effective keys of custom endpoints in config.json (matching companion/openai_compat.py:endpoint_key_env). */
 export function endpointKeyEnvs(): string[] {
   const eps = companionSection("llm").endpoints;
   if (!Array.isArray(eps)) return [];
-  return eps.map((e) => {
+  const out: string[] = [];
+  for (const e of eps) {
     const o = (e || {}) as Obj;
-    return String(o.key_env || `GLIDE_ENDPOINT_${String(o.id || "").toUpperCase().replace(/-/g, "_")}_KEY`);
-  }).filter((k) => /^[A-Z][A-Z0-9_]{1,63}$/.test(k));
+    const id = String(o.id || "").trim().toLowerCase();
+    const base = String(o.base_url || "").trim().replace(/\/+$/, "");
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(id) || !/^https?:\/\//i.test(base)) continue;
+    const own = `GLIDE_ENDPOINT_${id.toUpperCase().replace(/-/g, "_")}_KEY`;
+    let env = String(o.key_env || own);
+    if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(env)) env = own;
+    else if (Object.hasOwn(ENDPOINT_VENDOR_HOSTS, env)) {
+      let host = "";
+      try { host = new URL(base).hostname.toLowerCase(); } catch { host = ""; }
+      if (!ENDPOINT_VENDOR_HOSTS[env].includes(host)) env = own;
+    }
+    if (!out.includes(env)) out.push(env);
+  }
+  return out;
 }
 
 /** A key's value for the app's own requests (voices, endpoint tests): the key store first, then the environment. */

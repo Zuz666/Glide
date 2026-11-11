@@ -8,5 +8,5 @@ export type {
 } from "../shared/ipc.js";
 export type {
   CoachMessage, CoachStats, EngineState, InitEvent, LiteInitEvent, LiteState, LiveGame, Models, NavBuild, Refresh, Reminder,
-  PttEvent, SpeakEvent, VoiceSpokenEvent,
+  PttEvent, SpeakEvent, ThinkingEvent, VoiceSpokenEvent,
 } from "../shared/engine.js";

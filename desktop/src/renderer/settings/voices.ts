@@ -7,6 +7,7 @@ import { speech, voiceLastLine } from "../narrator.js";
 import { Group } from "../settings-schema.js";
 import { filterEdgeVoices, speechLanguage as language, voiceSample } from "../speech-language.js";
 import { live } from "../state.js";
+import { keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
@@ -23,7 +24,7 @@ const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], 
 
 const field = (label: string, help: string, ctl: string) =>
   `<div class="field"><div class="lab">${label}${help ? `<small>${help}</small>` : ""}</div><div class="ctl">${ctl}</div></div>`;
-const keyNote = (env: string) => env ? `<span class="help">Needs <code>${esc(env)}</code> in Settings &gt; API keys.</span>` : "";
+const keyNote = (env: string) => env ? `<span id="sv-key-note">${keyRequirementHtml(env, null)}</span>` : "";
 const options = (list: [string, string][], cur: string) =>
   list.map(([m, l]) => `<option value="${m}" ${m === cur ? "selected" : ""}>${l}</option>`).join("");
 /** A voice picker filled by Load voices; until then it shows the saved voice (or the provider's default). */
@@ -77,6 +78,15 @@ export function renderVoices(g: Group, host: HTMLElement): void {
     + field("Try it", "Uses the saved speech language; save language changes above first. The coach uses this voice when Spoken by is set to this app.", `<button class="btn" id="sv-test" disabled>${icon("volume-2")}Play a sample</button><span id="sv-sample" class="help voice-text" aria-live="polite">Preparing sample…</span>`)
     + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
+  const activeEnv = PROVIDERS.find((p) => p[0] === prov)?.[2] || "";
+  if (activeEnv) {
+    void loadConfiguredKeys().then((keys) => {
+      const el = host.querySelector<HTMLElement>("#sv-key-note");
+      if (el && keys && $<HTMLSelectElement>("sv-prov").value === prov) {
+        el.innerHTML = keyRequirementHtml(activeEnv, keys);
+      }
+    });
+  }
   $("sv-prov").onchange = async (e) => {
     const provider = (e.target as HTMLSelectElement).value;
     if (provider === "edge" && !edgeVoice(sp).startsWith(`${language()}-`)) {

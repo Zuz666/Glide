@@ -133,6 +133,21 @@ function Stop-Speaks {
     }
 }
 
+function Drop-QueuedWarmups {
+    if ($script:queue.Count -eq 0) { return }
+    $kept = [System.Collections.Generic.Queue[object]]::new()
+    while ($script:queue.Count -gt 0) {
+        $turn = $script:queue.Dequeue()
+        if ($turn.warmup) {
+            Write-Protocol @{ id = $turn.id; event = 'cancelled' }
+        }
+        else {
+            $kept.Enqueue($turn)
+        }
+    }
+    $script:queue = $kept
+}
+
 function Invoke-CommandLine {
     param([string]$Line)
     $requestId = $null
@@ -181,6 +196,10 @@ function Invoke-CommandLine {
                     }
                     if ($command.interrupt) { Stop-Speaks }
                 }
+                if ($null -ne $script:active -and $script:active.warmup) {
+                    Stop-Speaks $script:active.id
+                }
+                Drop-QueuedWarmups
                 $script:queue.Enqueue([pscustomobject]@{
                     id = $requestId
                     text = $command.text
@@ -188,7 +207,39 @@ function Invoke-CommandLine {
                     rate = [int]$command.rate
                     volume = [int]$command.volume
                     actualVoice = $null
+                    started = $false
+                    warmup = $false
                 })
+            }
+            'warmup' {
+                if ($null -eq $properties['voice'] -or $command.voice -isnot [string]) {
+                    throw 'Warmup requires a string voice.'
+                }
+                $hasRealSpeak = ($null -ne $script:active -and -not $script:active.warmup)
+                if (-not $hasRealSpeak) {
+                    foreach ($item in $script:queue) {
+                        if (-not $item.warmup) { $hasRealSpeak = $true; break }
+                    }
+                }
+                if ($hasRealSpeak) {
+                    Write-Protocol @{ id = $requestId; event = 'warmed'; voice = $command.voice }
+                }
+                else {
+                    if ($null -ne $script:active -and $script:active.warmup) {
+                        Stop-Speaks $script:active.id
+                    }
+                    Drop-QueuedWarmups
+                    $script:queue.Enqueue([pscustomobject]@{
+                        id = $requestId
+                        text = '1'
+                        voice = $command.voice
+                        rate = 10
+                        volume = 0
+                        actualVoice = $null
+                        started = $false
+                        warmup = $true
+                    })
+                }
             }
             'cancel' {
                 if ($null -ne $properties['target']) {
@@ -236,20 +287,28 @@ function Start-NextSpeak {
             Write-Protocol @{ id = $turn.id; event = 'error'; error = $_.Exception.Message }
             continue
         }
-        Write-Protocol @{ id = $turn.id; event = 'started'; voice = $turn.actualVoice }
     }
 }
 
 function Complete-ActiveSpeak {
-    if ($null -eq $script:active -or -not $script:voice.WaitUntilDone(0)) { return }
+    if ($null -eq $script:active) { return }
+    $done = $script:voice.WaitUntilDone(0)
     $status = $null
+    $hresult = 0
+    $wordLen = 0
     try {
         $status = $script:voice.Status
         $hresult = [int]$status.LastHResult
+        $wordLen = [int]$status.InputWordLength
     }
     finally {
         Release-Com $status
     }
+    if (-not $script:active.warmup -and -not $script:active.started -and $hresult -ge 0 -and ($wordLen -gt 0 -or $done)) {
+        $script:active.started = $true
+        Write-Protocol @{ id = $script:active.id; event = 'started'; voice = $script:active.actualVoice }
+    }
+    if (-not $done) { return }
     # A successful async Speak call does not guarantee successful synthesis.
     # Inspect the native result after completion, not a previous stream's result
     # while the new one is still starting.
@@ -259,6 +318,9 @@ function Complete-ActiveSpeak {
         $nativeError = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR($hresult)
         $message = 'SAPI5 synthesis failed (0x{0:X8}): {1}' -f ([long]$hresult -band 4294967295), $nativeError.Message
         Write-Protocol @{ id = $turn.id; event = 'error'; error = $message }
+    }
+    elseif ($turn.warmup) {
+        Write-Protocol @{ id = $turn.id; event = 'warmed'; voice = $turn.actualVoice }
     }
     else {
         Write-Protocol @{ id = $turn.id; event = 'done'; voice = $turn.actualVoice }

@@ -6,6 +6,7 @@ import { Group } from "../settings-schema.js";
 import { engineGet, enginePost, live } from "../state.js";
 import { Obj } from "../types.js";
 import { edits, getPath } from "./fields.js";
+import { formatCatalogIssuesHtml, loadConfiguredKeys, modelRequirementHtml } from "./key-links.js";
 import { AUTO_THINKING_HELP } from "./thinking-help.js";
 
 const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3 };
@@ -62,20 +63,38 @@ function reasoningHelp(info?: Obj): string {
 }
 
 /** Manual ids and effort share Save/Revert, including unsaved ids not in the catalogue. */
-export async function bindModelReasoning(host: HTMLElement): Promise<void> {
+export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: ReadonlySet<string> | null): Promise<void> {
   reasoningBindings.get(host)?.abort();
   const controller = new AbortController(), { signal } = controller;
   reasoningBindings.set(host, controller);
+  const configuredKeys = preloadedKeys !== undefined ? preloadedKeys : await loadConfiguredKeys();
+  if (signal.aborted) return;
   const initialLoads: Promise<void>[] = [];
   for (const path of ["fast", "deep"]) {
     const modelKey = `${path}_model`, effortKey = `${path}_reasoning_effort`;
+    const modelRow = host.querySelector<HTMLElement>(`[data-key="${fullKey(modelKey)}"]`);
     const row = host.querySelector<HTMLElement>(`[data-key="${fullKey(effortKey)}"]`);
     const select = row?.querySelector<HTMLSelectElement>("select");
+    const input = modelRow?.querySelector<HTMLInputElement>("input");
+    let reqEl = modelRow?.querySelector<HTMLElement>("[data-model-req]") || null;
+    if (modelRow && !reqEl) {
+      reqEl = document.createElement("div");
+      reqEl.className = "mkey";
+      reqEl.dataset.modelReq = path;
+      modelRow.querySelector(".ctl")?.appendChild(reqEl);
+    }
+    const syncModelReq = () => {
+      if (!reqEl) return;
+      const html = modelRequirementHtml(draft(modelKey), live.config, configuredKeys);
+      reqEl.innerHTML = html;
+      reqEl.hidden = !html;
+    };
+    syncModelReq();
     if (!row || !select) continue;
     const note = row.querySelector<HTMLElement>(".lab small");
-    const input = host.querySelector<HTMLInputElement>(`[data-key="${fullKey(modelKey)}"] input`);
     let revision = 0, timer: number | undefined;
     const load = async () => {
+      syncModelReq();
       const version = ++revision, id = draft(modelKey), url = live.engineUrl, token = live.engineToken, state = live.engineState;
       const current = () => !signal.aborted && row.isConnected && version === revision && id === draft(modelKey) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
       const show = (info?: Obj) => {
@@ -106,7 +125,7 @@ export async function bindModelReasoning(host: HTMLElement): Promise<void> {
     input?.addEventListener("input", () => {
       ++revision;
       clearTimeout(timer);
-      // Never carry one model's explicit effort over to another model.
+      syncModelReq();
       select.innerHTML = effortOptions([], "auto");
       select.value = "auto";
       // Reuse bindField's change handler, including its default and dirty-state semantics.
@@ -122,7 +141,13 @@ export async function bindModelReasoning(host: HTMLElement): Promise<void> {
 }
 
 /** One role's catalogue, grouped by provider and cheapest first, including every selected id. */
-function roleHtml(models: Obj, [path, key, label, help]: [string, string, string, string], filter: string, info?: Obj): string {
+function roleHtml(
+  models: Obj,
+  [path, key, label, help]: [string, string, string, string],
+  filter: string,
+  info?: Obj,
+  configuredKeys?: ReadonlySet<string> | null,
+): string {
   const all: Obj[] = models.models || [], cur = models.selected?.[key], q = filter.toLowerCase().split(/\s+/).filter(Boolean);
   const costs = new Map<string, number | null>(all.map((model) => [model.id, mcost(models, path, model)]));
   const list = all.filter((m) => m.id === cur || q.every((w) => `${m.id} ${m.name}`.toLowerCase().includes(w)))
@@ -138,18 +163,21 @@ function roleHtml(models: Obj, [path, key, label, help]: [string, string, string
   const selPrice = models.selected_prices?.[path];
   const c = costs.get(cur) ?? (selPrice ? mcost(models, path, { price: selPrice }) : null), m = all.find((x) => x.id === cur);
   const effortKey = `${path}_reasoning_effort`, effort = models.selected?.[effortKey] || "auto", levels: string[] = info?.levels || [];
+  const reqHtml = modelRequirementHtml(cur, live.config, configuredKeys, models.status?.keys);
   return `<div class="field"><div class="lab">${esc(label)}<small>${esc(help)}</small></div><div class="ctl mpick" style="display:grid;width:100%">
         <input type="text" data-filter="${path}" value="${esc(filter)}" placeholder="Filter: claude, gemini, flash, ollama…" aria-label="Filter models">
         <select data-pick="${key}" aria-label="${esc(label)}">${opts}</select>
+        ${reqHtml ? `<div class="mkey">${reqHtml}</div>` : ""}
         <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(models.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div>
         <label class="help" for="mp-effort-${path}">Reasoning effort</label>
         <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>${effortOptions(levels, effort)}</select>
         <div class="mcost" title="${esc(info?.note || "")}">${esc(reasoningHelp(info))} ${AUTO_THINKING_HELP} Changes save immediately.</div></div></div>`;
 }
 
-function listHtml(models: Obj): string {
+function listHtml(models: Obj, configuredKeys?: ReadonlySet<string> | null): string {
   const st = models.status || {};
-  return `<div class="field"><div class="lab">The list<small>${esc(`${st.count || 0} models${st.updated ? `, listed ${new Date(st.updated * 1000).toLocaleString()}` : ""}.`)}${Object.keys(st.errors || {}).length ? ` ${esc(Object.entries(st.errors).map(([k, v]) => `${k}: ${v}`).join("; "))}` : ""}</small></div>
+  const issues = formatCatalogIssuesHtml(st, live.config, configuredKeys);
+  return `<div class="field"><div class="lab">The list<small>${esc(`${st.count || 0} models${st.updated ? `, listed ${new Date(st.updated * 1000).toLocaleString()}` : ""}.`)}${issues ? ` ${issues}` : ""}</small></div>
       <div class="ctl"><button class="btn" id="mp-refresh">${icon("refresh-cw")}Refresh the list</button><span class="help">Spent this session: $${per(models.spent_usd || 0)}</span></div></div>`;
 }
 
@@ -172,7 +200,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
     }, { signal });
     return;
   }
-  let models: Obj | null = null, request = 0, saving = false;
+  let models: Obj | null = null, configuredKeys: Set<string> | null = null, request = 0, saving = false;
   const connected = () => current() && live.engineState === "running";
   const draw = () => {
     if (!connected() || !models) return;
@@ -182,7 +210,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
     const start = active instanceof HTMLInputElement ? active.selectionStart : null, end = active instanceof HTMLInputElement ? active.selectionEnd : null;
     const scroll: [HTMLElement, number, number][] = [];
     for (let el = host.parentElement; el; el = el.parentElement) scroll.push([el, el.scrollTop, el.scrollLeft]);
-    host.innerHTML = ROLES.map((role) => roleHtml(models!, role, filters[role[0]], models!.reasoning?.[role[0]])).join("") + listHtml(models);
+    host.innerHTML = ROLES.map((role) => roleHtml(models!, role, filters[role[0]], models!.reasoning?.[role[0]], configuredKeys)).join("") + listHtml(models, configuredKeys);
     host.style.minHeight = "";
     host.querySelectorAll<HTMLInputElement>("[data-filter]").forEach((input) => (input.oninput = () => {
       if (!connected()) return;
@@ -233,11 +261,15 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
     host.innerHTML = `<div class="field"><div class="lab">Model list<small>${refresh ? "Refreshing" : "Loading"} models… You can still edit model ids below.</small></div></div>`;
     try {
       if (!url) throw new Error("Coach connection unavailable");
-      const response = await engineGet(`/models${refresh ? "?refresh=1" : ""}`);
+      const [response, keys] = await Promise.all([
+        engineGet(`/models${refresh ? "?refresh=1" : ""}`),
+        loadConfiguredKeys(),
+      ]);
       const data = await response.json();
       if (!connected() || version !== request) return;
       if (!response.ok || data.error || !Array.isArray(data.models)) throw new Error(data.error || "Model list unavailable");
       models = data;
+      configuredKeys = keys;
       if (refresh) document.querySelectorAll<HTMLSelectElement>('[data-key$="_reasoning_effort"] select').forEach((select) => select.dispatchEvent(new Event("model-capabilities-refresh")));
       draw();
     } catch {

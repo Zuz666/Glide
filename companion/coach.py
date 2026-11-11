@@ -120,6 +120,8 @@ class Coach:
         self.asks = queue.Queue()
         self.recent_triggers = []
         self.last_call = 0
+        self.thinking = None                  # active LLM turn role ("question" | "callout" | "review"), or None
+        self._queued_questions = 0
         # what was said: continuity, follow-up questions, the dashboard's cost estimates
         self.history = []                     # recent coach lines for continuity
         self.recent = deque(maxlen=40)        # recent messages / triggers / questions (recent_log tool)
@@ -247,9 +249,26 @@ class Coach:
         self.q_times.append((time.time(), "voice" if voice else "typed"))
         self.recent.append({"t": self._now(), "type": "question", "kind": "voice" if voice else "typed",
                             "text": question})
+        with self.lock:
+            self._queued_questions += 1
+        self._set_thinking("question")
         self.asks.put((question, voice))
         self.wake.set()
 
+    def _set_thinking(self, role):
+        if self.thinking == role:
+            return
+        self.thinking = role
+        if self.deps.on_thinking:
+            try:
+                self.deps.on_thinking(role)
+            except Exception as e:  # noqa: BLE001
+                log_once("coach.thinking", e)
+
+    def _finish_thinking(self):
+        with self.lock:
+            has_queued = self._queued_questions > 0
+        self._set_thinking("question" if has_queued else None)
     def book(self):
         """deaths_session, deaths_recent, has_mount, in_group, visits (heuristics state + session_review)."""
         return self.session.summary(self._now())
@@ -313,12 +332,7 @@ class Coach:
             self.wake.wait(1.0)
             self.wake.clear()
             try:
-                while not self.asks.empty():
-                    q, voice = self.asks.get_nowait()
-                    if q is ANNOUNCE:                 # the update notice (announce_update), in its turn
-                        self._announce(*voice)
-                        continue
-                    self._respond([], question=q, voice=voice)
+                self._drain_asks()
                 for job in self._jobs:
                     job()
             except Exception as e:  # never let the coach thread die
@@ -327,6 +341,22 @@ class Coach:
             if self.pending or self.briefings.busy():
                 time.sleep(0.5)
                 self.wake.set()
+
+    def _drain_asks(self):
+        while not self.asks.empty():
+            q, voice = self.asks.get_nowait()
+            if q is ANNOUNCE:                 # the update notice (announce_update), in its turn
+                try:
+                    self._announce(*voice)
+                finally:
+                    self._finish_thinking()
+                continue
+            try:
+                self._respond([], question=q, voice=voice)
+            finally:
+                with self.lock:
+                    self._queued_questions = max(0, self._queued_questions - 1)
+                self._finish_thinking()
 
     def _callouts(self):
         """The waiting callouts, when it is time for them (see _take_batch)."""
@@ -670,56 +700,59 @@ class Coach:
             return fn(t, msg_kind, u, tone, not getattr(speech, "words", 0)) if tone else fn(t, msg_kind, u)
         speech = EarlySpeech(say_early, limit, urgent) if speak_fn and speaks else None
         barges, self._speech = self._barges, speech
+        self._set_thinking("question" if question else msg_kind)
         try:
-            text, meta = self._ask_model(model, user, kctx, question, voice, deep, speech)
-        finally:
-            self._speech = None
-        barged = self._barges != barges            # the player talked over it (push-to-talk): it isn't said
-        self.last_call = time.time()
-        if not text and question and llm.suspended and llm.suspended_for == prov:
-            msg = {"kind": "answer", "text": self.offline([], ctx, question), "speak": bool(voice),
-                   "model": "offline (%s)" % llm.suspended}
+            try:
+                text, meta = self._ask_model(model, user, kctx, question, voice, deep, speech)
+            finally:
+                self._speech = None
+            barged = self._barges != barges        # the player talked over it (push-to-talk): it isn't said
+            self.last_call = time.time()
+            if not text and question and llm.suspended and llm.suspended_for == prov:
+                msg = {"kind": "answer", "text": self.offline([], ctx, question), "speak": bool(voice),
+                       "model": "offline (%s)" % llm.suspended}
+                self.emit(msg)
+                return msg
+            if question and text:
+                self._count_rounds("voice" if voice else "typed", meta)
+            facts, had_facts = [], False
+            ended = False
+            if text:
+                text, ended = banter_mod.split_chat(text)
+                text, facts, had_facts = self._directives(text, with_facts=True)
+            if text and not question and is_skip(text):
+                return None
+            tone = self.tone or (speech.tone if speech is not None else None)
+            chatting = chat and not ended          # still chatting: the player's next reply carries it on
+            if chatting:
+                self.banter.chatted(text)
+            if text:     # (the limit again: a reply that just took on a character may stretch already)
+                text = trim_words(text, max(limit, self._word_limit(question, voice, deep, batch, chat)))
+            if not text:
+                return None
+            self.history.append(text)
+            self.history = self.history[-10:]
+            msg = {"kind": msg_kind, "text": self.localization.generated(text), "speak": speaks and not barged,
+                   "urgent": urgent, "model": self._model_note(model, meta), "t": time.time()}
+            if meta.get("attribution"):
+                msg["attribution"] = meta["attribution"]
+            if tone:
+                msg["tone"] = tone                 # how to deliver it in character (the OpenAI voice performs it)
+            if chatting:
+                msg["chat"] = True                 # an answer that keeps a chat going (Banter.in_chat)
+            if speech is not None and speech.said:
+                msg["spoken"] = speech.spoken      # already said while it streamed: the app says only the rest
+            if meta.get("tool_calls"):
+                msg["tool_calls"], msg["tools"] = meta["tool_calls"], meta["tools"]
+            if meta.get("web"):
+                msg["web_sources"] = meta["web"][:5]
+                msg["model"] += " · web search"
+            if self.pack is not None:
+                self._ground(msg, facts, had_facts)
             self.emit(msg)
             return msg
-        if question and text:
-            self._count_rounds("voice" if voice else "typed", meta)
-        facts, had_facts = [], False
-        ended = False
-        if text:
-            text, ended = banter_mod.split_chat(text)
-            text, facts, had_facts = self._directives(text, with_facts=True)
-        if text and not question and is_skip(text):
-            return None
-        tone = self.tone or (speech.tone if speech is not None else None)
-        chatting = chat and not ended              # still chatting: the player's next reply carries it on
-        if chatting:
-            self.banter.chatted(text)
-        if text:     # (the limit again: a reply that just took on a character may stretch already)
-            text = trim_words(text, max(limit, self._word_limit(question, voice, deep, batch, chat)))
-        if not text:
-            return None
-        self.history.append(text)
-        self.history = self.history[-10:]
-        msg = {"kind": msg_kind, "text": self.localization.generated(text), "speak": speaks and not barged, "urgent": urgent,
-               "model": self._model_note(model, meta), "t": time.time()}
-        if meta.get("attribution"):
-            msg["attribution"] = meta["attribution"]
-        if tone:
-            msg["tone"] = tone                     # how to deliver it in character (the OpenAI voice performs it)
-        if chatting:
-            msg["chat"] = True                     # an answer that keeps a chat going (Banter.in_chat)
-        if speech is not None and speech.said:
-            msg["spoken"] = speech.spoken          # already said while it streamed: the app says only the rest
-        if meta.get("tool_calls"):
-            msg["tool_calls"], msg["tools"] = meta["tool_calls"], meta["tools"]
-        if meta.get("web"):
-            msg["web_sources"] = meta["web"][:5]
-            msg["model"] += " · web search"
-        if self.pack is not None:
-            self._ground(msg, facts, had_facts)
-        self.emit(msg)
-        return msg
-
+        finally:
+            self._finish_thinking()
     def _answer_locally(self, question, voice):
         """Note the question in the conversation, and answer it at once when it is a switch, memory or reminder
         request the coach handles itself. -> the emitted answer, or None."""

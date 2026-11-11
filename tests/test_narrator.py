@@ -73,19 +73,23 @@ globalThis.document = { getElementById: () => null };
 globalThis.crypto ||= (await import("node:crypto")).webcrypto;
 const native = new Map(), lateNativeRejections = [];
 let deferNativeCancellation = false;
+let onNativeStarted;
 function nativeSpeak(id, text) {
   return new Promise((resolve, reject) => {
     log.push("start:" + text);
+    const startTimer = setTimeout(() => {
+      onNativeStarted?.(id);
+    }, 12);
     const timer = setTimeout(() => {
       native.delete(id); log.push("end:" + text); resolve({ voice: "Installed native voice" });
     }, DUR);
-    native.set(id, { text, timer, reject });
+    native.set(id, { text, startTimer, timer, reject });
   });
 }
 function nativeStop(id) {
   for (const [key, turn] of native) {
     if (id !== undefined && id !== key) continue;
-    native.delete(key); clearTimeout(turn.timer); log.push("cancel:" + turn.text);
+    native.delete(key); clearTimeout(turn.startTimer); clearTimeout(turn.timer); log.push("cancel:" + turn.text);
     const reject = () => turn.reject(new Error("speech cancelled"));
     if (deferNativeCancellation) lateNativeRejections.push(reject); else reject();
   }
@@ -140,13 +144,18 @@ globalThis.glide = { invoke: (ch, ...a) => {
   if (ch !== "tts:synth") return Promise.resolve();
   const text = a[0];
   log.push("synth:" + text);
-  const audio = () => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg" });
+  const audio = () => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg",
+    ...(text === "o2" ? { attribution: { category: "TTS", elapsed_ms: 2424 } } : {}) });
   if (text === "slow-guide") return new Promise(resolve => { releaseSlowSynthesis = () => resolve(audio()); });
   if (text === "cloud-failure") return Promise.reject(new Error("TTS #77: service unavailable"));
   return sleep(10).then(audio);
 }, on: (_ch, fn) => { edgeListeners.add(fn); return () => edgeListeners.delete(fn); } };
 
-const { speech } = await import(process.argv[2]);
+const { speech, voiceLastLine } = await import(process.argv[2]);
+onNativeStarted = (id) => speech.onTtsStatus({
+  provider: "windows", voiceLabel: "SAPI5 · Installed", fullVoice: "Windows SAPI5 (Installed native voice)",
+  phase: "speaking", requestId: id, actualVoice: "Installed native voice", synthMs: 12, updatedAt: Date.now(),
+});
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
 const out = {};
 const take = (name) => { out[name] = log.splice(0); out[name + "_pb"] = playback.splice(0); };
@@ -156,6 +165,7 @@ const mark = (p, what) => p.then(() => log.push(what));
 speech.configure(false, WIN);
 speech.say("a"); speech.say("b");
 await sleep(DUR * 3); take("coach_win");
+out.win_last_line = voiceLastLine();
 speech.say("a"); await sleep(10); speech.say("c", true);
 await sleep(DUR * 2); take("coach_interrupt");
 speech.configure(true, WIN);
@@ -196,6 +206,7 @@ await sleep(DUR * 3); take("late_native_cancel");
 speech.configure(false, ONLINE);
 speech.say("o1"); speech.say("o2");
 await sleep(DUR * 3); take("coach_online");
+out.online_last_line = voiceLastLine();
 // Cancelling while synthesis is pending must let another line play before the stale response arrives.
 p = mark(speech.speakAndWait("slow-guide", "g"), "resolved:slow-guide");
 speech.say("fast-coach1"); speech.say("fast-coach2");
@@ -224,6 +235,7 @@ await sleep(20); speech.configure(true, WIN); await p; await sleep(10); take("mu
 speech.configure(false, { provider: "edge" });
 speech.say("e1"); speech.say("e2");
 await sleep(DUR * 3); take("edge_order");
+out.edge_last_line = voiceLastLine();
 p = mark(speech.speakAndWait("edge-guide", "g"), "resolved:edge-guide");
 speech.say("edge-coach");
 await sleep(20); speech.cancel("g"); await p;
@@ -296,4 +308,7 @@ assert [p["state"] for p in got["coach_online_pb"]] == ["playing", "ended", "pla
 assert [p["state"] for p in got["fallback_pb"]] == ["fallback", "ended"], got["fallback_pb"]
 assert [p["state"] for p in got["rejected_online_pb"]] == ["error"], got["rejected_online_pb"]
 assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_pb"]), got["late_synthesis_pb"]
+assert "Installed native voice (SAPI5), generated in 12ms," in got["win_last_line"], got["win_last_line"]
+assert "openai (online voice), generated in 2.42s," in got["online_last_line"], got["online_last_line"]
+assert "generated in " in got["edge_last_line"] and "ms," in got["edge_last_line"], got["edge_last_line"]
 print("OK")

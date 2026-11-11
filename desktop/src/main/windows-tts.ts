@@ -10,6 +10,7 @@ const VOICES_TIMEOUT_MS = 15000;
 
 type SpeechOptions = Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
 type Command = { id: number; op: "voices" }
+  | { id: number; op: "warmup"; voice: string }
   | { id: number; op: "speak"; text: string; voice: string; rate: number; volume: number };
 type Pending = {
   command: Command;
@@ -17,6 +18,7 @@ type Pending = {
   timer?: NodeJS.Timeout;
   reject: (error: Error) => void;
 } & ({ kind: "voices"; resolve: (voices: Voice[]) => void }
+  | { kind: "warmup"; submittedAt: number; voice: string; resolve: () => void }
   | { kind: "speak"; callerId: string; submittedAt: number; actualVoice?: string;
     resolve: (result: { voice: string }) => void });
 
@@ -27,8 +29,8 @@ interface Worker {
   closed: boolean;
   readyTimer?: NodeJS.Timeout;
   pending: Map<number, Pending>;
+  warmedVoices: Set<string>;
 }
-
 /** Owns one lazy worker; a failed utterance is never replayed after a process restart. */
 export class WindowsTts {
   private worker?: Worker;
@@ -38,7 +40,9 @@ export class WindowsTts {
     type: "submitted" | "started" | "done" | "cancelled" | "error";
     id: string;
     voice?: string;
+    elapsedMs?: number;
   }) => void>();
+  private readonly workerListeners = new Set<() => void>();
 
   constructor(private readonly scriptPath: string,
     private readonly note?: (line: string, attribution?: LogAttribution) => void) {}
@@ -47,9 +51,37 @@ export class WindowsTts {
     type: "submitted" | "started" | "done" | "cancelled" | "error";
     id: string;
     voice?: string;
+    elapsedMs?: number;
   }) => void): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
+  }
+
+  onWorkerChange(listener: () => void): () => void {
+    this.workerListeners.add(listener);
+    return () => this.workerListeners.delete(listener);
+  }
+
+  configure(enabled: boolean, voiceName = ""): void {
+    if (this.disposed) return;
+    const voice = String(voiceName || "");
+    if (!enabled) {
+      this.cancelWarmups();
+      return;
+    }
+    let worker: Worker;
+    try { worker = this.start(); } catch { return; }
+    if (worker.warmedVoices.has(voice)) return;
+    for (const active of worker.pending.values()) {
+      if (active.kind === "speak") return;
+      if (active.kind === "warmup" && active.voice === voice) return;
+    }
+    this.cancelWarmups();
+    const command: Command = { id: this.nextId++, op: "warmup", voice };
+    this.enqueue(worker, {
+      kind: "warmup", command, submittedAt: performance.now(), voice, sent: false,
+      resolve: () => undefined, reject: () => undefined,
+    });
   }
 
   workerState(): "stopped" | "starting" | "ready" {
@@ -80,6 +112,9 @@ export class WindowsTts {
         this.noteSpeech(pending, "error", error instanceof Error ? error.message : "native worker failed");
         reject(error);
         return;
+      }
+      for (const [wid, wp] of worker.pending) {
+        if (wp.kind === "warmup" && !wp.sent) this.remove(worker, wid);
       }
       for (const active of worker.pending.values()) {
         if (active.kind === "speak" && active.callerId === id) {
@@ -119,14 +154,35 @@ export class WindowsTts {
     if (this.worker) this.fail(this.worker, new Error("Windows TTS: host disposed"));
   }
 
+  private notifyWorker(): void {
+    for (const fn of this.workerListeners) {
+      try { fn(); } catch { /* status listeners must not interrupt speech */ }
+    }
+  }
+
+  private cancelWarmups(): void {
+    const worker = this.worker;
+    if (!worker || worker.closed) return;
+    const sent: number[] = [];
+    for (const [requestId, pending] of worker.pending) {
+      if (pending.kind !== "warmup") continue;
+      if (pending.sent) sent.push(requestId);
+      this.remove(worker, requestId);
+    }
+    if (sent.length && worker.ready) {
+      for (const target of sent) this.write(worker, { id: this.nextId++, op: "cancel", target });
+    }
+  }
+
   private start(): Worker {
     if (this.disposed) throw new Error("Windows TTS: host disposed");
     if (this.worker) return this.worker;
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", this.scriptPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    const worker: Worker = { child, lines, ready: false, closed: false, pending: new Map() };
+    const worker: Worker = { child, lines, ready: false, closed: false, pending: new Map(), warmedVoices: new Set() };
     this.worker = worker;
+    this.notifyWorker();
     worker.readyTimer = setTimeout(() => {
       this.fail(worker, new Error("Windows TTS: worker startup timed out waiting for ready"));
     }, READY_TIMEOUT_MS);
@@ -194,6 +250,7 @@ export class WindowsTts {
       worker.ready = true;
       clearTimeout(worker.readyTimer);
       worker.readyTimer = undefined;
+      this.notifyWorker();
       for (const pending of worker.pending.values()) this.send(worker, pending);
       return;
     }
@@ -205,8 +262,36 @@ export class WindowsTts {
       this.noteSpeech(pending, "started");
       return;
     }
+    if (message.event === "warmed" && pending.kind === "warmup") {
+      this.remove(worker, message.id);
+      worker.warmedVoices.add(pending.voice);
+      if (typeof message.voice === "string" && message.voice) worker.warmedVoices.add(message.voice);
+      const elapsed = Math.round(performance.now() - pending.submittedAt);
+      const actual = typeof message.voice === "string" && message.voice ? message.voice : (pending.voice || "Windows default");
+      try {
+        this.note?.(`[voice] SAPI5 warmup ready voice=${JSON.stringify(actual)} elapsed_ms=${elapsed}`, {
+          category: "TTS", operation: "native warmup", provider: "SAPI5", status: "ready",
+          voice: actual, elapsed_ms: elapsed,
+        });
+      } catch { /* logging only */ }
+      pending.resolve();
+      return;
+    }
     if (message.event === "error" || message.event === "cancelled") {
       this.remove(worker, message.id);
+      if (pending.kind === "warmup") {
+        if (message.event === "error") {
+          const elapsed = Math.round(performance.now() - pending.submittedAt);
+          try {
+            this.note?.(`[voice] SAPI5 warmup failed requested_voice=${JSON.stringify(pending.voice || "Windows default")} elapsed_ms=${elapsed}`, {
+              category: "TTS", operation: "native warmup", provider: "SAPI5", status: "error",
+              ...(pending.voice ? { voice: pending.voice } : {}), elapsed_ms: elapsed,
+            });
+          } catch { /* logging only */ }
+        }
+        pending.resolve();
+        return;
+      }
       const error = message.event === "cancelled" ? new Error("Windows TTS: speech cancelled")
         : new Error(`Windows TTS: ${typeof message.error === "string" ? message.error : "native speech failed"}`);
       this.noteSpeech(pending, message.event === "cancelled" ? "cancelled" : "error", error.message);
@@ -229,6 +314,8 @@ export class WindowsTts {
         pending.reject(error);
       } else {
         pending.actualVoice = message.voice;
+        if (pending.command.op === "speak") worker.warmedVoices.add(pending.command.voice);
+        worker.warmedVoices.add(message.voice);
         this.noteSpeech(pending, "done");
         pending.resolve({ voice: message.voice });
       }
@@ -251,7 +338,10 @@ export class WindowsTts {
     catch { /* logging only */ }
     if (status === "submitted" || status === "started" || status === "done" || status === "cancelled" || status === "error") {
       for (const fn of this.statusListeners) {
-        try { fn({ type: status, id: pending.callerId, ...(voice ? { voice } : {}) }); } catch { /* status only */ }
+        try {
+          fn({ type: status, id: pending.callerId, ...(voice ? { voice } : {}),
+               ...(status !== "submitted" ? { elapsedMs: elapsed } : {}) });
+        } catch { /* status only */ }
       }
     }
   }
@@ -265,9 +355,10 @@ export class WindowsTts {
   private fail(worker: Worker, error: Error): void {
     if (worker.closed) return;
     worker.closed = true;
-    // Late events from a failed child may arrive after a later request has started its replacement.
-    if (this.worker === worker) this.worker = undefined;
-    clearTimeout(worker.readyTimer);
+    if (this.worker === worker) {
+      this.worker = undefined;
+      this.notifyWorker();
+    }
     for (const [id, pending] of worker.pending) {
       this.remove(worker, id);
       this.noteSpeech(pending, "error", error.message);

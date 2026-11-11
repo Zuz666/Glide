@@ -9,6 +9,7 @@ export interface EdgeFragment {
   end: number;
   blob: Blob;
   attribution?: LogAttribution;
+  synthMs?: number;
 }
 
 type Terminal = Extract<EdgeTtsEvent, { type: "end" }>;
@@ -19,6 +20,7 @@ export interface EdgeStream {
   next(): Promise<EdgeFragment | null>;
   cancel(): void;
   readonly terminal: Terminal | undefined;
+  readonly synthMs: number | undefined;
   readonly finished: Promise<Terminal>;
 }
 
@@ -30,9 +32,10 @@ class Request implements EdgeStream {
   private index = 0;
   private wake: (() => void) | undefined;
   private finish!: (event: Terminal) => void;
+  private readonly startedAt = performance.now();
   terminal: Terminal | undefined;
+  synthMs: number | undefined;
   readonly finished = new Promise<Terminal>((resolve) => { this.finish = resolve; });
-
   constructor(readonly id: string, private text: string, private release: () => void,
     private decode: (data: Uint8Array) => Promise<void>) {}
 
@@ -103,6 +106,9 @@ class Request implements EdgeStream {
     if (event.type === "accepted") {
       const candidate = this.candidates.get(event.attempt);
       if (!candidate?.decoded || candidate.index !== event.index) return;
+      const elapsed = Math.max(0, Math.round(performance.now() - this.startedAt));
+      candidate.synthMs = elapsed;
+      this.synthMs = elapsed;
       this.accepted.add(event.index);
       this.ready.set(event.index, candidate);
       for (const [attempt, other] of this.candidates) {
