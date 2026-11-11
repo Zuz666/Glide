@@ -13,6 +13,15 @@ from edge_tts.drm import DRM
 MAX_AUDIO_BYTES = 1024 * 1024
 MAX_FRAME_BYTES = MAX_AUDIO_BYTES + 16384
 
+FAILURE_CODES = frozenset({
+    "zero_audio_reset",
+    "partial_audio_reset",
+    "first_audio_timeout",
+    "stream_stall",
+    "empty_audio",
+    "protocol_error",
+    "decode_rejected",
+})
 
 class TransportFailure(Exception):
     """Only fixed, safe categories may cross the worker protocol boundary."""
@@ -27,6 +36,9 @@ class WorkerConfig:
     backoff_initial: float = 0.25
     backoff_max: float = 8.0
     connect_timeout: float = 8.0
+    first_audio_timeout: float = 7.5
+    stall_timeout: float = 4.0
+    retry_delay: float = 0.25
 
 
 @dataclass(eq=False)
@@ -46,9 +58,27 @@ class Connection:
 class Turn:
     request_id: str
     done: asyncio.Future[bool]
+    activity: asyncio.Event = field(default_factory=asyncio.Event)
     audio: bytearray = field(default_factory=bytearray)
     ended: bool = False
     started: bool = False
+    has_audio: bool = False
+    preempted: bool = False
+    failure_code: str | None = None
+
+
+def classify_turn_error(error: Exception, has_audio: bool) -> str:
+    if isinstance(error, TransportFailure) and error.args:
+        reason = error.args[0]
+        if reason in FAILURE_CODES:
+            return reason
+        if reason == "socket_closed":
+            return "partial_audio_reset" if has_audio else "zero_audio_reset"
+        if isinstance(reason, str) and (reason.startswith("protocol_") or reason == "audio_limit"):
+            return "protocol_error"
+    if isinstance(error, ValueError):
+        return "protocol_error"
+    return "partial_audio_reset" if has_audio else "zero_audio_reset"
 
 
 def headers(raw):
@@ -167,6 +197,7 @@ class Pool:
         self.diagnostic("connection_retired", pool=self.name, slot=connection.slot, **self.counts)
         if connection.turn is not None and not connection.turn.done.done():
             connection.turn.done.set_result(False)
+            connection.turn.activity.set()
         current = asyncio.current_task()
         for task in (connection.receiver, connection.renewer):
             if task is not None and task is not current:
@@ -192,6 +223,8 @@ class Pool:
             # A loser may drain only while it costs nobody a queued slot.
             for connection in tuple(self.slots):
                 if connection is not None and connection.drain is not None:
+                    if connection.turn is not None:
+                        connection.turn.preempted = True
                     connection.drain.cancel()
                     self.retire(connection)
 
@@ -294,6 +327,8 @@ class Pool:
                     if len(turn.audio) + len(body) > MAX_AUDIO_BYTES:
                         raise TransportFailure("audio_limit")
                     turn.audio.extend(body)
+                    turn.has_audio = True
+                    turn.activity.set()
                 elif path == "turn.start":
                     if turn.started:
                         raise TransportFailure("protocol_duplicate_start")
@@ -304,14 +339,20 @@ class Pool:
                     turn.ended = True
                     connection.successful_turn = True
                     turn.done.set_result(True)
+                    turn.activity.set()
                 elif path in ("response", "audio.metadata"):
                     if body.strip() and not isinstance(json.loads(body), dict):
                         raise TransportFailure("protocol_metadata")
+                    if turn.has_audio:
+                        turn.activity.set()
                 else:
                     raise TransportFailure("protocol_path")
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            turn = connection.turn
+            if turn is not None and not turn.ended and turn.failure_code is None:
+                turn.failure_code = classify_turn_error(error, bool(turn.audio))
             self.diagnostic("socket_retired", pool=self.name, slot=connection.slot,
                             error_type=type(error).__name__)
             self.retire(connection)
@@ -322,12 +363,57 @@ class Pool:
         turn = Turn(connect_id(), asyncio.get_running_loop().create_future())
         connection.turn = turn
         try:
-            await connection.ws.send_str(ssml_headers_plus_data(turn.request_id, date_to_string(), ssml))
-            if not await asyncio.shield(turn.done):
-                raise TransportFailure("transport_failed")
-            if not turn.ended:
-                raise TransportFailure("incomplete_turn")
+            try:
+                await connection.ws.send_str(ssml_headers_plus_data(turn.request_id, date_to_string(), ssml))
+            except Exception as error:
+                turn.failure_code = classify_turn_error(error, False)
+                raise TransportFailure(turn.failure_code) from None
+            sent_at = time.monotonic()
+            while not turn.done.done():
+                turn.activity.clear()
+                if turn.done.done():
+                    break
+                if not turn.has_audio:
+                    remaining = (sent_at + self.config.first_audio_timeout) - time.monotonic()
+                    if remaining <= 0:
+                        turn.failure_code = "first_audio_timeout"
+                        raise TransportFailure("first_audio_timeout")
+                    try:
+                        await asyncio.wait_for(turn.activity.wait(), remaining)
+                    except TimeoutError:
+                        if not turn.has_audio and not turn.done.done():
+                            turn.failure_code = "first_audio_timeout"
+                            raise TransportFailure("first_audio_timeout") from None
+                else:
+                    try:
+                        await asyncio.wait_for(turn.activity.wait(), self.config.stall_timeout)
+                    except TimeoutError:
+                        if not turn.done.done():
+                            turn.failure_code = "stream_stall"
+                            raise TransportFailure("stream_stall") from None
+            if not turn.done.result() or not turn.ended:
+                if turn.preempted or self.closed:
+                    raise asyncio.CancelledError
+                code = turn.failure_code or ("partial_audio_reset" if turn.audio else "zero_audio_reset")
+                turn.failure_code = code
+                raise TransportFailure(code)
             return bytes(turn.audio)
+        except TransportFailure as error:
+            if (not turn.preempted and not self.closed and not copy.request.cancelled
+                    and error.args and error.args[0] in FAILURE_CODES):
+                self.diagnostic(
+                    "turn_failed",
+                    id=copy.request.id,
+                    index=copy.fragment.span["index"],
+                    attempt=copy.attempt,
+                    pool=self.name,
+                    code=error.args[0],
+                    audio_bytes=len(turn.audio),
+                    draining=bool(copy.draining),
+                )
+            if not turn.ended:
+                self.retire(connection)
+            raise
         except BaseException:
             if not turn.ended:
                 self.retire(connection)

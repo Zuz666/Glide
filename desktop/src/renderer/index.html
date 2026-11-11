@@ -284,12 +284,20 @@
     </div>
     <button class="sb-update" data-sb="update" id="sb-update" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span id="sb-update-l">Restart to update</span></button>
     <div class="grow" data-sb="grow"></div>
-    <button class="sb-model" data-sb="models" id="sb-models" title="Configured model roles and voice systems. Per-operation attribution is in Logs. Click to change settings">
-      <span class="sb-item" data-prio="4" title="Fast role: callouts, quest briefings and translation; spoken questions follow their separate setting"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><b id="sb-fast">–</b></span>
-      <span class="sb-item" data-prio="5" title="Deep role: typed questions and pace reviews; spoken questions follow their separate setting"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><b id="sb-deep">–</b></span>
-      <span class="sb-idle" id="sb-idle">not in use</span>
-      <span class="sb-item" data-prio="8" id="sb-listen-wrap" title="Speech-to-text for push-to-talk"><svg class="icon" aria-hidden="true"><use href="#i-ear"/></svg><b id="sb-listen">–</b></span>
-      <span class="sb-item" data-prio="8" id="sb-speak-wrap" title="The narrator's voice"><svg class="icon" aria-hidden="true"><use href="#i-audio-lines"/></svg><b id="sb-speak">–</b></span>
+    <div class="sb-models-stack" data-sb="models" data-prio="4" id="sb-models">
+      <button class="sb-stack-row" id="sb-fast-btn" type="button" title="Fast role: callouts, quest briefings and translation. Click to open Fast model settings">
+        <svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><b id="sb-fast">–</b><span class="sb-idle" id="sb-idle">not in use</span>
+      </button>
+      <button class="sb-stack-row" id="sb-deep-btn" type="button" data-prio="5" title="Deep role: typed questions and pace reviews. Click to open Deep model settings">
+        <svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><b id="sb-deep">–</b>
+      </button>
+    </div>
+    <button class="sb-model sb-item sb-stt" data-sb="stt" data-prio="7" id="sb-listen-wrap" type="button" title="Speech-to-text for push-to-talk. Click to open Push-to-talk settings">
+      <svg class="icon" aria-hidden="true"><use href="#i-ear"/></svg><b id="sb-listen">–</b>
+    </button>
+    <button class="sb-tts" data-sb="tts" data-prio="3" id="sb-speak-wrap" type="button" title="Coach voice. Click to open Voice settings">
+      <span class="sb-tts-top"><svg class="icon" aria-hidden="true"><use href="#i-audio-lines"/></svg><b id="sb-speak">–</b></span>
+      <span class="sb-tts-sub"><i class="sb-tts-dot" id="sb-speak-dot" aria-hidden="true"></i><span id="sb-speak-state">Ready</span></span>
     </button>
     <button class="sb-model sb-item sb-translation" data-sb="translation" data-prio="2" id="sb-translation" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-globe"/></svg><b id="sb-translation-label"></b></button>
     <div class="sb-ptt" data-sb="ptt" id="sb-ptt" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="sb-ptt-l">Listening</span></div>

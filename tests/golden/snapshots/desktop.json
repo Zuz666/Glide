@@ -34,6 +34,7 @@
    "res:sample",
    "speech:status",
    "tts:edgeEvent",
+   "tts:status",
    "update:status"
   ],
   "invoke": [
@@ -79,6 +80,8 @@
    "tts:edgeCancel",
    "tts:edgeDecoded",
    "tts:edgeStart",
+   "tts:playbackState",
+   "tts:status:get",
    "tts:synth",
    "tts:voices",
    "tts:windowsSpeak",

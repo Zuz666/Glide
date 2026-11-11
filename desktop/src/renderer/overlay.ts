@@ -2,13 +2,43 @@
 // while locked; Ctrl+Alt+O (or the tray / Settings) unlocks it to move it and change its width.
 import { glide as g } from "./bridge.js";
 import { $ } from "./dom.js";
-import { AppSettings, CoachMessage, LiteInitEvent, LiteState, PttEvent } from "./types.js";
+import { AppSettings, CoachMessage, LiteInitEvent, LiteState, PttEvent, TtsStatus } from "./types.js";
 
 const SHOWN = new Set(["callout", "answer", "banter", "review", "briefing", "reminder"]);   // msg_kinds.COACH_SAID
 let es: EventSource | null = null;
 let url: string | null = null;
 let settings: AppSettings = {};
 let lastMsgAt = 0;
+let ttsHoldTimer: number | undefined;
+
+function showTts(s: TtsStatus | null | undefined): void {
+  window.clearTimeout(ttsHoldTimer);
+  const el = $("tts");
+  if (!s || (s.phase !== "generating" && s.phase !== "speaking" && s.phase !== "fallback" && s.phase !== "error")) {
+    el.hidden = true;
+    el.className = "";
+    return;
+  }
+  const isTimedHold = s.phase === "error" || (s.phase === "fallback" && s.holding);
+  const remaining = isTimedHold ? 5000 - Math.max(0, Date.now() - (s.updatedAt || Date.now())) : 1;
+  if (isTimedHold && remaining <= 0) {
+    el.hidden = true;
+    el.className = "";
+    return;
+  }
+  $("ttsl").textContent = s.phase === "generating" ? "Generating…"
+    : s.phase === "speaking" ? "Speaking"
+    : s.phase === "fallback" ? "SAPI5 fallback"
+    : "TTS error";
+  el.className = s.phase;
+  el.hidden = false;
+  if (isTimedHold) {
+    ttsHoldTimer = window.setTimeout(() => {
+      el.hidden = true;
+      el.className = "";
+    }, remaining);
+  }
+}
 
 function apply(s: AppSettings): void {
   settings = s;
@@ -110,8 +140,10 @@ g.on("overlay:unlocked", (on: boolean) => {
 g.on("overlay:held", (on: boolean) => document.body.classList.toggle("held", on));
 g.on("app:settings", apply);
 g.on("engine:state", (s) => connect(s.url));
+g.on("tts:status", showTts);
 
 (async () => {
   apply(await g.invoke("app:settings:get"));
+  showTts(await g.invoke("tts:status:get"));
   connect((await g.invoke("engine:get")).url);
 })();

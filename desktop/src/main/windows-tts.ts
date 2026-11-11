@@ -34,10 +34,28 @@ export class WindowsTts {
   private worker?: Worker;
   private nextId = 1;
   private disposed = false;
+  private readonly statusListeners = new Set<(event: {
+    type: "submitted" | "started" | "done" | "cancelled" | "error";
+    id: string;
+    voice?: string;
+  }) => void>();
 
   constructor(private readonly scriptPath: string,
     private readonly note?: (line: string, attribution?: LogAttribution) => void) {}
 
+  onStatusChange(listener: (event: {
+    type: "submitted" | "started" | "done" | "cancelled" | "error";
+    id: string;
+    voice?: string;
+  }) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  workerState(): "stopped" | "starting" | "ready" {
+    if (!this.worker || this.worker.closed) return "stopped";
+    return this.worker.ready ? "ready" : "starting";
+  }
   voices(): Promise<Voice[]> {
     return new Promise((resolve, reject) => {
       const worker = this.start();
@@ -231,6 +249,11 @@ export class WindowsTts {
     // Diagnostics must not interrupt playback or leave promises unresolved.
     try { this.note?.(`[voice] SAPI5 ${status} request=${JSON.stringify(pending.callerId)}${detail}`, attribution); }
     catch { /* logging only */ }
+    if (status === "submitted" || status === "started" || status === "done" || status === "cancelled" || status === "error") {
+      for (const fn of this.statusListeners) {
+        try { fn({ type: status, id: pending.callerId, ...(voice ? { voice } : {}) }); } catch { /* status only */ }
+      }
+    }
   }
 
   private remove(worker: Worker, id: number): void {

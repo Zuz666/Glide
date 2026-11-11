@@ -87,6 +87,7 @@ class Copy:
     task: object = None
     connection: object = None
     draining: bool = False
+    audio_bytes: int = 0
 
 
 @dataclass
@@ -106,6 +107,7 @@ class Request:
     task: object = None
     copies: set = field(default_factory=set)
     ended: bool = False
+    cancelled: bool = False
 
 
 class EdgeWorker:
@@ -165,6 +167,7 @@ class EdgeWorker:
         if operation == "cancel":
             request = self.requests.get(request_id)
             if request is not None:
+                request.cancelled = True
                 self.finish(request, "cancelled")
                 request.task.cancel()
             return
@@ -188,6 +191,17 @@ class EdgeWorker:
                 # the exact earliest decoded-valid winner, not first network EOF.
                 self.emit({"type": "accepted", "id": request_id,
                            "index": fragment.span["index"], "attempt": attempt})
+            else:
+                self.diagnostic(
+                    "turn_failed",
+                    id=request_id,
+                    index=fragment.span["index"],
+                    attempt=attempt,
+                    pool=copy.pool.name,
+                    code="decode_rejected",
+                    audio_bytes=copy.audio_bytes,
+                    draining=False,
+                )
             copy.verdict.set_result(command["ok"])
             return
         if operation != "start":
@@ -230,6 +244,7 @@ class EdgeWorker:
                     return False
                 if time.monotonic() >= request.deadline:
                     return False
+                copy.audio_bytes = len(audio)
                 self.attempts[copy.attempt] = copy
                 self.emit({"type": "candidate", "id": request.id, "index": fragment.span["index"],
                            "attempt": copy.attempt, "start": fragment.span["start"], "end": fragment.span["end"],
@@ -257,28 +272,51 @@ class EdgeWorker:
             else:
                 copy.task.cancel()
 
+    async def run_pool_attempts(self, request, fragment, pool, ssml, copies):
+        for attempt_index in range(2):
+            if fragment.accepted is not None or request.ended or time.monotonic() >= request.deadline:
+                return
+            if (attempt_index == 1 and self.config.retry_delay > 0
+                    and request.deadline - time.monotonic() >= 4 * self.config.retry_delay):
+                await asyncio.sleep(self.config.retry_delay)
+                if fragment.accepted is not None or request.ended or time.monotonic() >= request.deadline:
+                    return
+            self.sequence += 1
+            copy = Copy(request, fragment, pool, "a%d" % self.sequence,
+                        asyncio.get_running_loop().create_future())
+            copy.task = self.track(self.run_copy(copy, ssml))
+            request.copies.add(copy)
+            copies.append(copy)
+            try:
+                if await asyncio.shield(copy.task):
+                    return
+            except asyncio.CancelledError:
+                if not copy.draining and not copy.task.done():
+                    copy.task.cancel()
+                raise
+
     async def run_fragment(self, request, fragment):
         text = request.text[fragment.span["source_start"]:fragment.span["source_end"]]
         config = TTSConfig(voice=request.voice, rate="+0%", volume="+0%", pitch="+0Hz",
                            boundary="SentenceBoundary")
         ssml = mkssml(config, escape(remove_incompatible_characters(text)))
-        for _ in range(2):
-            copies = []
-            for pool in self.pools:
-                self.sequence += 1
-                copy = Copy(request, fragment, pool, "a%d" % self.sequence,
-                            asyncio.get_running_loop().create_future())
-                copy.task = self.track(self.run_copy(copy, ssml))
-                request.copies.add(copy)
-                copies.append(copy)
-            pending = {copy.task for copy in copies}
+        copies = []
+        chains = [asyncio.create_task(self.run_pool_attempts(request, fragment, pool, ssml, copies))
+                  for pool in self.pools]
+        pending = set(chains)
+        try:
             while pending:
                 _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 if fragment.accepted is not None:
                     self.dispose_losers(copies)
                     return
-            if time.monotonic() >= request.deadline:
-                raise TimeoutError
+        finally:
+            for chain in chains:
+                if not chain.done():
+                    chain.cancel()
+            await asyncio.gather(*chains, return_exceptions=True)
+        if time.monotonic() >= request.deadline:
+            raise TimeoutError
         raise TransportFailure("both_pairs_failed")
 
     async def run_request(self, request):
@@ -318,6 +356,7 @@ class EdgeWorker:
             return
         self.closed = True
         for request in tuple(self.requests.values()):
+            request.cancelled = True
             self.finish(request, "cancelled")
         for task in tuple(self.jobs):
             task.cancel()

@@ -28,9 +28,38 @@ let panels: Record<string, Panel> = {};
 let renderRevision = 0;
 let renderedView = "";
 let viewAbort: AbortController | undefined;
+let pendingScrollTarget: string | undefined;
+
+function resolveScrollTarget(body: HTMLElement, target: string): HTMLElement | null {
+  if (target === "fast") {
+    return body.querySelector('[data-pick="fast_model"]')?.closest<HTMLElement>(".field")
+      || body.querySelector<HTMLElement>('[data-key="companion.llm.fast_model"]');
+  }
+  if (target === "deep") {
+    return body.querySelector('[data-pick="deep_model"]')?.closest<HTMLElement>(".field")
+      || body.querySelector<HTMLElement>('[data-key="companion.llm.deep_model"]');
+  }
+  if (target === "tts") {
+    return body.querySelector<HTMLElement>('[data-group="voice:Coach voice"]');
+  }
+  if (target === "stt") {
+    return body.querySelector<HTMLElement>('[data-group="voice:Push-to-talk"]');
+  }
+  return body.querySelector<HTMLElement>(
+    `[data-key="${CSS.escape(target)}"], [data-group="${CSS.escape(`${tab}:${target}`)}"]`,
+  );
+}
+
+function scrollTargetIntoBody(body: HTMLElement, target: string): void {
+  const el = resolveScrollTarget(body, target);
+  if (!el) return;
+  const bodyRect = body.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  body.scrollTop = Math.max(0, body.scrollTop + (elRect.top - bodyRect.top) - 12);
+}
 
 /** Keep the same visible field while asynchronous panels above it acquire their height. */
-function preserveView(body: HTMLElement, enabled: boolean): () => void {
+function preserveView(body: HTMLElement, enabled: boolean, scrollTarget?: string): () => void {
   viewAbort?.abort();
   const abort = viewAbort = new AbortController();
   let active = true;
@@ -46,6 +75,10 @@ function preserveView(body: HTMLElement, enabled: boolean): () => void {
   const offset = anchor ? anchor.getBoundingClientRect().top - top : 0;
   return () => {
     if (abort.signal.aborted || !active) return;
+    if (scrollTarget) {
+      scrollTargetIntoBody(body, scrollTarget);
+      return;
+    }
     const next = selector ? body.querySelector<HTMLElement>(selector) : null;
     body.scrollTop = next ? body.scrollTop + next.getBoundingClientRect().top - body.getBoundingClientRect().top - offset : scroll;
   };
@@ -57,8 +90,9 @@ export function registerPanels(p: Record<string, Panel>): void {
   panels = p;
 }
 
-/** Go to the Settings page on one section. */
-export function openSettingsTab(id: string): void {
+/** Go to the Settings page on one section, optionally scrolling to a subsection or field. */
+export function openSettingsTab(id: string, target?: string): void {
+  pendingScrollTarget = target;
   tab = id;
   setSearchQuery("");
   $<HTMLInputElement>("set-search").value = "";
@@ -77,8 +111,10 @@ export async function renderSettings(): Promise<void> {
   for (const h of hits) perTab.set(h.t.id, (perTab.get(h.t.id) || 0) + (h.fields.length || 1));
   renderTabs(searching, perTab);
   const body = $("set-body");
-  const view = `${tab}\n${searchQuery()}`, sameView = renderedView === view;
-  const restoreView = preserveView(body, sameView);
+  const scrollTarget = pendingScrollTarget;
+  pendingScrollTarget = undefined;
+  const view = `${tab}\n${searchQuery()}`, sameView = renderedView === view && !scrollTarget;
+  const restoreView = preserveView(body, sameView, scrollTarget);
   const focused = body.contains(document.activeElement) ? document.activeElement as HTMLInputElement : null;
   const focusSelector = focused?.id ? `#${CSS.escape(focused.id)}`
     : focused?.dataset.pick ? `[data-pick="${CSS.escape(focused.dataset.pick)}"]`
@@ -109,7 +145,9 @@ export async function renderSettings(): Promise<void> {
     }
   });
   bindThinkingHelp(body);
-  pending.push(Promise.resolve(bindModelReasoning(body)).then(restoreView));
+  pending.push(Promise.resolve(bindModelReasoning(body)).then(() => {
+    if (revision === renderRevision) restoreView();
+  }));
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
     renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
   });
