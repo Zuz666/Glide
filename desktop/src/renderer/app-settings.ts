@@ -2,11 +2,11 @@
 // button, the narrator's voice), handed to the narrator, and kept in step with the coach page's voice controls.
 import { call, glide } from "./bridge.js";
 import { $ } from "./dom.js";
-import { speakLabel, speech } from "./narrator.js";
+import { speech } from "./narrator.js";
+import { refreshTtsStatus } from "./session-bar.js";
 import { orderSessionBar } from "./session-bar-order.js";
 import { live } from "./state.js";
 import { AppSettings, Obj } from "./types.js";
-
 export function applyAppSettings(s: AppSettings): void {
   live.appSettings = s;
   setTimeout(postVoice, 0);
@@ -14,8 +14,7 @@ export function applyAppSettings(s: AppSettings): void {
   speech.configure(muted, s.speech || {});
   showMute(muted);
   showVolume(Number(s.speech?.volume ?? 1), muted);
-  $("sb-speak").textContent = speakLabel(s.speech || {});
-  $("sb-speak-wrap").title = `The narrator's voice: ${$("sb-speak").textContent}`;
+  refreshTtsStatus();
   orderSessionBar(s.sessionBarOrder);
 }
 

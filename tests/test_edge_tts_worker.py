@@ -10,6 +10,7 @@ import base64
 import json
 from pathlib import Path
 import sys
+import time
 import unittest
 
 try:
@@ -404,6 +405,281 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         await self.accept("survivor")
         self.assertEqual((await self.event("end", "survivor"))["reason"], "complete")
 
+    async def test_reset_pool_retries_after_delay_without_waiting_for_silent_sibling_pool(self):
+        await self.worker.close()
+        self.worker = EdgeWorker(self.events.put_nowait, WorkerConfig(
+            endpoint=self.endpoint, renewal_seconds=0.5,
+            backoff_initial=0.04, backoff_max=0.16, retry_delay=0.08))
+        await self.worker.open()
+        async with asyncio.timeout(2):
+            while len({ws for ws, _ in self.configs}) < 6:
+                await asyncio.sleep(0.005)
+        release = asyncio.Event()
+        reset_at = None
+        retry_at = None
+        count = 0
+
+        async def one_resets_one_hangs(ws, request_id, body):
+            nonlocal count, reset_at, retry_at
+            count += 1
+            if count == 1:
+                await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+                reset_at = time.monotonic()
+                await ws.close()
+            elif count == 2:
+                await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+                await release.wait()
+            else:
+                retry_at = time.monotonic()
+                await self.audio(ws, request_id)
+
+        self.behavior = one_resets_one_hangs
+        self.start(budget_ms=1500)
+        try:
+            await self.accept()
+            self.assertEqual((await self.event("end"))["reason"], "complete")
+            assert reset_at is not None and retry_at is not None
+            self.assertGreaterEqual(retry_at - reset_at, 0.06)
+            self.assertLess(retry_at - reset_at, 0.5)
+            self.assertEqual(count, 3)
+        finally:
+            release.set()
+
+
+    async def test_silent_turn_hits_first_audio_timeout_and_all_silent_retries_end_at_deadline(self):
+        await self.worker.close()
+        self.worker = EdgeWorker(self.events.put_nowait, WorkerConfig(
+            endpoint=self.endpoint, renewal_seconds=0.5, backoff_initial=0.04, backoff_max=0.16,
+            first_audio_timeout=0.15, stall_timeout=0.08, retry_delay=0.02))
+        await self.worker.open()
+        async with asyncio.timeout(2):
+            while len({ws for ws, _ in self.configs}) < 6:
+                await asyncio.sleep(0.005)
+        release = asyncio.Event()
+
+        async def silent_after_metadata(ws, request_id, body):
+            await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+            await ws.send_str(
+                "X-RequestId:%s\r\nContent-Type:application/json; charset=utf-8\r\n"
+                "Path:response\r\n\r\n{\"audio\":{\"type\":\"inline\"}}" % request_id)
+            await release.wait()
+
+        self.behavior = silent_after_metadata
+        started = time.monotonic()
+        self.start(id="silent", budget_ms=300)
+        try:
+            end = await self.event("end", "silent")
+            elapsed = time.monotonic() - started
+            self.assertEqual(end["reason"], "deadline")
+            self.assertGreaterEqual(elapsed, 0.27)
+            self.assertLess(elapsed, 0.5)
+            self.assertEqual(len(self.turns), 4)
+            failures = [
+                e for e in self.history
+                if e["type"] == "diagnostic" and e.get("event") == "turn_failed" and e.get("id") == "silent"
+            ]
+            self.assertEqual(len(failures), 2)
+            for item in failures:
+                self.assertEqual(item["code"], "first_audio_timeout")
+                self.assertEqual(item["audio_bytes"], 0)
+                self.assertIs(item["draining"], False)
+
+            # Startup/queueing delay already consumed most of the 250 ms budget:
+            # remaining ~60 ms (< first_audio_timeout) must still end at the shared deadline.
+            short_start = time.monotonic()
+            self.worker.handle(
+                {"op": "start", "id": "tight", "text": "Tight budget.",
+                 "voice": "en-US-AriaNeural", "budget_ms": 300},
+                received=short_start - 0.24,
+            )
+            tight_end = await self.event("end", "tight")
+            self.assertEqual(tight_end["reason"], "deadline")
+            self.assertLess(time.monotonic() - short_start, 0.16)
+        finally:
+            release.set()
+
+    async def test_slow_first_audio_succeeds_while_midstream_silence_fails_as_stream_stall(self):
+        await self.worker.close()
+        self.worker = EdgeWorker(self.events.put_nowait, WorkerConfig(
+            endpoint=self.endpoint, renewal_seconds=0.5, backoff_initial=0.04, backoff_max=0.16,
+            first_audio_timeout=0.14, stall_timeout=0.07, retry_delay=0.03))
+        await self.worker.open()
+        async with asyncio.timeout(2):
+            while len({ws for ws, _ in self.configs}) < 6:
+                await asyncio.sleep(0.005)
+
+        async def slow_valid(ws, request_id, body):
+            await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+            await asyncio.sleep(0.09)  # Longer than stall_timeout, shorter than first_audio_timeout.
+            headers = ("X-RequestId:%s\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n" % request_id).encode()
+            await ws.send_bytes(len(headers).to_bytes(2, "big") + headers + b"complete-")
+            await asyncio.sleep(0.03)  # Within stall_timeout.
+            await ws.send_bytes(len(headers).to_bytes(2, "big") + headers + b"mp3")
+            await ws.send_str("X-RequestId:%s\r\nPath:turn.end\r\n\r\n" % request_id)
+
+        self.behavior = slow_valid
+        self.start(id="slow", budget_ms=1500)
+        await self.accept("slow")
+        self.assertEqual((await self.event("end", "slow"))["reason"], "complete")
+        self.assertFalse(any(
+            e["type"] == "diagnostic" and e.get("event") == "turn_failed" and e.get("id") == "slow"
+            for e in self.history
+        ))
+
+        release = asyncio.Event()
+
+        async def stalled_midstream(ws, request_id, body):
+            await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+            headers = ("X-RequestId:%s\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n" % request_id).encode()
+            await ws.send_bytes(len(headers).to_bytes(2, "big") + headers + b"part1")
+            await release.wait()
+
+        self.behavior = stalled_midstream
+        stalled_start = time.monotonic()
+        self.start(id="stalled", budget_ms=2000)
+        try:
+            end = await self.event("end", "stalled")
+            self.assertEqual(end["reason"], "failed")
+            self.assertLess(time.monotonic() - stalled_start, 0.8)
+            stalls = [
+                e for e in self.history
+                if e["type"] == "diagnostic" and e.get("event") == "turn_failed" and e.get("id") == "stalled"
+            ]
+            self.assertEqual(len(stalls), 4)
+            for item in stalls:
+                self.assertEqual(item["code"], "stream_stall")
+                self.assertEqual(item["audio_bytes"], 5)
+                self.assertIs(item["draining"], False)
+        finally:
+            release.set()
+
+    async def test_draining_loser_reset_emits_turn_failed_while_preemption_and_cancel_do_not(self):
+        both_started = asyncio.Event()
+        drop_loser = asyncio.Event()
+        turn_count = 0
+
+        async def winner_then_loser_resets(ws, request_id, body):
+            nonlocal turn_count
+            turn_count += 1
+            if turn_count == 1:
+                await both_started.wait()
+                await self.audio(ws, request_id)
+            elif turn_count == 2:
+                await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+                both_started.set()
+                await drop_loser.wait()
+                await ws.close()
+            else:
+                await self.audio(ws, request_id)
+
+        self.behavior = winner_then_loser_resets
+        self.start(id="hedged")
+        await self.accept("hedged")
+        self.assertEqual((await self.event("end", "hedged"))["reason"], "complete")
+        drop_loser.set()
+        async with asyncio.timeout(1):
+            while True:
+                event = await self.events.get()
+                self.history.append(event)
+                if event["type"] == "diagnostic" and event.get("event") == "turn_failed" and event.get("id") == "hedged":
+                    self.assertEqual(event["code"], "zero_audio_reset")
+                    self.assertEqual(event["audio_bytes"], 0)
+                    self.assertIs(event["draining"], True)
+                    self.assertIn(event["pool"], ("A", "B"))
+                    break
+
+        # Now verify that evicting a draining loser via queued pool pressure does NOT emit turn_failed,
+        # and cancelling an active request does NOT emit turn_failed.
+        preempt_started = asyncio.Event()
+        preempt_hold = asyncio.Event()
+        held_transport = []
+        second_count = 0
+
+        async def winner_then_preempted_loser(ws, request_id, body):
+            nonlocal second_count
+            second_count += 1
+            if second_count == 1:
+                await preempt_started.wait()
+                await self.audio(ws, request_id)
+            elif second_count == 2:
+                held_transport.append(self.transports[ws])
+                preempt_started.set()
+                await preempt_hold.wait()
+            else:
+                await preempt_hold.wait()
+
+        self.behavior = winner_then_preempted_loser
+        self.start(id="preempted")
+        try:
+            await self.accept("preempted")
+            self.assertEqual((await self.event("end", "preempted"))["reason"], "complete")
+            for idx in range(3):
+                self.start(id="q%d" % idx)
+            async with asyncio.timeout(1):
+                while not held_transport[0].is_closing():
+                    await asyncio.sleep(0.005)
+            for idx in range(3):
+                self.command(op="cancel", id="q%d" % idx)
+                self.assertEqual((await self.event("end", "q%d" % idx))["reason"], "cancelled")
+            await asyncio.sleep(0.05)
+            while not self.events.empty():
+                self.history.append(self.events.get_nowait())
+            unexpected = [
+                e for e in self.history
+                if e["type"] == "diagnostic" and e.get("event") == "turn_failed"
+                and e.get("id") in {"preempted", "q0", "q1", "q2"}
+            ]
+            self.assertEqual(unexpected, [])
+        finally:
+            preempt_hold.set()
+
+    async def test_turn_failed_codes_classify_resets_empty_protocol_and_decode_rejections(self):
+        modes = iter([
+            "partial_reset",
+            "empty_audio",
+            "protocol_error",
+            "decode_rejected",
+        ])
+
+        async def varied_failures(ws, request_id, body):
+            mode = next(modes)
+            await ws.send_str("X-RequestId:%s\r\nPath:turn.start\r\n\r\n" % request_id)
+            headers = ("X-RequestId:%s\r\nContent-Type:audio/mpeg\r\nPath:audio\r\n" % request_id).encode()
+            if mode == "partial_reset":
+                await ws.send_bytes(len(headers).to_bytes(2, "big") + headers + b"abc")
+                await ws.close()
+            elif mode == "empty_audio":
+                await ws.send_str("X-RequestId:%s\r\nPath:turn.end\r\n\r\n" % request_id)
+            elif mode == "protocol_error":
+                await ws.send_str("X-RequestId:wrong\r\nPath:turn.end\r\n\r\n")
+            else:
+                await ws.send_bytes(len(headers).to_bytes(2, "big") + headers + b"bad-mp3")
+                await ws.send_str("X-RequestId:%s\r\nPath:turn.end\r\n\r\n" % request_id)
+
+        self.behavior = varied_failures
+        self.start(id="codes")
+        async with asyncio.timeout(2):
+            while True:
+                event = await self.events.get()
+                self.history.append(event)
+                if event["type"] == "candidate" and event["id"] == "codes":
+                    self.command(op="decoded", id="codes", attempt=event["attempt"], ok=False)
+                elif event["type"] == "end" and event["id"] == "codes":
+                    self.assertEqual(event["reason"], "failed")
+                    break
+        while not self.events.empty():
+            self.history.append(self.events.get_nowait())
+        codes = {
+            e["code"]: e["audio_bytes"]
+            for e in self.history
+            if e["type"] == "diagnostic" and e.get("event") == "turn_failed" and e.get("id") == "codes"
+        }
+        self.assertEqual(codes, {
+            "partial_audio_reset": 3,
+            "empty_audio": 0,
+            "protocol_error": 0,
+            "decode_rejected": 7,
+        })
 
 if __name__ == "__main__":
     unittest.main()

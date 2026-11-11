@@ -66,7 +66,7 @@ globalThis.clearTimeout = (t) => { const i = timers.indexOf(t); if (i >= 0) time
 Date.now = () => now;
 
 const DUR = 80;
-const log = [];
+const log = [], playback = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.window = globalThis;
 globalThis.document = { getElementById: () => null };
@@ -136,6 +136,7 @@ globalThis.glide = { invoke: (ch, ...a) => {
   if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
   if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
   if (ch === "tts:windowsStop") return nativeStop(a[0]);
+  if (ch === "tts:playbackState") { playback.push(a[0]); return Promise.resolve(); }
   if (ch !== "tts:synth") return Promise.resolve();
   const text = a[0];
   log.push("synth:" + text);
@@ -148,7 +149,7 @@ globalThis.glide = { invoke: (ch, ...a) => {
 const { speech } = await import(process.argv[2]);
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
 const out = {};
-const take = (name) => { out[name] = log.splice(0); };
+const take = (name) => { out[name] = log.splice(0); out[name + "_pb"] = playback.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
 
 // the coach, Windows voice: in order; an interrupting line cancels; muted says nothing
@@ -291,4 +292,8 @@ assert got["edge_order"] == ["edge:e1", "edge:e2", "play:e1", "ended:e1", "play:
 c = got["edge_cancel"]
 assert c[:4] == ["edge:edge-guide", "edge:edge-coach", "play:edge-guide", "pause:edge-guide"], c
 assert c[-2:] == ["play:edge-coach", "ended:edge-coach"] and "resolved:edge-guide" in c, c
+assert [p["state"] for p in got["coach_online_pb"]] == ["playing", "ended", "playing", "ended"], got["coach_online_pb"]
+assert [p["state"] for p in got["fallback_pb"]] == ["fallback", "ended"], got["fallback_pb"]
+assert [p["state"] for p in got["rejected_online_pb"]] == ["error"], got["rejected_online_pb"]
+assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_pb"]), got["late_synthesis_pb"]
 print("OK")

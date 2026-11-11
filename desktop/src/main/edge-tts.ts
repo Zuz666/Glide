@@ -12,6 +12,7 @@ const MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MAX_INPUT_QUEUE_BYTES = 512 * 1024;
 const MAX_REQUESTS = 32;
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
+const ATTEMPT_ID = /^(?:a\d{1,9}|[AB]-[12])$/;
 const VOICE = /^[A-Za-z0-9-]{1,128}$/;
 type Fragment = { index: number; start: number; end: number };
 type Attempt = { index: number; verdict?: boolean };
@@ -19,6 +20,26 @@ const TRANSPORT_FIELDS = ["connections", "renewals", "connect_failures", "retire
 const TRANSPORT_EVENTS: Readonly<Record<string, true>> = {
   connection_ready: true, config_renewed: true, connect_failed: true, connection_retired: true,
 };
+const TURN_FAILURE_CODES = [
+  "zero_audio_reset",
+  "partial_audio_reset",
+  "first_audio_timeout",
+  "stream_stall",
+  "empty_audio",
+  "protocol_error",
+  "decode_rejected",
+] as const;
+type TurnFailureCode = typeof TURN_FAILURE_CODES[number];
+const TURN_FAILURE_SET: Readonly<Record<string, true>> = {
+  zero_audio_reset: true,
+  partial_audio_reset: true,
+  first_audio_timeout: true,
+  stream_stall: true,
+  empty_audio: true,
+  protocol_error: true,
+  decode_rejected: true,
+};
+const MAX_SETTLED = 64;
 type TransportCounters = Record<typeof TRANSPORT_FIELDS[number], number>;
 type Pending = {
   id: string;
@@ -34,6 +55,8 @@ type Pending = {
   accepted: Set<number>;
   audioBytes: number;
   diagnostics: number;
+  failedTurns: number;
+  failureCodes: Map<TurnFailureCode, number>;
   candidateCounts?: number[];
 };
 type Worker = {
@@ -81,7 +104,16 @@ export class EdgeTts {
     A: { connections: 0, renewals: 0, connect_failures: 0, retired: 0 },
     B: { connections: 0, renewals: 0, connect_failures: 0, retired: 0 },
   };
+  private readonly slots: Record<"A" | "B", [boolean, boolean, boolean]> = {
+    A: [false, false, false],
+    B: [false, false, false],
+  };
   private reconnects = 0;
+  private lastWorkerFailure?: string;
+  private lastFailureDetail?: string;
+  private readonly requestDetails = new Map<string, string>();
+  private readonly settled = new Map<string, { voice: string }>();
+  private readonly statusListeners = new Set<() => void>();
   private readonly pending = new Map<string, Pending>();
   // IDs cannot be reused within a worker generation: a completed request can still be draining a losing turn.
   private readonly issuedIds = new Set<string>();
@@ -89,9 +121,55 @@ export class EdgeTts {
   constructor(private readonly scriptPath: () => string,
     private readonly note?: (line: string, attribution?: LogAttribution) => void) {}
 
+  onStatusChange(listener: () => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  statusSnapshot(): {
+    workerState: "stopped" | "starting" | "ready" | "reconnecting" | "error";
+    readySlots: number;
+    totalSlots: number;
+    detail?: string;
+  } {
+    const readySlots = Number(this.slots.A[0]) + Number(this.slots.A[1]) + Number(this.slots.A[2])
+      + Number(this.slots.B[0]) + Number(this.slots.B[1]) + Number(this.slots.B[2]);
+    let workerState: "stopped" | "starting" | "ready" | "reconnecting" | "error";
+    if (!this.worker) {
+      workerState = this.lastWorkerFailure ? "error" : "stopped";
+    } else if (!this.worker.ready) {
+      workerState = "starting";
+    } else if (readySlots > 0) {
+      workerState = "ready";
+    } else if (this.transport.A.connect_failures + this.transport.B.connect_failures > 0
+      || this.transport.A.retired + this.transport.B.retired > 0) {
+      workerState = "reconnecting";
+    } else {
+      workerState = "starting";
+    }
+    const detail = this.lastWorkerFailure || this.lastFailureDetail;
+    return { workerState, readySlots, totalSlots: 6, ...(detail ? { detail } : {}) };
+  }
+
+  lastRequestDetail(id: string): string | undefined {
+    return this.requestDetails.get(id);
+  }
+
+  private notifyStatus(): void {
+    for (const fn of this.statusListeners) {
+      try { fn(); } catch { /* status listeners must not interrupt synthesis */ }
+    }
+  }
+
   configure(enabled: boolean): void {
-    if (!enabled) { this.close(); return; }
+    if (!enabled) {
+      this.lastWorkerFailure = undefined;
+      this.close();
+      this.notifyStatus();
+      return;
+    }
     this.ensureWorker();
+    this.notifyStatus();
   }
 
   start(id: string, text: string, voice: string, onEvent: (event: EdgeTtsEvent) => void): void {
@@ -103,7 +181,8 @@ export class EdgeTts {
     if (this.pending.size >= MAX_REQUESTS) throw new Error("Edge TTS: too many pending requests");
     const pending: Pending = { id, text, voice, started, deadline: started + DEADLINE_MS,
       timer: setTimeout(() => this.expire(id), DEADLINE_MS), sent: false, onEvent,
-      attempts: new Map(), accepted: new Set(), audioBytes: 0, diagnostics: 0 };
+      attempts: new Map(), accepted: new Set(), audioBytes: 0, diagnostics: 0,
+      failedTurns: 0, failureCodes: new Map() };
     // Register before spawning: child failure and a ready/candidate can precede the IPC acknowledgement.
     this.pending.set(id, pending);
     this.issuedIds.add(id);
@@ -139,6 +218,9 @@ export class EdgeTts {
     // Detach first so callbacks cannot accidentally attach a replacement request to the closing worker.
     this.worker = undefined;
     this.issuedIds.clear();
+    this.settled.clear();
+    this.slots.A = [false, false, false];
+    this.slots.B = [false, false, false];
     if (worker) {
       worker.closed = true;
       clearTimeout(worker.readyTimer);
@@ -158,7 +240,10 @@ export class EdgeTts {
     for (const counters of Object.values(this.transport)) {
       for (const key of TRANSPORT_FIELDS) counters[key] = 0;
     }
+    this.slots.A = [false, false, false];
+    this.slots.B = [false, false, false];
     this.reconnects = 0;
+    this.lastWorkerFailure = undefined;
     try {
       const { py, env } = pythonContext();
       const child = spawn(py.cmd, [...py.args, "-u", this.scriptPath()],
@@ -178,7 +263,9 @@ export class EdgeTts {
       child.stderr.resume();
       return worker;
     } catch {
+      this.lastWorkerFailure = "worker could not start";
       for (const pending of [...this.pending.values()]) this.finish(pending, "failed", "worker could not start");
+      this.notifyStatus();
       return undefined;
     }
   }
@@ -235,12 +322,17 @@ export class EdgeTts {
       worker.ready = true;
       clearTimeout(worker.readyTimer);
       for (const pending of this.pending.values()) this.sendStart(worker, pending);
+      this.notifyStatus();
       return;
     }
-    // Diagnostics are counted, never forwarded or logged verbatim, even when a worker claims they are safe.
+    // Diagnostics are validated against closed allowlists, never forwarded or logged verbatim.
     if (event.type === "diagnostic") {
       const pending = "id" in event && typeof event.id === "string" ? this.pending.get(event.id) : undefined;
       if (pending) pending.diagnostics = Math.min(1000000, pending.diagnostics + 1);
+      if ("event" in event && event.event === "turn_failed") {
+        this.recordTurnFailure(event, pending);
+        return;
+      }
       if ("event" in event && typeof event.event === "string" && Object.hasOwn(TRANSPORT_EVENTS, event.event)
         && "pool" in event && (event.pool === "A" || event.pool === "B")) {
         const counters = this.transport[event.pool];
@@ -250,9 +342,15 @@ export class EdgeTts {
             counters[key] = value;
           }
         }
+        const slot: unknown = Reflect.get(event, "slot");
+        if (typeof slot === "number" && (slot === 0 || slot === 1 || slot === 2)) {
+          if (event.event === "connection_ready") this.slots[event.pool][slot] = true;
+          else if (event.event === "connection_retired") this.slots[event.pool][slot] = false;
+        }
         if (event.event === "connection_ready" && "reconnect" in event && event.reconnect === true) {
           this.reconnects = Math.min(1000000000, this.reconnects + 1);
         }
+        this.notifyStatus();
       }
       return;
     }
@@ -351,8 +449,23 @@ export class EdgeTts {
     if (reason !== "cancelled" && performance.now() >= pending.deadline) { reason = "deadline"; detail = undefined; }
     clearTimeout(pending.timer);
     this.pending.delete(pending.id);
+    const codesSummary = this.formatFailureCodes(pending.failureCodes);
+    if (codesSummary) {
+      this.lastFailureDetail = codesSummary;
+      this.rememberDetail(pending.id, codesSummary);
+    } else if (reason === "deadline") {
+      this.rememberDetail(pending.id, "deadline");
+    } else if (reason === "failed" && detail) {
+      this.rememberDetail(pending.id, detail);
+    }
+    if (reason !== "cancelled" && this.worker && !this.worker.closed) {
+      this.rememberSettled(pending.id, pending.voice);
+    }
+    const failedDetail = (!detail || detail === "synthesis failed") && codesSummary
+      ? `synthesis failed (${codesSummary})`
+      : (detail || "synthesis failed");
     const error = reason === "deadline" ? "Edge TTS: synthesis deadline exceeded"
-      : reason === "failed" ? `Edge TTS: ${detail || "synthesis failed"}` : undefined;
+      : reason === "failed" ? `Edge TTS: ${failedDetail}` : undefined;
     const event: Extract<EdgeTtsEvent, { type: "end" }> = {
       type: "end", id: pending.id, reason, ...(error ? { error } : {}), attribution: this.attribution(pending, reason),
     };
@@ -362,7 +475,7 @@ export class EdgeTts {
       event.attribution = this.attribution(pending, "deadline");
     }
     try { pending.onEvent(event); } catch { /* caller is gone */ }
-    this.log(pending, event.reason, event.error);
+    this.log(pending, event.reason, event.error, codesSummary);
   }
 
   private attribution(pending: Pending, status: string): LogAttribution {
@@ -370,8 +483,85 @@ export class EdgeTts {
       voice: pending.voice, status, elapsed_ms: Math.round(performance.now() - pending.started) };
   }
 
-  private log(pending: Pending, status: string, error?: string): void {
+  private formatFailureCodes(codes: Map<TurnFailureCode, number>): string {
+    const parts: string[] = [];
+    for (const code of TURN_FAILURE_CODES) {
+      const count = codes.get(code) || 0;
+      if (count > 0) parts.push(`${code}:${count}`);
+    }
+    return parts.join(",");
+  }
+
+  private rememberSettled(id: string, voice: string): void {
+    this.settled.delete(id);
+    this.settled.set(id, { voice });
+    while (this.settled.size > MAX_SETTLED) {
+      const oldest = this.settled.keys().next().value;
+      if (oldest === undefined) break;
+      this.settled.delete(oldest);
+    }
+  }
+
+  private rememberDetail(id: string, detail: string): void {
+    this.requestDetails.delete(id);
+    this.requestDetails.set(id, detail);
+    while (this.requestDetails.size > MAX_SETTLED) {
+      const oldest = this.requestDetails.keys().next().value;
+      if (oldest === undefined) break;
+      this.requestDetails.delete(oldest);
+    }
+  }
+
+  private recordTurnFailure(event: object, pending: Pending | undefined): void {
+    const id: unknown = Reflect.get(event, "id");
+    const index: unknown = Reflect.get(event, "index");
+    const attempt: unknown = Reflect.get(event, "attempt");
+    const pool: unknown = Reflect.get(event, "pool");
+    const code: unknown = Reflect.get(event, "code");
+    const audioBytes: unknown = Reflect.get(event, "audio_bytes");
+    const draining: unknown = Reflect.get(event, "draining");
+    if (typeof id !== "string" || !IDENTIFIER.test(id)
+      || typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index > 4000
+      || typeof attempt !== "string" || !ATTEMPT_ID.test(attempt)
+      || (pool !== "A" && pool !== "B")
+      || typeof code !== "string" || !Object.hasOwn(TURN_FAILURE_SET, code)
+      || typeof audioBytes !== "number" || !Number.isSafeInteger(audioBytes) || audioBytes < 0 || audioBytes > MAX_FRAME_BYTES
+      || typeof draining !== "boolean") {
+      return;
+    }
+    const safeCode = code as TurnFailureCode;
+    if (pending) {
+      pending.failedTurns = Math.min(1000, pending.failedTurns + 1);
+      pending.failureCodes.set(safeCode, Math.min(1000, (pending.failureCodes.get(safeCode) || 0) + 1));
+      return;
+    }
+    if (!draining) return;
+    const settled = this.settled.get(id);
+    if (!settled) return;
+    this.lastFailureDetail = `${safeCode}:1`;
+    try {
+      this.note?.(
+        `[voice] Edge drain failed request=${JSON.stringify(id)} fragment=${index}`
+        + ` attempt=${JSON.stringify(attempt)} pool=${JSON.stringify(pool)}`
+        + ` code=${JSON.stringify(safeCode)} audio_bytes=${audioBytes}`,
+        {
+          category: "TTS",
+          operation: "Edge loser drain",
+          provider: "edge",
+          request_id: id,
+          voice: settled.voice,
+          status: "drain_failed",
+        },
+      );
+    } catch { /* diagnostics must not interrupt speech */ }
+    this.notifyStatus();
+  }
+
+  private log(pending: Pending, status: string, error?: string, failureCodes = ""): void {
     const elapsed = Math.round(performance.now() - pending.started);
+    const failedInfo = status !== "started" && pending.failedTurns > 0
+      ? ` failed_turns=${pending.failedTurns} failure_codes=${JSON.stringify(failureCodes)}`
+      : "";
     try {
       this.note?.(`[voice] Edge ${status} request=${JSON.stringify(pending.id)} elapsed_ms=${elapsed} chars=${pending.text.length}`
         + ` candidates=${pending.attempts.size} accepted=${pending.accepted.size} audio_bytes=${pending.audioBytes}`
@@ -379,7 +569,7 @@ export class EdgeTts {
         + ` renewals=${this.transport.A.renewals + this.transport.B.renewals} reconnects=${this.reconnects}`
         + ` connect_failures=${this.transport.A.connect_failures + this.transport.B.connect_failures}`
         + ` retired=${this.transport.A.retired + this.transport.B.retired}`
-        + ` diagnostics=${pending.diagnostics}${error ? ` reason=${JSON.stringify(error)}` : ""}`,
+        + ` diagnostics=${pending.diagnostics}${failedInfo}${error ? ` reason=${JSON.stringify(error)}` : ""}`,
       this.attribution(pending, status));
     } catch { /* diagnostics must not interrupt speech */ }
   }
@@ -387,11 +577,19 @@ export class EdgeTts {
   private fail(worker: Worker, detail: string): void {
     if (worker.closed) return;
     worker.closed = true;
-    if (this.worker === worker) { this.worker = undefined; this.issuedIds.clear(); }
+    if (this.worker === worker) {
+      this.worker = undefined;
+      this.issuedIds.clear();
+      this.settled.clear();
+      this.slots.A = [false, false, false];
+      this.slots.B = [false, false, false];
+      this.lastWorkerFailure = detail;
+    }
     clearTimeout(worker.readyTimer);
     worker.parts = [];
     worker.frameBytes = 0;
     for (const pending of [...this.pending.values()]) this.finish(pending, "failed", detail);
+    this.notifyStatus();
     try { worker.child.stdin.destroy(); } catch { /* already closed */ }
     try { worker.child.kill(); } catch { /* already exited */ }
   }

@@ -31,6 +31,8 @@ interface Line {
   tag?: string;
   done?: () => void;
   cancelled?: boolean;
+  reportedPlaying?: boolean;
+  reportedFallback?: boolean;
 }
 
 class Narrator {
@@ -114,11 +116,20 @@ class Narrator {
     done?.();
   }
 
+  private reportPlayback(line: Line, state: "playing" | "fallback" | "ended" | "error"): void {
+    const payload = state === "fallback" && line.windows.voiceName
+      ? { requestId: line.requestId, state, fallbackVoice: line.windows.voiceName }
+      : { requestId: line.requestId, state };
+    void call("tts:playbackState", payload);
+  }
+
   private cancelLine(line: Line): void {
+    const clearOnline = !line.reportedFallback && (line.reportedPlaying || (line.provider !== "windows" && !line.edge));
     line.cancelled = true;
     line.edge?.cancel();
     if (line.nativeId) void call("tts:windowsStop", line.nativeId);
     line.player?.pause();
+    if (clearOnline) this.reportPlayback(line, "ended");
     this.finish(line);
   }
 
@@ -159,15 +170,17 @@ class Narrator {
     void this.next();
   }
 
-  private async windowsSay(line: Line, text = line.text): Promise<void> {
+  private async windowsSay(line: Line, text = line.text): Promise<boolean> {
     line.nativeId = line.requestId;
     try {
       const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text, line.windows);
       if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text);
+      return true;
     } catch (error) {
       if (this.current === line && !line.cancelled) {
         this.voiceError(`Windows SAPI5 voice failed: ${ipcError(error)}`);
       }
+      return false;
     } finally {
       line.nativeId = undefined;
     }
@@ -194,6 +207,7 @@ class Narrator {
       if (result.failed) {
         stream.cancel();
         if (result.started) {
+          this.reportPlayback(line, "error");
           this.voiceError("Edge voice playback failed; stopped to avoid repeating spoken words.");
           return;
         }
@@ -206,7 +220,12 @@ class Narrator {
     if ((playbackFailed || terminal?.reason === "failed" || terminal?.reason === "deadline") && unstarted < line.text.length) {
       this.voiceError(`Voice (edge) failed, using the Windows voice${terminal?.error ? `: ${terminal.error}` : ""}`);
       this.fallback(line);
-      await this.windowsSay(line, line.text.slice(unstarted));
+      line.reportedFallback = true;
+      this.reportPlayback(line, "fallback");
+      const ok = await this.windowsSay(line, line.text.slice(unstarted));
+      if (!line.cancelled) this.reportPlayback(line, ok ? "ended" : "error");
+    } else if (line.reportedPlaying) {
+      this.reportPlayback(line, "ended");
     }
   }
 
@@ -220,9 +239,17 @@ class Narrator {
     if (line.edge) {
       await this.edgeSay(line);
     } else if (blob) {
-      await this.play(blob, line);
+      const result = await this.play(blob, line);
+      if (this.current === line && !line.cancelled) {
+        this.reportPlayback(line, result.failed ? "error" : "ended");
+      }
+    } else if (line.provider !== "windows") {
+      this.fallback(line);
+      line.reportedFallback = true;
+      this.reportPlayback(line, "fallback");
+      const ok = await this.windowsSay(line);
+      if (!line.cancelled) this.reportPlayback(line, ok ? "ended" : "error");
     } else {
-      if (line.provider !== "windows") this.fallback(line);
       await this.windowsSay(line);
     }
     if (this.current !== line) return;
@@ -267,6 +294,10 @@ class Narrator {
       a.play().then(() => {
         if (finished || this.current !== line || line.cancelled) return;
         began = true;
+        if (!line.reportedPlaying) {
+          line.reportedPlaying = true;
+          this.reportPlayback(line, "playing");
+        }
         onStart?.();
         call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
           { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });

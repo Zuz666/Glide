@@ -10,7 +10,15 @@
   html,body{margin:0;background:transparent;overflow:hidden;user-select:none}
   #box{margin:0;padding:7px 12px;border-radius:10px;color:#f1ede3;background:rgba(12,13,18,var(--op,.86));border:1px solid rgba(48,52,63,.9);
        font-size:var(--fs,13px);line-height:1.35;box-sizing:border-box;width:100vw}
-  #step{font-family:var(--f-title);font-weight:400;font-size:1.08em;color:#f2c24f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #step-row{display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0}
+  #step{flex:1;min-width:0;font-family:var(--f-title);font-weight:400;font-size:1.08em;color:#f2c24f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #tts{flex:none;display:inline-flex;align-items:center;gap:5px;padding:1px 6px;border-radius:999px;font-size:.82em;line-height:1;font-weight:600;box-sizing:border-box;border:1px solid rgba(242,194,79,.35);background:rgba(20,22,30,.85);color:#f2c24f;white-space:nowrap}
+  #tts[hidden]{display:none}
+  #tts i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  #tts.generating i,#tts.speaking i{animation:pulse .9s ease-in-out infinite}
+  #tts.speaking{color:#4cd471;border-color:rgba(76,212,113,.38)}
+  #tts.fallback{color:#ffad3b;border-color:rgba(255,173,59,.45)}
+  #tts.error{color:#ff6257;border-color:rgba(255,98,87,.5)}
   #msg{margin-top:3px}
   #msg.urgent{color:#ffb3ab}
   #msg:empty,#box.collapsed #msg{display:none}
@@ -33,7 +41,7 @@
 </head>
 <body>
 <div id="box">
-  <div id="step">Glide</div>
+  <div id="step-row"><div id="step">Glide</div><span id="tts" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="ttsl"></span></span></div>
   <div id="state"></div>
   <div id="ptt" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="pttl">Listening</span></div>
   <div id="msg"></div>

@@ -52,6 +52,34 @@ export interface SpeechSettings {
   google?: { voice?: string };
 }
 export interface Voice { id: string; name: string }
+export type TtsPhase =
+  | "muted"
+  | "no-key"
+  | "connecting"
+  | "ready"
+  | "generating"
+  | "speaking"
+  | "fallback"
+  | "error";
+export type TtsPlaybackState = "playing" | "fallback" | "ended" | "error";
+export interface TtsPlaybackReport {
+  requestId: string;
+  state: TtsPlaybackState;
+  fallbackVoice?: string;
+}
+export interface TtsStatus {
+  provider: TtsProvider;
+  voiceLabel: string;
+  fullVoice: string;
+  phase: TtsPhase;
+  workerState?: "stopped" | "starting" | "ready" | "reconnecting" | "error";
+  readySlots?: number;
+  totalSlots?: number;
+  fallbackVoice?: string;
+  detail?: string;
+  holding?: boolean;
+  updatedAt: number;
+}
 
 /** Complete Edge fragments remain provisional until Chromium's decode verdict is accepted by the worker. */
 export type EdgeTtsEvent =
@@ -447,6 +475,8 @@ export interface InvokeMap {
   "tts:edgeStart": (id: string, text: string) => void;
   "tts:edgeDecoded": (id: string, attempt: string, ok: boolean) => void;
   "tts:edgeCancel": (id: string) => void;
+  "tts:status:get": () => TtsStatus;
+  "tts:playbackState": (report: TtsPlaybackReport) => void;
   "res:watch": (on: boolean) => void;
   "update:get": () => UpdateStatus;
   "update:check": () => void;
@@ -497,6 +527,7 @@ export interface EventMap {
   "speech:status": SpeechStatus;
   "res:sample": Footprint;
   "tts:edgeEvent": EdgeTtsEvent;
+  "tts:status": TtsStatus;
   "overlay:unlocked": boolean;
   "overlay:held": boolean;
 }

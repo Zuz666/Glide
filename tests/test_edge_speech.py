@@ -41,7 +41,7 @@ globalThis.crypto ||= (await import('node:crypto')).webcrypto;
 globalThis.notices = [];
 const tick = async () => { for (let i = 0; i < 4; ++i) await new Promise(setImmediate); };
 const enc = new TextEncoder(), dec = new TextDecoder();
-const listeners = new Set(), starts = [], verdicts = [], cancels = [], native = [], players = [], notes = [];
+const listeners = new Set(), starts = [], verdicts = [], cancels = [], native = [], players = [], notes = [], playbackStates = [];
 const decodeCalls = [], delayedDecode = new Map();
 let startHook = () => Promise.resolve(), liveListeners = 0, maxListeners = 0;
 const emit = e => { for (const fn of [...listeners]) fn(e); };
@@ -76,6 +76,7 @@ globalThis.glide = {
     if (ch === 'tts:edgeCancel') { cancels.push(a[0]); return Promise.resolve(); }
     if (ch === 'tts:windowsSpeak') { native.push({ id: a[0], text: a[1], settings: a[2] }); return Promise.resolve({ voice: 'Native' }); }
     if (ch === 'app:note') notes.push(a);
+    if (ch === 'tts:playbackState') { playbackStates.push(a[0]); return Promise.resolve(); }
     assert.notEqual(ch, 'tts:synth', 'Edge must not use legacy full-text synthesis');
     return Promise.resolve();
   }
@@ -117,6 +118,12 @@ assert.deepEqual(native.map(n => n.text), ['Second. Third.']);
 assert.deepEqual(native[0].settings, { voiceName: 'Windows fallback', rate: 1.4, volume: .35 });
 assert.equal(native[0].id, id); assert.equal(speech.lastText, 'Second. Third.');
 releaseStart(); await tick(); assert.equal(players.length, 1); assert.equal(liveListeners, 0);
+const statesFor = reqId => playbackStates.filter(p => p.requestId === reqId);
+assert.deepEqual(statesFor(id), [
+  { requestId: id, state: 'playing' },
+  { requestId: id, state: 'fallback', fallbackVoice: 'Windows fallback' },
+  { requestId: id, state: 'ended' },
+], 'partial Edge playback then fallback reports playing -> fallback -> ended');
 
 // Failed Chromium decode is acknowledged as rejection, never playback. A replacement accepted complete
 // file starts without waiting for later text, and a complete end retains the remaining ready fragments.
@@ -133,6 +140,10 @@ assert.equal(native.length, 1); assert.equal(urls.size, 0);
 assert.equal(notes.filter(([, attribution]) => attribution.operation === 'audio playback'
   && attribution.request_id === id && attribution.status === 'done').length, 2,
   'Chromium pause-before-ended at natural completion is not a cancellation');
+assert.deepEqual(statesFor(id), [
+  { requestId: id, state: 'playing' },
+  { requestId: id, state: 'ended' },
+], 'multi-fragment Edge streaming must not flicker between fragments');
 
 // Cancellation resolves the tagged caller immediately, preserves an unrelated queued line, and ignores
 // delayed decoder/start/event callbacks. Queued Edge lines are also prefetched before their turn.
@@ -154,6 +165,10 @@ players.at(-1).end(); await tick(); assert.equal(native.length, 1);
 startHook = id => { end(id, 'deadline'); return Promise.reject(new Error('late start failure')); };
 await speech.speakAndWait('Whole original 😀.', 'sample');
 assert.equal(native.at(-1).text, 'Whole original 😀.'); assert.equal(native.length, 2);
+assert.deepEqual(statesFor(starts.at(-1).id), [
+  { requestId: starts.at(-1).id, state: 'fallback', fallbackVoice: 'Windows fallback' },
+  { requestId: starts.at(-1).id, state: 'ended' },
+], 'deadline before audio reports fallback -> ended');
 startHook = () => Promise.resolve();
 
 // Source positions are JavaScript UTF-16 offsets, not code-point or encoded-byte counts.
@@ -176,6 +191,10 @@ waiting = speech.speakAndWait('Audible. Unsaid.', 'guide'); id = starts.at(-1).i
 plan(id, [[0, 9], [9, 16]]); candidate(id, 0, 'audible', 0, 9, 'Audible. '); await tick();
 accepted(id, 0, 'audible'); await tick(); const beforeMediaFail = native.length;
 players.at(-1).fail(); await waiting; assert.equal(native.length, beforeMediaFail); assert.ok(cancels.includes(id));
+assert.deepEqual(statesFor(id), [
+  { requestId: id, state: 'playing' },
+  { requestId: id, state: 'error' },
+], 'audible media failure without fallback reports playing -> error');
 
 // A cancellation from the owner stops even the currently audible fragment without invoking fallback.
 waiting = speech.speakAndWait('Owner cancelled.', 'guide'); id = starts.at(-1).id;
@@ -191,6 +210,10 @@ const urgent = starts.at(-1).id; speech.bargeIn(); await tick(); assert.ok(cance
 waiting = speech.speakAndWait('Muted.', 'guide'); const muted = starts.at(-1).id;
 speech.configure(true, settings); await waiting; assert.ok(cancels.includes(muted));
 assert.equal(native.length, beforeMediaFail); assert.equal(liveListeners, 0); assert.equal(maxListeners, 1);
+for (const cancelledId of [old, urgent, muted]) {
+  assert(!statesFor(cancelledId).some(s => s.state === 'fallback' || s.state === 'error'),
+    'cancellation/barge-in/mute must never report fallback or error');
+}
 console.log('OK');
 """
 

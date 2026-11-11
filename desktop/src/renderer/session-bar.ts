@@ -1,6 +1,7 @@
 // The session bar (footer): time, AI cost, calls, cache hits, the models in use, push-to-talk and the coach's
 // mode, from the engine's state stream. The same stream feeds the activity, the walking map panel and reminders.
 import { taskBar } from "./activity.js";
+import { call, glide } from "./bridge.js";
 import { $, cap } from "./dom.js";
 import { renderReminders } from "./memory.js";
 import { currentPage } from "./nav.js";
@@ -9,7 +10,7 @@ import { openSettingsTab } from "./settings/page.js";
 import { refreshWalkMapPanel } from "./settings/walk-map.js";
 import { wireSessionBarOrder } from "./session-bar-order.js";
 import { live } from "./state.js";
-import { CoachStats, LiteState, Models } from "./types.js";
+import { CoachStats, LiteState, Models, TtsStatus } from "./types.js";
 
 const fmtDur = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`);
 
@@ -52,12 +53,12 @@ function showUsage(minutes: number | undefined, c: Partial<CoachStats>): void {
 function showModels(m: Partial<Models>): void {
   $("sb-fast").textContent = m.fast_name || m.fast || "–";
   $("sb-deep").textContent = m.deep_name || m.deep || "–";
-  $("sb-fast").title = m.fast || "";
-  $("sb-deep").title = m.deep || "";
+  $("sb-fast-btn").title = `Fast role: ${m.fast || "not configured"}\nCallouts, quest briefings and translation. Click to open Fast model settings.`;
+  $("sb-deep-btn").title = `Deep role: ${m.deep || "not configured"}\nTyped questions and pace reviews. Click to open Deep model settings.`;
   const listen = String(m.listen || ""), fb = m.listen_fallback ? String(m.listen_fallback) : "";
   $("sb-listen").textContent = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
   $("sb-listen-wrap").classList.toggle("off", listen === "off");
-  $("sb-listen-wrap").title = `Speech-to-text for push-to-talk: ${$("sb-listen").textContent}${fb ? `, falls back to ${cap(fb)}` : ""}`;
+  $("sb-listen-wrap").title = `Speech-to-text for push-to-talk: ${$("sb-listen").textContent}${fb ? `, falls back to ${cap(fb)}` : ""}\nClick to open Push-to-talk settings.`;
 }
 
 function showTranslation(m: Partial<Models>): void {
@@ -85,8 +86,41 @@ function showMode(mode: string): void {
   $("sb-models").classList.toggle("idle", mode === "offline" || mode.startsWith("offline:"));
 }
 
+function ttsPhaseLabel(s: TtsStatus): string {
+  if (s.phase === "muted") return "Muted";
+  if (s.phase === "no-key") return "No API key";
+  if (s.phase === "connecting") return s.totalSlots ? `Connecting (${s.readySlots ?? 0}/${s.totalSlots})` : "Connecting…";
+  if (s.phase === "generating") return "Generating…";
+  if (s.phase === "speaking") return "Speaking";
+  if (s.phase === "fallback") return s.fallbackVoice ? `Fallback · ${s.fallbackVoice}` : "SAPI5 fallback";
+  if (s.phase === "error") return "TTS error";
+  return s.totalSlots ? `${s.readySlots ?? 0}/${s.totalSlots} ready` : "Ready";
+}
+
+export function showTtsStatus(s: TtsStatus): void {
+  const wrap = $("sb-speak-wrap");
+  const stateText = ttsPhaseLabel(s);
+  $("sb-speak").textContent = s.voiceLabel;
+  $("sb-speak-state").textContent = stateText;
+  wrap.dataset.phase = s.phase;
+  const workerLine = s.workerState
+    ? ` (worker: ${s.workerState}${s.totalSlots ? `, ${s.readySlots ?? 0}/${s.totalSlots} slots` : ""})`
+    : "";
+  wrap.title = `Coach voice: ${s.fullVoice}\nStatus: ${stateText}${workerLine}`
+    + `${s.detail ? `\nDiagnostic: ${s.detail}` : ""}\nClick to open Voice settings.`;
+}
+
+export function refreshTtsStatus(): void {
+  void call("tts:status:get").then((s) => { if (s) showTtsStatus(s); });
+}
+
 export function wireSessionBar(): void {
-  $("sb-models").onclick = () => openSettingsTab("models");
+  $("sb-fast-btn").onclick = () => openSettingsTab("models", "fast");
+  $("sb-deep-btn").onclick = () => openSettingsTab("models", "deep");
+  $("sb-listen-wrap").onclick = () => openSettingsTab("voice", "stt");
+  $("sb-speak-wrap").onclick = () => openSettingsTab("voice", "tts");
   $("sb-translation").onclick = () => openSettingsTab("language");
+  glide.on("tts:status", showTtsStatus);
+  refreshTtsStatus();
   wireSessionBarOrder();
 }

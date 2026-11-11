@@ -12,9 +12,10 @@ import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } f
 import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
 import { listWhisperModels, Speech } from "../speech";
-import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
+import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest, TtsPlaybackReport, TtsPlaybackState, TtsProvider } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
+import { TtsStatusCoordinator } from "../tts-status";
 import type { WindowsTts } from "../windows-tts";
 import { Updater } from "../updater";
 import { configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveConfig } from "./config";
@@ -72,11 +73,58 @@ const handle = <K extends InvokeChannel, Sender extends boolean = false>(ch: K,
 const isUnc = (p: string) => /^[\\/]{2}/.test(String(p || ""));
 
 export function registerIpc(d: IpcDeps): void {
+  const ttsKey = (provider: unknown) => {
+    const env = TTS_KEYS[provider as keyof typeof TTS_KEYS];
+    return env ? keyValue(env) : "";
+  };
+  const ttsStatus = new TtsStatusCoordinator({
+    getSettings: () => settings.current,
+    hasKey: (provider: TtsProvider) => !!ttsKey(provider),
+    edgeSnapshot: () => typeof d.edgeTts?.statusSnapshot === "function"
+      ? d.edgeTts.statusSnapshot()
+      : { workerState: "stopped", readySlots: 0, totalSlots: 6 },
+    windowsWorkerState: () => typeof d.windowsTts?.workerState === "function"
+      ? d.windowsTts.workerState()
+      : "stopped",
+    onBroadcast: (status) => d.broadcast("tts:status", status),
+  });
+  d.edgeTts?.onStatusChange?.(() => ttsStatus.refresh());
+  d.windowsTts?.onStatusChange?.((event) => ttsStatus.onWindowsEvent(event));
+  type StatusOwner = { cleanup: () => void;
+    navigation: (event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void };
+  const statusOwners = new Map<WebContents, StatusOwner>();
+  const syncStatusOwner = (sender: WebContents) => {
+    const existing = statusOwners.get(sender);
+    if (ttsStatus.hasOwner(sender)) {
+      if (existing || sender.isDestroyed?.()) return;
+      const detach = () => {
+        const cur = statusOwners.get(sender);
+        if (!cur) return;
+        statusOwners.delete(sender);
+        sender.removeListener("destroyed", cur.cleanup);
+        sender.removeListener("render-process-gone", cur.cleanup);
+        sender.removeListener("did-start-navigation", cur.navigation);
+      };
+      const cleanup = () => { detach(); ttsStatus.clearOwner(sender); };
+      const navigation = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean) => {
+        if (mainFrame && !inPlace) cleanup();
+      };
+      statusOwners.set(sender, { cleanup, navigation });
+      sender.once("destroyed", cleanup);
+      sender.on("render-process-gone", cleanup);
+      sender.on("did-start-navigation", navigation);
+    } else if (existing) {
+      statusOwners.delete(sender);
+      sender.removeListener("destroyed", existing.cleanup);
+      sender.removeListener("render-process-gone", existing.cleanup);
+      sender.removeListener("did-start-navigation", existing.navigation);
+    }
+  };
   engineChannels(d);
-  appChannels(d);
-  edgeChannels(d);
+  appChannels(d, ttsStatus, ttsKey, syncStatusOwner);
+  edgeChannels(d, ttsStatus);
   configChannels(d);
-  keyChannels();
+  keyChannels(ttsStatus);
   addonChannels(d);
   folderChannels(d);
   speechChannels(d);
@@ -93,7 +141,8 @@ function engineChannels({ engine }: IpcDeps): void {
 }
 
 /** The app itself: its info and settings, the voice, the footer's resource meter, updates and release notes. */
-function appChannels(d: IpcDeps): void {
+function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provider: unknown) => string,
+  syncStatusOwner: (sender: WebContents) => void): void {
   const { engine, updater, sampler } = d;
   handle("app:info", () => ({
     version: app.getVersion(), dev: isDev, home: engineHome(), defaultHome, checkout: isCheckout(engineHome()),
@@ -112,6 +161,7 @@ function appChannels(d: IpcDeps): void {
     settings.merge(patch);
     if (settings.current.muted) d.windowsTts.stop();
     d.edgeTts.configure(!settings.current.muted && settings.current.speech?.provider === "edge");
+    ttsStatus.refresh();
     d.applyOverlaySettings();
     d.updateTray();
     if (patch.autoUpdate !== undefined) updater.start(settings.current.autoUpdate !== false);
@@ -127,7 +177,11 @@ function appChannels(d: IpcDeps): void {
     fs.mkdirSync(logsDir(), { recursive: true });
     return shell.openPath(logsDir());
   });
-  handle("app:mute", (muted: boolean) => { d.setMuted(!!muted); return !!settings.current.muted; });
+  handle("app:mute", (muted: boolean) => {
+    d.setMuted(!!muted);
+    ttsStatus.refresh();
+    return !!settings.current.muted;
+  });
   handle("app:changelog", () => {
     try {
       return JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "changelog.json"), "utf8"));
@@ -136,12 +190,8 @@ function appChannels(d: IpcDeps): void {
     }
   });
 
-  const ttsKey = (provider: unknown) => {
-    const env = TTS_KEYS[provider as keyof typeof TTS_KEYS];
-    return env ? keyValue(env) : "";
-  };
   let ttsSequence = 0, ttsActive = 0;
-  handle("tts:synth", async (text: string, style?: string, tone?: string, requestId?: string) => {
+  handle("tts:synth", async (sender: WebContents, text: string, style?: string, tone?: string, requestId?: string) => {
     const s = structuredClone(settings.current.speech || {}), id = ++ttsSequence, started = performance.now();
     if (s.provider === "edge") throw new Error("Edge TTS: use streaming speech");
     const input = String(text || "").slice(0, 4000), provider = s.provider || "unknown";
@@ -151,9 +201,12 @@ function appChannels(d: IpcDeps): void {
       : provider === "elevenlabs" ? s.elevenlabs?.voiceId || "JBFqnCBsd6RMkjVDRZzb" : undefined;
     const model = provider === "openai" ? s.openai?.model || "gpt-4o-mini-tts"
       : provider === "elevenlabs" ? s.elevenlabs?.model || "eleven_flash_v2_5" : undefined;
+    const reqKey = requestId || String(id);
     const attribution: LogAttribution = { category: "TTS", operation: "online synthesis", provider,
-      request_id: requestId || String(id), ...(voice ? { voice } : {}), ...(model ? { model } : {}) };
+      request_id: reqKey, ...(voice ? { voice } : {}), ...(model ? { model } : {}) };
     ttsActive++;
+    ttsStatus.beginSynthesis(reqKey, undefined, sender);
+    syncStatusOwner(sender);
     engine.note(`[voice] TTS #${id} start provider=${provider} voice=${JSON.stringify(voice || "not selected")}${model ? ` model=${JSON.stringify(model)}` : ""} chars=${input.length} active=${ttsActive} text=${JSON.stringify(input)}`,
       { ...attribution, status: "started" });
     try {
@@ -162,18 +215,22 @@ function appChannels(d: IpcDeps): void {
       const elapsed = Math.round(performance.now() - started);
       const ready = { ...attribution, status: "ready", elapsed_ms: elapsed };
       engine.note(`[voice] TTS #${id} ready elapsed_ms=${elapsed} audio_bytes=${data.length}`, ready);
+      ttsStatus.finishSynthesis(reqKey, true);
+      syncStatusOwner(sender);
       return { mime: "audio/mpeg", data, attribution: ready };
     } catch (error) {
       const detail = { reason: "ProviderError" };
       const elapsed = Math.round(performance.now() - started);
       engine.note(`[voice] TTS #${id} failed elapsed_ms=${elapsed} ${JSON.stringify(detail)}`,
         { ...attribution, status: "error", elapsed_ms: elapsed });
+      ttsStatus.finishSynthesis(reqKey, false, "provider_error");
+      syncStatusOwner(sender);
       // Electron only transports the message; the renderer already owns this request's local ID.
       throw new Error(`TTS #${id}: ${error instanceof Error ? error.message : "synthesis failed"}`);
     } finally {
       ttsActive--;
     }
-  });
+  }, true);
   handle("tts:windowsSpeak", async (id, text, options) => {
     if (settings.current.muted) {
       engine.note(`[voice] SAPI5 rejected request=${JSON.stringify(id)}: speech is muted`,
@@ -185,6 +242,19 @@ function appChannels(d: IpcDeps): void {
   handle("tts:windowsStop", (id) => d.windowsTts.stop(id));
   handle("tts:voices", (provider) => provider === "windows" ? d.windowsTts.voices()
     : ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region));
+  const validPlaybackStates: Readonly<Record<TtsPlaybackState, true>> = {
+    playing: true, fallback: true, ended: true, error: true,
+  };
+  handle("tts:status:get", () => ttsStatus.current());
+  handle("tts:playbackState", (sender: WebContents, report: TtsPlaybackReport) => {
+    if (!report || typeof report !== "object" || typeof report.requestId !== "string"
+      || !/^[A-Za-z0-9_.:-]{1,128}$/.test(report.requestId)
+      || typeof report.state !== "string" || !Object.hasOwn(validPlaybackStates, report.state)) {
+      throw new Error("TTS: invalid playback state");
+    }
+    ttsStatus.reportPlayback(report, sender);
+    syncStatusOwner(sender);
+  }, true);
 
   handle("res:watch", (on: boolean) => (on ? sampler.start() : sampler.stop()));
   handle("update:get", () => updater.status);
@@ -194,7 +264,7 @@ function appChannels(d: IpcDeps): void {
 }
 
 /** Edge events belong to the invoking page, never to every window listening on the event channel. */
-function edgeChannels({ edgeTts }: IpcDeps): void {
+function edgeChannels({ edgeTts }: IpcDeps, ttsStatus: TtsStatusCoordinator): void {
   type Request = { sender: WebContents; frame: WebContents["mainFrame"] };
   type Owner = { ids: Set<string>; cleanup: () => void;
     navigation: (event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void };
@@ -219,6 +289,7 @@ function edgeChannels({ edgeTts }: IpcDeps): void {
         // Remove ownership before cancellation: no terminal/late event may reach the next page in this window.
         for (const ownedId of [...(owners.get(sender)?.ids || [])]) {
           remove(ownedId);
+          ttsStatus.cancelSynthesis(ownedId);
           edgeTts.cancel(ownedId);
         }
       };
@@ -246,15 +317,22 @@ function edgeChannels({ edgeTts }: IpcDeps): void {
       if (requests.get(id) !== request) return;
       if (sender.isDestroyed() || sender.mainFrame !== request.frame || !isOwnPage(sender.mainFrame.url)) {
         remove(id);
+        ttsStatus.cancelSynthesis(id);
         edgeTts.cancel(id);
         return;
       }
-      if (event.type === "end") remove(id);
-      try { sender.send("tts:edgeEvent", event); } catch { remove(id); edgeTts.cancel(id); }
+      if (event.type === "end") {
+        remove(id);
+        if (event.reason === "complete") ttsStatus.finishSynthesis(id, true);
+        else if (event.reason === "cancelled") ttsStatus.cancelSynthesis(id);
+        else ttsStatus.finishSynthesis(id, false, edgeTts.lastRequestDetail?.(id) || event.reason);
+      }
+      try { sender.send("tts:edgeEvent", event); } catch { remove(id); ttsStatus.cancelSynthesis(id); edgeTts.cancel(id); }
     };
+    ttsStatus.beginSynthesis(id, undefined, sender);
     try {
       edgeTts.start(id, String(text || "").slice(0, 4000), settings.current.speech?.edge?.voice || "", receive);
-    } catch (error) { remove(id); throw error; }
+    } catch (error) { remove(id); ttsStatus.cancelSynthesis(id); throw error; }
   }, true);
   handle("tts:edgeDecoded", (sender, id, attempt, ok) => {
     const request = requests.get(id);
@@ -267,6 +345,7 @@ function edgeChannels({ edgeTts }: IpcDeps): void {
     const request = requests.get(id);
     if (!request) return;
     if (request.sender !== sender) throw new Error("Edge TTS: request belongs to another window");
+    ttsStatus.cancelSynthesis(id);
     edgeTts.cancel(id);
   }, true);
 }
@@ -283,10 +362,11 @@ function configChannels({ engine, overlay, ensureSpeech }: IpcDeps): void {
 }
 
 /** API keys (values go in, never out: the window sees only which are set) and custom endpoint checks. */
-function keyChannels(): void {
+function keyChannels(ttsStatus: TtsStatusCoordinator): void {
   handle("keys:list", () => ({ known: KNOWN_KEYS, status: keyStatus(endpointKeyEnvs()) }));
   handle("keys:set", async (env: string, value: string) => {
     await setKey(env, value);
+    ttsStatus.refresh();
     return keyStatus(endpointKeyEnvs());
   });
   handle("keys:test", async (env: string, value?: string) => {

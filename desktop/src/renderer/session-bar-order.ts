@@ -7,11 +7,17 @@ import { $ } from "./dom.js";
 const pieces = () => [...$("sessionbar").children] as HTMLElement[];
 const keys = () => pieces().map((p) => p.dataset.sb || "");
 
-/** Put the pieces in the saved order; pieces it doesn't name (new in a later version) keep to the end. */
+/** Put the pieces in the saved order; migrate split stt/tts chips right after models when upgrading from older arrays. */
 export function orderSessionBar(order: string[] | undefined): void {
   if (!Array.isArray(order) || !order.length) return;
+  const normalized = [...order];
+  const modelsIdx = normalized.indexOf("models");
+  if (modelsIdx >= 0) {
+    const missing = (["stt", "tts"] as const).filter((k) => !normalized.includes(k));
+    if (missing.length) normalized.splice(modelsIdx + 1, 0, ...missing);
+  }
   const byKey = new Map(pieces().map((p) => [p.dataset.sb || "", p]));
-  const want = [...order.filter((k) => byKey.has(k)), ...[...byKey.keys()].filter((k) => !order.includes(k))];
+  const want = [...normalized.filter((k) => byKey.has(k)), ...[...byKey.keys()].filter((k) => !normalized.includes(k))];
   if (want.join() === keys().join()) return;
   for (const k of want) $("sessionbar").appendChild(byKey.get(k)!);
 }
