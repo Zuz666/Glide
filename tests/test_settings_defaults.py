@@ -103,7 +103,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.send_data({"error": "Unexpected IPC: " + channel}, 400)
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=compiled))
+class _Server(http.server.ThreadingHTTPServer):
+    request_queue_size = 64
+
+
+server = _Server(("127.0.0.1", 0), functools.partial(Handler, directory=compiled))
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 try:
     glideconfig.patch((), {"companion": {"llm": {"voice_question_model": "deep"}}}, tmp)

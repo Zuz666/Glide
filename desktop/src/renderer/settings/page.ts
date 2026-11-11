@@ -10,6 +10,7 @@ import { languageCode } from "../speech-language.js";
 import { live } from "../state.js";
 import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
+import { keyRequirementHtml, loadConfiguredKeys, modelRequirementHtml, STT_ENGINE_KEY } from "./key-links.js";
 import { bindModelReasoning } from "./model-picker.js";
 import { highlightSearch, queryWords, searchQuery, searchSchema, setSearchQuery } from "./search.js";
 import { bindThinkingHelp } from "./thinking-help.js";
@@ -30,7 +31,14 @@ let renderedView = "";
 let viewAbort: AbortController | undefined;
 let pendingScrollTarget: string | undefined;
 
+let highlightTimer: number | undefined;
+
 function resolveScrollTarget(body: HTMLElement, target: string): HTMLElement | null {
+  if (target.startsWith("key:")) {
+    const env = target.slice(4);
+    return body.querySelector<HTMLElement>(`[data-key-row="${CSS.escape(env)}"]`)
+      || body.querySelector<HTMLElement>(`input[data-env="${CSS.escape(env)}"]`);
+  }
   if (target === "fast") {
     return body.querySelector('[data-pick="fast_model"]')?.closest<HTMLElement>(".field")
       || body.querySelector<HTMLElement>('[data-key="companion.llm.fast_model"]');
@@ -50,16 +58,55 @@ function resolveScrollTarget(body: HTMLElement, target: string): HTMLElement | n
   );
 }
 
-function scrollTargetIntoBody(body: HTMLElement, target: string): void {
+function scrollTargetIntoBody(body: HTMLElement, target: string, settle = false): void {
   const el = resolveScrollTarget(body, target);
   if (!el) return;
   const bodyRect = body.getBoundingClientRect();
   const elRect = el.getBoundingClientRect();
   body.scrollTop = Math.max(0, body.scrollTop + (elRect.top - bodyRect.top) - 12);
+  if (!settle) return;
+  clearTimeout(highlightTimer);
+  body.querySelectorAll(".jump-target").forEach((n) => n.classList.remove("jump-target"));
+  el.classList.add("jump-target");
+  highlightTimer = window.setTimeout(() => el.classList.remove("jump-target"), 2200);
+  if (target.startsWith("key:")) {
+    const input = el.matches("input") ? (el as HTMLInputElement) : el.querySelector<HTMLInputElement>("input[data-env]");
+    input?.focus({ preventScroll: true });
+  }
 }
 
+function bindFieldKeyNotes(body: HTMLElement, configuredKeys: ReadonlySet<string> | null): void {
+  const pttRow = body.querySelector<HTMLElement>('[data-key="companion.ptt.engine"]');
+  const pttSel = pttRow?.querySelector<HTMLSelectElement>("select");
+  const pttNote = pttRow?.querySelector<HTMLElement>("[data-field-key-note]");
+  if (pttSel && pttNote) {
+    const syncPtt = () => {
+      const env = STT_ENGINE_KEY[pttSel.value] || "";
+      pttNote.innerHTML = env ? keyRequirementHtml(env, configuredKeys) : "";
+      pttNote.hidden = !env;
+    };
+    syncPtt();
+    pttSel.addEventListener("change", syncPtt);
+  }
+  const recRow = body.querySelector<HTMLElement>('[data-key="companion.llm.recall_meaning"]');
+  const recInp = recRow?.querySelector<HTMLInputElement>("input");
+  const recNote = recRow?.querySelector<HTMLElement>("[data-field-key-note]");
+  if (recInp && recNote) {
+    const syncRecall = () => {
+      const v = recInp.value.trim();
+      let html = "";
+      if (v === "openai") html = keyRequirementHtml("OPENAI_API_KEY", configuredKeys);
+      else if (v === "gemini") html = keyRequirementHtml("GEMINI_API_KEY", configuredKeys);
+      else if (v.startsWith("ep:")) html = modelRequirementHtml(`${v}:embed`, live.config, configuredKeys);
+      recNote.innerHTML = html;
+      recNote.hidden = !html;
+    };
+    syncRecall();
+    recInp.addEventListener("input", syncRecall);
+  }
+}
 /** Keep the same visible field while asynchronous panels above it acquire their height. */
-function preserveView(body: HTMLElement, enabled: boolean, scrollTarget?: string): () => void {
+function preserveView(body: HTMLElement, enabled: boolean, scrollTarget?: string): (settle?: boolean) => void {
   viewAbort?.abort();
   const abort = viewAbort = new AbortController();
   let active = true;
@@ -73,10 +120,10 @@ function preserveView(body: HTMLElement, enabled: boolean, scrollTarget?: string
     : anchor?.dataset.pick ? `[data-pick="${CSS.escape(anchor.dataset.pick)}"]`
     : anchor ? `[data-group="${CSS.escape(anchor.parentElement!.dataset.group!)}"] > h2` : undefined;
   const offset = anchor ? anchor.getBoundingClientRect().top - top : 0;
-  return () => {
+  return (settle = false) => {
     if (abort.signal.aborted || !active) return;
     if (scrollTarget) {
-      scrollTargetIntoBody(body, scrollTarget);
+      scrollTargetIntoBody(body, scrollTarget, settle);
       return;
     }
     const next = selector ? body.querySelector<HTMLElement>(selector) : null;
@@ -101,7 +148,9 @@ export function openSettingsTab(id: string, target?: string): void {
 
 export async function renderSettings(): Promise<void> {
   const revision = ++renderRevision;
-  const [config, appSettings] = await Promise.all([call("config:get"), call("app:settings:get")]);
+  const [config, appSettings, configuredKeys] = await Promise.all([
+    call("config:get"), call("app:settings:get"), loadConfiguredKeys(),
+  ]);
   if (revision !== renderRevision || currentPage() !== "settings") return;
   live.config = config || {};
   applyAppSettings(appSettings || {});
@@ -145,7 +194,8 @@ export async function renderSettings(): Promise<void> {
     }
   });
   bindThinkingHelp(body);
-  pending.push(Promise.resolve(bindModelReasoning(body)).then(() => {
+  bindFieldKeyNotes(body, configuredKeys);
+  pending.push(Promise.resolve(bindModelReasoning(body, configuredKeys)).then(() => {
     if (revision === renderRevision) restoreView();
   }));
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
@@ -175,7 +225,7 @@ export async function renderSettings(): Promise<void> {
   restoreFocus();
   await Promise.allSettled(pending);
   if (revision === renderRevision) {
-    restoreView();
+    restoreView(true);
     restoreFocus();
     viewAbort?.abort();
     body.style.overflowAnchor = "";
@@ -259,7 +309,13 @@ export function wireSettings(): void {
   $("set-save-restart").onclick = () => saveSettings(true);
   $("set-revert").onclick = () => { edits.clear(); renderSettings(); };
   $("set-body").addEventListener("click", async (event) => {
-    if (!(event.target instanceof Element) || !event.target.closest("[data-thinking-settings]")) return;
+    if (!(event.target instanceof Element)) return;
+    const jump = event.target.closest<HTMLButtonElement>("button[data-jump-tab]");
+    if (jump && !jump.disabled) {
+      openSettingsTab(jump.dataset.jumpTab!, jump.dataset.jumpTarget || undefined);
+      return;
+    }
+    if (!event.target.closest("[data-thinking-settings]")) return;
     tab = "models";
     setSearchQuery("");
     $<HTMLInputElement>("set-search").value = "";

@@ -157,6 +157,9 @@ export interface LiteInitEvent { state: LiteState; messages: CoachMessage[] }
  * (transcribing), or it's done (idle). Sent to every client, the light stream included. */
 export interface PttEvent { state: "listening" | "transcribing" | "idle" }
 
+/** event: thinking: active LLM generation turn ("question" | "callout" | "review"), or null when idle. */
+export interface ThinkingEvent { role: string | null }
+
 /** event: speak: a line for the desktop app's narrator. */
 export interface SpeakEvent {
   text: string;
@@ -171,6 +174,7 @@ export interface VoiceSpokenEvent {
   voice: string;
   text: string;
   at: number;
+  synth_ms?: number | null;
 }
 
 export interface GuideElement { tag: string; map?: number; x?: number; y?: number; quest?: number; name?: string;
@@ -222,7 +226,8 @@ export interface Models { fast: string | null; deep: string | null; fast_name: s
   translation?: { language: string; available: boolean } }
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;
   tool_calls: number; cited: number; unsupported: number; uncached_in_tokens: number; cache_read_tokens: number;
-  cache_write_tokens: number; cost_usd: number; web_searches?: number }
+  cache_write_tokens: number; cost_usd: number; web_searches?: number;
+  thinking?: string | null; link_issue?: string | null; link_status?: "warn" | "error" | null }
 export interface KbStatus { ok: boolean; reason?: string; guides?: number }
 /** The step brief: why the route does this step now (knowledge/api; GameState and the knowledge pack). */
 export interface StepWhy { n?: number; kind?: string; unavailable?: string; stale?: boolean; xp_now?: number;

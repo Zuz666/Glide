@@ -43,7 +43,8 @@ node = shutil.which("node")
 # the renderer modules tests run, compiled together (each test used to compile its own with these same flags; the
 # emitted JavaScript is byte for byte the same). A test that runs another renderer module adds it here.
 RENDERER = ("rxp-model", "rxp-geometry", "rxp-icons", "rxp-narration", "rxp-plan", "rxp-prep", "rxp-quests",
-            "rxp-route", "settings-schema", "settings/page", "settings/model-picker", "memory-search", "session-bar", "overlay")
+            "rxp-route", "settings-schema", "settings/page", "settings/model-picker", "settings/keys",
+            "settings/voices", "settings/endpoints", "memory-search", "session-bar", "overlay")
 RENDERER_ARGS = ["--target", "ES2023", "--module", "ES2022", "--moduleResolution", "bundler", "--strict",
                  "--skipLibCheck"]
 
@@ -161,16 +162,28 @@ def _prune(keep):
             pass
 
 
+def _existing(final):
+    if _touch(final):
+        return final
+    for alt in sorted(glob.glob(final + "-alt-*")):
+        if _touch(alt):
+            return alt
+    return None
+
+
 def _cached(name, key, build, esm):
     """The folder for this compile, building it (build(out) -> CompletedProcess of tsc) when it isn't there."""
     final = os.path.join(CACHE, "%s-%s" % (name, key))
-    if _touch(final):
-        return final
+    hit = _existing(final)
+    if hit:
+        return hit
     os.makedirs(CACHE, exist_ok=True)
     with _locked(final + ".lock"):
-        if _touch(final):                                  # another test compiled it while this one waited
-            return final
+        hit = _existing(final)
+        if hit:                                            # another test compiled it while this one waited
+            return hit
         scratch = tempfile.mkdtemp(prefix="%s-tmp-" % name, dir=CACHE)
+        chosen = final
         try:
             out = os.path.join(scratch, "out")
             r = build(out)
@@ -180,20 +193,24 @@ def _cached(name, key, build, esm):
                     fh.write('{"type": "module"}')
             with open(os.path.join(out, ".ok"), "w", encoding="utf-8"):
                 pass
-            if os.path.exists(final):                      # a compile that was deleted only in part
-                shutil.rmtree(final, ignore_errors=True)
-            for attempt in range(50):                      # Windows: a virus scan may still hold a new file
+            for attempt in range(10):                      # Windows: a virus scan may still hold a new file
+                if os.path.exists(final):                  # a compile that was deleted only in part
+                    shutil.rmtree(final, ignore_errors=True)
                 try:
                     os.rename(out, final)
                     break
-                except PermissionError:
-                    if attempt == 49:
-                        raise
-                    time.sleep(0.1)
+                except (PermissionError, FileExistsError):
+                    if attempt == 9:
+                        alt_dir = tempfile.mkdtemp(prefix="%s-%s-alt-" % (name, key), dir=CACHE)
+                        os.rmdir(alt_dir)
+                        os.rename(out, alt_dir)
+                        chosen = alt_dir
+                        break
+                    time.sleep(0.05)
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
-        _prune(final)
-    return final
+        _prune(chosen)
+    return chosen
 
 
 def _run(args, cwd):

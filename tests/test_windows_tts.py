@@ -25,6 +25,7 @@ const nativeSetTimeout = global.setTimeout;
 const nativeClearTimeout = global.clearTimeout;
 const timers = new Map();
 let clock = 0;
+performance.now = () => clock;
 global.setTimeout = (fn, delay) => {
   const timer = { fn, at: clock + delay, unref() { return this; } };
   timers.set(timer, timer);
@@ -70,6 +71,7 @@ class Worker extends EventEmitter {
     this.catalogue = [{ id: 'Installed voice', name: 'Installed voice' }];
     this.listing = [];
     this.killed = false;
+    this.warmups = [];
     let input = '';
     this.stdin = new Writable({ write: (chunk, encoding, callback) => {
       input += chunk.toString();
@@ -87,6 +89,7 @@ class Worker extends EventEmitter {
   accept(command) {
     if (command.op === 'voices') { this.listing.push(command); return; }
     if (command.op === 'speak') { this.queue.push(command); this.play(); return; }
+    if (command.op === 'warmup') { this.warmups.push(command); this.queue.push(command); this.play(); return; }
     if (command.op === 'cancel') {
       for (const item of [this.active, ...this.queue].filter(Boolean)) {
         if (command.target === undefined || command.target === item.id) {
@@ -102,14 +105,16 @@ class Worker extends EventEmitter {
   play() {
     if (this.active || !this.queue.length) return;
     this.active = this.queue.shift();
-    this.spoken.push(this.active.text);
-    this.emitMessage({ id: this.active.id, event: 'started', voice: 'Actual installed voice' });
+    if (this.active.op !== 'warmup') {
+      this.spoken.push(this.active.text);
+      this.emitMessage({ id: this.active.id, event: 'started', voice: 'Actual installed voice' });
+    }
   }
   finish() {
     assert(this.active, 'test worker has no active speech');
     const done = this.active;
     this.active = null;
-    this.emitMessage({ id: done.id, event: 'done', voice: 'Actual installed voice' });
+    this.emitMessage({ id: done.id, event: done.op === 'warmup' ? 'warmed' : 'done', voice: 'Actual installed voice' });
     this.play();
   }
   list() {
@@ -128,6 +133,8 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   // Cancelling during initialization must prevent playback, without discarding another turn or a voice lookup.
   const notes = [];
   const host = new WindowsTts('silent-worker.ps1', line => notes.push(line));
+  const statusEvents = [];
+  const offStatus = host.onStatusChange(ev => statusEvents.push(ev));
   assert.equal(workers.length, 0, 'constructing the host must not start a process');
   const cancelled = watched(host.speak('guide', 'must never be spoken', settings));
   const coach = watched(host.speak('coach', 'coach survives', settings));
@@ -135,16 +142,25 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   const worker = workers.at(-1);
   host.stop('guide');
   await failed(cancelled, /cancel/i);
+  advance(35);
   worker.ready();
   worker.list();
   await turn();
   assert.deepEqual(worker.spoken, ['coach survives'], 'a cancelled startup request spoke after ready');
   assert.equal(coach.state, 'pending', 'started is not playback completion');
   await settled(catalogue);
+  advance(120);
   worker.finish();
   await settled(coach);
   assert.deepEqual(coach.value, { voice: 'Actual installed voice' });
   assert(notes.some(line => line.includes('Actual installed voice')));
+  const coachStatus = statusEvents.filter(ev => ev.id === 'coach');
+  assert.deepEqual(coachStatus.map(ev => [ev.type, ev.elapsedMs ?? null]), [
+    ['submitted', null],
+    ['started', 35],
+    ['done', 155],
+  ], 'onStatusChange must emit started synthesis latency distinct from done playback duration');
+  offStatus();
   const refreshed = watched(host.voices());
   worker.catalogue = [{ id: 'Newly installed', name: 'Newly installed' }];
   worker.list();
@@ -255,6 +271,51 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   await settled(earlyList);
   assert.deepEqual(earlyWorker.spoken, []);
   early.dispose();
+
+  // Background warmup: disabled configure never spawns; enabled configure warms once without status events,
+  // and an unsent warmup is dropped if real speech arrives before worker readiness.
+  const warmNotes = [], warmStatuses = [], workerChanges = [];
+  const warmer = new WindowsTts('silent-worker.ps1', line => warmNotes.push(line));
+  warmer.onStatusChange(ev => warmStatuses.push(ev));
+  warmer.onWorkerChange(() => workerChanges.push(warmer.workerState()));
+  const countBeforeWarm = workers.length;
+  warmer.configure(false, 'Xenia (Russian)');
+  assert.equal(workers.length, countBeforeWarm, 'disabled configure must not spawn a worker');
+  warmer.configure(true, 'Xenia (Russian)');
+  assert.equal(workers.length, countBeforeWarm + 1);
+  assert.equal(warmer.workerState(), 'starting');
+  // Initial BrowserWindow loadFile fires did-start-navigation -> windowsTts.stop() before PowerShell is ready;
+  // speech teardown must preserve the pending background warmup, whereas configure(false) cancels it.
+  warmer.stop();
+  const warmWorker = workers.at(-1);
+  advance(40);
+  warmWorker.ready();
+  assert.equal(warmer.workerState(), 'ready');
+  await turn();
+  assert.equal(warmWorker.warmups.length, 1, 'stop() during window navigation must not discard startup warmup');
+  assert.equal(warmWorker.warmups[0].voice, 'Xenia (Russian)');
+  advance(260);
+  warmWorker.finish();
+  await turn();
+  assert.equal(warmStatuses.length, 0, 'background warmup must not emit playback status transitions');
+  assert(warmNotes.some(line => line.includes('SAPI5 warmup ready') && line.includes('elapsed_ms=300')));
+  warmer.configure(true, 'Xenia (Russian)');
+  await turn();
+  assert.equal(warmWorker.warmups.length, 1, 'already-warmed voice must not re-run warmup');
+  assert.deepEqual(workerChanges.slice(0, 2), ['starting', 'ready']);
+  warmer.dispose();
+
+  const preempted = new WindowsTts('silent-worker.ps1');
+  preempted.configure(true, 'Xenia (Russian)');
+  const preemptPromise = watched(preempted.speak('first-line', 'real greeting', settings));
+  const preemptWorker = workers.at(-1);
+  preemptWorker.ready();
+  await turn();
+  assert.equal(preemptWorker.warmups.length, 0, 'real speech before ready must drop unsent warmup');
+  assert.deepEqual(preemptWorker.spoken, ['real greeting']);
+  preemptWorker.finish();
+  await settled(preemptPromise);
+  preempted.dispose();
   console.log('OK: WindowsTts cancellation, completion, restart and deadline transitions');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """

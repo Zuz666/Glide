@@ -66,6 +66,42 @@ def _knowledge_status(root):
 # background rebuild at the next start merges them
 PLAY_INPUTS = {"live logs", "recorder SV"}
 
+def link_check(app, now=None):
+    """The game link check (Status page, and coach.link_issue on the game overlay)."""
+    now = time.time() if now is None else now
+    sim = getattr(app.args, "sim", False)
+    under_app = _under_app(app)
+    frames, last = app.state.frames, getattr(app, "last_frame_t", 0)
+    other = getattr(app, "strip_other", None)
+    if sim:
+        return {"id": "link", "area": "game", "status": "info", "title": "Simulation",
+                "detail": "A simulated character is playing; nothing is read from the game.", "action": None,
+                "short": None}
+    if other and other["t"] >= last:
+        m = versions.strip_mismatch(other["version"], protocol.PROTO, app=under_app)
+        return {"id": "link", "area": "game", "status": "error", "title": m["title"],
+                "detail": "%s. %s." % (_cap(m["problem"]), _cap(m["fix"])), "action": m["action"],
+                "short": "Addon mismatch"}
+    if not frames:
+        return {"id": "link", "area": "game", "status": "error", "title": "No game data yet",
+                "detail": "Start WoW in Windowed or Windowed (Fullscreen) mode with the Glide addon enabled. You should "
+                          "see a strip of coloured squares in the top-left corner; in game, /glide strip on turns it on.",
+                "action": None, "short": "No game data"}
+    if now - last > 15:
+        ago = _ago(now - last)
+        return {"id": "link", "area": "game", "status": "warn", "title": "Game data stopped %s ago" % ago,
+                "detail": "WoW is closed, minimised, or the data strip is covered or off (/glide strip on).",
+                "action": None, "short": "Game data stopped %s ago" % ago}
+    rate = int(100 * app.decoded / app.attempts) if app.attempts else 0
+    if rate and rate < 60:
+        return {"id": "link", "area": "game", "status": "warn",
+                "title": "Game data is patchy (%d%% of reads decode)" % rate,
+                "detail": "Keep the top-left corner of the game uncovered, or make the strip bigger in game with "
+                          "/glide cell 4.", "action": None, "short": "Patchy data (%d%%)" % rate}
+    return {"id": "link", "area": "game", "status": "ok", "title": "Reading the game",
+            "detail": "%s frames so far." % "{:,}".format(frames), "action": None, "short": None}
+
+
 class Health:
     def __init__(self, app, root=ROOT):
         self.app, self.root = app, root
@@ -124,27 +160,9 @@ class Health:
             c.append({"id": cid, "area": area, "status": status, "title": title, "detail": detail, "action": action})
 
         # ---- the game link: the addon's data strip -------------------------------------------------------------
-        frames, last = app.state.frames, getattr(app, "last_frame_t", 0)
-        other = getattr(app, "strip_other", None)        # frames that read cleanly but speak another strip version
-        if sim:
-            add("link", "game", "info", "Simulation", "A simulated character is playing; nothing is read from the game.")
-        elif other and other["t"] >= last:
-            m = versions.strip_mismatch(other["version"], protocol.PROTO, app=under_app)
-            add("link", "game", "error", m["title"], "%s. %s." % (_cap(m["problem"]), _cap(m["fix"])), m["action"])
-        elif not frames:
-            add("link", "game", "error", "No game data yet",
-                "Start WoW in Windowed or Windowed (Fullscreen) mode with the Glide addon enabled. You should see a strip "
-                "of coloured squares in the top-left corner; in game, /glide strip on turns it on.")
-        elif time.time() - last > 15:
-            add("link", "game", "warn", "Game data stopped %s ago" % _ago(time.time() - last),
-                "WoW is closed, minimised, or the data strip is covered or off (/glide strip on).")
-        else:
-            rate = int(100 * app.decoded / app.attempts) if app.attempts else 0
-            if rate and rate < 60:
-                add("link", "game", "warn", "Game data is patchy (%d%% of reads decode)" % rate,
-                    "Keep the top-left corner of the game uncovered, or make the strip bigger in game with /glide cell 4.")
-            else:
-                add("link", "game", "ok", "Reading the game", "%s frames so far." % "{:,}".format(frames))
+        frames = app.state.frames
+        lk = link_check(app)
+        add(lk["id"], lk["area"], lk["status"], lk["title"], lk["detail"], lk["action"])
 
         # ---- the addon ---------------------------------------------------------------------------------------------
         a = getattr(app.rules, "addon_status", None) or {}

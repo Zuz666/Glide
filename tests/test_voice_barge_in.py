@@ -49,7 +49,7 @@ export function $<T = any>(id: string): T {
     "status.ts": "export const refreshStatus = () => undefined;\n",
     "types.ts": """
 export type { LogAttribution } from "../shared/ipc.js";
-export type { LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "../shared/engine.js";
+export type { LiteInitEvent, LiteState, PttEvent, SpeakEvent, ThinkingEvent, VoiceSpokenEvent } from "../shared/engine.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
 export interface EngineStatus { state: string; detail: string; port: number; url: string | null; token: string }

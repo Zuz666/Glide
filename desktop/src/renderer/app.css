@@ -141,6 +141,14 @@ button.log-category { cursor: help; }
 .field .restart .icon { width: 14px; height: 14px; }
 .reset { background: none; border: 0; color: var(--ink-3); cursor: pointer; font: inherit; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; padding: 0; }
 .reset:hover { color: var(--gold); }
+.reset:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
+.settings-jump code { color: inherit; font-size: 12.5px; }
+.key-missing, .mkey { color: var(--warn); font-size: 13px; }
+.key-missing .reset, .mkey .reset { color: var(--gold); }
+.key-missing .reset:hover, .mkey .reset:hover { color: var(--gold-hi); }
+.mkey { flex-basis: 100%; margin-top: 2px; }
+.jump-target { border-radius: var(--radius-s); box-shadow: 0 0 0 1.5px var(--gold), inset 0 0 0 999px var(--gold-wash); transition: box-shadow 0.35s var(--ease-out); }
+.keyrow.jump-target { padding-inline: 10px; margin-inline: -10px; }
 .rangeval { min-width: 48px; font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 650; }
 #sv-sample { flex: 1 1 240px; min-width: 0; }
 .voice-text { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -426,6 +434,8 @@ button.log-category { cursor: help; }
   animation: sb-ptt-pulse 1s ease-in-out infinite; }
 .sb-ptt.transcribing { color: var(--gold); background: var(--tip-2); box-shadow: 0 0 0 1px var(--gold-dim); }
 .sb-ptt.transcribing i { background: var(--gold); animation-duration: 0.6s; }
+.sb-ptt.thinking { color: #7cc4ff; background: var(--tip-2); box-shadow: 0 0 0 1px rgba(124, 196, 255, 0.42); }
+.sb-ptt.thinking i { background: #7cc4ff; animation-duration: 0.8s; }
 @keyframes sb-ptt-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.75); } }
 @media (prefers-reduced-motion: reduce) { .sb-ptt i { animation: none; } }
 /* the volume bar raised above the speaker (app-settings.ts): a tooltip panel with the level over a vertical slot */

@@ -26,6 +26,9 @@ sys.path.insert(0, os.path.join(HERE, "golden"))
 import glideconfig  # noqa: E402
 from probe_dashboard import edge  # noqa: E402
 import app as companion_app  # noqa: E402
+import health as health_mod  # noqa: E402
+from coach import Coach, CoachDeps  # noqa: E402
+from glidedb import GlideDB  # noqa: E402
 
 exe = edge()
 if not exe or not desktop_ts.available():
@@ -135,6 +138,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data(None)
         if channel == "tts:voices":
             return self.send_data([{"id": "ru-RU-DmitryNeural", "name": "ru-RU-DmitryNeural · Male"}])
+        if channel == "keys:list":
+            envs = [
+                ("ANTHROPIC_API_KEY", "Anthropic (Claude)", "model", False),
+                ("GEMINI_API_KEY", "Google Gemini", "model", False),
+                ("OPENROUTER_API_KEY", "OpenRouter", "model", False),
+                ("TAVILY_API_KEY", "Tavily", "search", False),
+                ("BRAVE_API_KEY", "Brave", "search", False),
+                ("GROQ_API_KEY", "Groq", "speech", True),
+                ("DEEPGRAM_API_KEY", "Deepgram", "speech", False),
+                ("OPENAI_API_KEY", "OpenAI", "voice", True),
+                ("ELEVENLABS_API_KEY", "ElevenLabs", "voice", False),
+                ("AZURE_SPEECH_KEY", "Azure Speech", "voice", False),
+                ("GOOGLE_TTS_API_KEY", "Google Cloud TTS", "voice", False),
+            ]
+            status = [{"env": e, "saved": s, "fromEnv": False, "hint": "…1234" if s else ""} for e, _, _, s in envs]
+            status.append({"env": "GLIDE_ENDPOINT_PROXY_KEY", "saved": False, "fromEnv": False, "hint": ""})
+            return self.send_data({
+                "known": [{"env": e, "label": l, "help": l, "kind": k} for e, l, k, _ in envs],
+                "status": status,
+            })
         return self.send_data(None)
 
 
@@ -160,11 +183,58 @@ _ms = companion_app.App._model_status(_stub_app)
 assert _ms["fast_reasoning"] == "low" and _ms["deep_reasoning"] == "medium" and _ms["voice_question"] == "deep", _ms
 _cfg["fast_reasoning_effort"] = "auto"
 assert companion_app.App._model_status(_stub_app)["fast_reasoning"] == "auto"
+# Game-link check boundary: shared between Status (/health) and overlay state.coach.link_issue.
+def _link_app(*, sim=False, frames=0, last_frame_t=0.0, strip_other=None, decoded=10, attempts=10):
+    return types.SimpleNamespace(
+        args=types.SimpleNamespace(sim=sim, app=True),
+        state=types.SimpleNamespace(frames=frames),
+        last_frame_t=last_frame_t,
+        strip_other=strip_other,
+        decoded=decoded,
+        attempts=attempts,
+    )
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=compiled))
+assert health_mod.link_check(_link_app(sim=True), now=500)["short"] is None
+assert health_mod.link_check(_link_app(frames=0), now=500)["short"] == "No game data"
+assert health_mod.link_check(_link_app(frames=12, last_frame_t=255.0), now=500.0)["short"] == "Game data stopped 4m ago"
+assert health_mod.link_check(_link_app(frames=12, last_frame_t=495.0), now=500.0)["short"] is None
+assert health_mod.link_check(_link_app(frames=12, last_frame_t=495.0, decoded=4, attempts=10), now=500.0)["short"] == "Patchy data (40%)"
+assert health_mod.link_check(_link_app(frames=12, last_frame_t=100.0, strip_other={"version": 99, "t": 200.0}), now=500.0)["short"] == "Addon mismatch"
+
+# Engine thinking lifecycle: question followed by queued ANNOUNCE must clear thinking back to None once drained.
+_thinking_events = []
+_coach_msgs = []
+_coach = Coach(
+    {"enabled": False},
+    GlideDB("/nonexistent.db"),
+    _coach_msgs.append,
+    offline_ok=True,
+    deps=CoachDeps(on_thinking=_thinking_events.append),
+)
+_coach.ask("Where next?", voice=True)
+_coach.announce_update("available", "0.5.0", "Update", ["Faster voices"])
+assert _coach.thinking == "question" and _thinking_events == ["question"], _thinking_events
+_coach._drain_asks()
+assert _coach.thinking is None and _thinking_events == ["question", None], (_coach.thinking, _thinking_events)
+
+
+class _Server(http.server.ThreadingHTTPServer):
+    request_queue_size = 64
+
+
+server = _Server(("127.0.0.1", 0), functools.partial(Handler, directory=compiled))
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 try:
-    glideconfig.patch((), {"companion": {"voice": {"language": "ru"}}}, tmp)
+    glideconfig.patch((), {
+        "companion": {
+            "voice": {"language": "ru"},
+            "llm": {
+                "endpoints": [
+                    {"id": "proxy", "label": "Proxy", "base_url": "https://proxy.example.com/v1", "key_env": "OPENAI_API_KEY"},
+                ],
+            },
+        },
+    }, tmp)
     thread.start()
     result = subprocess.run(
         [
