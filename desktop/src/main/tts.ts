@@ -44,16 +44,11 @@ export function v3Text(text: string, tone = ""): string {
   return `[${words.join(" ")}] ${text}`;
 }
 
-type Online = Exclude<TtsProvider, "windows">;
+type Online = Exclude<TtsProvider, "windows" | "edge">;
 type Synth = (s: SpeechSettings, text: string, key: string, signal: AbortSignal, style: string, tone: string) => Promise<Buffer>;
 type VoiceList = (key: string, signal: AbortSignal, region?: string) => Promise<Voice[]>;
 
 const SYNTH: Record<Online, Synth> = {
-  async edge(s, text, _key, signal) {
-    // The Python paths depend on Electron; other providers and their Node-only tests don't need that runtime.
-    const { edgeSynth } = await import("./edge-tts.js");
-    return edgeSynth(text, s.edge?.voice || "", signal);
-  },
   async openai(s, text, key, signal, style) {
     const o = s.openai || {};
     const model = o.model || "gpt-4o-mini-tts";

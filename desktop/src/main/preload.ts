@@ -10,7 +10,7 @@ const INVOKE = new Set<InvokeChannel>([
   "engine:get", "engine:log", "engine:start", "engine:stop", "engine:restart",
   // the app: its info and settings, the voice, the resource meter, updates and release notes
   "app:info", "app:settings:get", "app:settings:set", "app:note", "app:logs", "app:changelog", "app:mute",
-  "tts:synth", "tts:voices", "tts:windowsSpeak", "tts:windowsStop", "res:watch",
+  "tts:synth", "tts:voices", "tts:windowsSpeak", "tts:windowsStop", "tts:edgeStart", "tts:edgeDecoded", "tts:edgeCancel", "res:watch",
   "update:get", "update:check", "update:install", "update:download",
   // config.json, API keys and custom endpoints
   "config:get", "config:set", "keys:list", "keys:set", "endpoint:test", "keys:test",
@@ -24,7 +24,7 @@ const INVOKE = new Set<InvokeChannel>([
 ]);
 const EVENTS = new Set<EventChannel>([
   "engine:state", "engine:logline", "app:settings", "app:notice", "update:status", "speech:status", "res:sample",
-  "overlay:unlocked", "overlay:held",
+  "overlay:unlocked", "overlay:held", "tts:edgeEvent",
 ]);
 
 contextBridge.exposeInMainWorld("glide", {

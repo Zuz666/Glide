@@ -33,6 +33,7 @@
    "overlay:unlocked",
    "res:sample",
    "speech:status",
+   "tts:edgeEvent",
    "update:status"
   ],
   "invoke": [
@@ -75,6 +76,9 @@
    "speech:install",
    "speech:models",
    "speech:status",
+   "tts:edgeCancel",
+   "tts:edgeDecoded",
+   "tts:edgeStart",
    "tts:synth",
    "tts:voices",
    "tts:windowsSpeak",

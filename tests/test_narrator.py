@@ -27,13 +27,14 @@ if not node or not desktop_ts.available():
 
 STUBS = {
     "bridge.ts": """
-export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any> } = (window as any).glide;
+export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any>;
+  on(ch: string, fn: (p: any) => void): () => void } = (window as any).glide;
 export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": "export const toast = (..._a: unknown[]) => undefined;\n",
     "types.ts": """
-export type { LogAttribution } from "./ipc.js";
+export type { LogAttribution } from "../shared/ipc.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
 """,
@@ -107,7 +108,32 @@ globalThis.Audio = class {
   pause() { if (this.paused) return; this.paused = true; log.push("pause:" + this.text); if (this.onpause) this.onpause(); }
 };
 let releaseSlowSynthesis;
+const edgeListeners = new Set();
+const edgeEvent = (event) => { for (const fn of [...edgeListeners]) fn(event); };
+const edgeCandidates = new Map();
+globalThis.OfflineAudioContext = class {
+  decodeAudioData() { return Promise.resolve({ duration: 1, length: 44100, numberOfChannels: 1 }); }
+};
 globalThis.glide = { invoke: (ch, ...a) => {
+  if (ch === "tts:edgeStart") {
+    const [id, text] = a;
+    log.push("edge:" + text);
+    edgeCandidates.set(id, text);
+    return sleep(10).then(() => {
+      edgeEvent({ type: "plan", id, fragments: [{ index: 0, start: 0, end: text.length }] });
+      edgeEvent({ type: "candidate", id, index: 0, attempt: id, start: 0, end: text.length,
+        mime: "audio/mpeg", data: new TextEncoder().encode(text) });
+    });
+  }
+  if (ch === "tts:edgeDecoded") {
+    const [id, attempt, ok] = a;
+    if (ok && edgeCandidates.has(id)) {
+      edgeEvent({ type: "accepted", id, index: 0, attempt });
+      edgeEvent({ type: "end", id, reason: "complete" });
+    }
+    return Promise.resolve();
+  }
+  if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
   if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
   if (ch === "tts:windowsStop") return nativeStop(a[0]);
   if (ch !== "tts:synth") return Promise.resolve();
@@ -117,7 +143,7 @@ globalThis.glide = { invoke: (ch, ...a) => {
   if (text === "slow-guide") return new Promise(resolve => { releaseSlowSynthesis = () => resolve(audio()); });
   if (text === "cloud-failure") return Promise.reject(new Error("TTS #77: service unavailable"));
   return sleep(10).then(audio);
-} };
+}, on: (_ch, fn) => { edgeListeners.add(fn); return () => edgeListeners.delete(fn); } };
 
 const { speech } = await import(process.argv[2]);
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
@@ -193,24 +219,34 @@ await sleep(30); speech.stop(); await p; take("stop_online");
 speech.configure(false, WIN);
 p = mark(speech.speakAndWait("guide6", "g"), "resolved:guide6");
 await sleep(20); speech.configure(true, WIN); await p; await sleep(10); take("mute_win");
+// Edge uses the same queue/tag ownership, while each queued request starts its streaming prefetch immediately.
+speech.configure(false, { provider: "edge" });
+speech.say("e1"); speech.say("e2");
+await sleep(DUR * 3); take("edge_order");
+p = mark(speech.speakAndWait("edge-guide", "g"), "resolved:edge-guide");
+speech.say("edge-coach");
+await sleep(20); speech.cancel("g"); await p;
+await sleep(DUR * 3); take("edge_cancel");
 console.log(JSON.stringify(out));
 """
 
 tmp = tempfile.mkdtemp(prefix="glide-narrator-")
 try:
     with open(SRC, encoding="utf-8") as fh:
-        files = {"narrator.ts": fh.read(), **STUBS}
+        files = {"renderer/narrator.ts": fh.read(), **{f"renderer/{name}": data for name, data in STUBS.items()}}
+    with open(os.path.join(DESK, "src", "renderer", "edge-speech.ts"), encoding="utf-8") as fh:
+        files["renderer/edge-speech.ts"] = fh.read()
     for name in ("ipc.ts", "engine.ts"):
         with open(os.path.join(DESK, "src", "shared", name), encoding="utf-8") as fh:
-            files[name] = fh.read()
+            files[f"shared/{name}"] = fh.read()
     # narrator.ts beside its stand-ins, compiled once per content (the tests' shared compiles, desktop_ts.py)
-    out = desktop_ts.compiled("narrator", files, ["narrator.ts", "--target", "ES2023", "--module", "ES2022",
+    out = desktop_ts.compiled("narrator", files, ["renderer/narrator.ts", "--target", "ES2023", "--module", "ES2022",
                                                   "--moduleResolution", "bundler", "--lib", "ES2023,DOM", "--strict",
                                                   "--skipLibCheck"])
     run = os.path.join(tmp, "run.mjs")
     with open(run, "w", encoding="utf-8") as fh:
         fh.write(RUN)
-    mod = desktop_ts.url(os.path.join(out, "narrator.js"))
+    mod = desktop_ts.url(os.path.join(out, "renderer", "narrator.js"))
     r = subprocess.run([node, run, mod], capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, "running the narrator failed: %s" % r.stderr[-2000:]
     got = json.loads(r.stdout)
@@ -251,4 +287,8 @@ assert [x for x in c if x.startswith(("play:", "ended:"))] == [
 assert got["slow_cancel_ms"] < 20 and "resolved:slow-guide" in c, c
 assert got["fallback"] == ["synth:cloud-failure", "start:cloud-failure", "end:cloud-failure"], got["fallback"]
 assert got["after_rejected"] == got["before_rejected"], got
+assert got["edge_order"] == ["edge:e1", "edge:e2", "play:e1", "ended:e1", "play:e2", "ended:e2"], got["edge_order"]
+c = got["edge_cancel"]
+assert c[:4] == ["edge:edge-guide", "edge:edge-coach", "play:edge-guide", "pause:edge-guide"], c
+assert c[-2:] == ["play:edge-coach", "ended:edge-coach"] and "resolved:edge-guide" in c, c
 print("OK")

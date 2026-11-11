@@ -69,7 +69,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   const sp: SpeechSettings = live.appSettings.speech || {};
   const prov = sp.provider || "windows";
   const save = (patch: Obj) => updateAppSettings({ speech: patch });
-  host.innerHTML = field("Voice service", "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If one fails, that line uses the Windows voice.",
+  host.innerHTML = field("Voice service", "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If online synthesis fails, the unspoken text uses the selected Windows voice.",
       `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}`)
     + providerFields(prov, sp)
     + field("Speed", "", `<input type="range" id="sv-rate" min="0.5" max="2" step="0.05" value="${sp.rate ?? 1}"><span class="rangeval">${sp.rate ?? 1}</span>`)
