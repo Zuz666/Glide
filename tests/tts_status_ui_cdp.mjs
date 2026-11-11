@@ -133,6 +133,57 @@ try {
   const deepBtn = document.getElementById('sb-deep-btn');
   check(fastBtn && deepBtn && fastBtn.tagName === 'BUTTON' && deepBtn.tagName === 'BUTTON', 'Expected separate Fast and Deep buttons');
 
+  // Default reasoning badges ("auto") and role icons (#i-mic on Fast, #i-keyboard on Deep when voice_question !== 'deep').
+  const fastEff = document.getElementById('sb-fast-eff');
+  const deepEff = document.getElementById('sb-deep-eff');
+  check(fastEff && deepEff && !fastEff.hidden && !deepEff.hidden, 'Expected visible #sb-fast-eff and #sb-deep-eff badges');
+  check(fastEff.textContent === 'auto' && fastEff.dataset.auto === '1', 'Expected default fast effort badge auto, got ' + fastEff.textContent);
+  check(deepEff.textContent === 'auto' && deepEff.dataset.auto === '1', 'Expected default deep effort badge auto, got ' + deepEff.textContent);
+  check(document.querySelector('#sb-fast-ic use')?.getAttribute('href') === '#i-mic', 'Expected #i-mic on Fast when voice_question defaults to fast');
+  check(document.querySelector('#sb-deep-ic use')?.getAttribute('href') === '#i-keyboard', 'Expected #i-keyboard on Deep when voice_question defaults to fast');
+  check(fastBtn.title.includes('Reasoning effort: auto') && fastBtn.title.includes('spoken (push-to-talk) questions'),
+    'Expected Fast tooltip to include reasoning effort and spoken PTT routing: ' + fastBtn.title);
+  check(deepBtn.title.includes('Reasoning effort: auto') && !deepBtn.title.includes('spoken'),
+    'Expected Deep tooltip to include reasoning effort without spoken PTT when voice_question=fast: ' + deepBtn.title);
+
+  // Explicit reasoning overrides (low / medium -> med / minimal -> min) + voice_question: 'deep' routing update live.
+  sb.sessionBar({
+    session_minutes: 42,
+    coach: { cost_usd: 0.125, calls: 7, cache_read_tokens: 800, uncached_in_tokens: 200, mode: 'offline' },
+    models: {
+      fast: 'ep:openai:gpt-6-luna', fast_name: 'gpt-6-luna (OpenAI)', fast_reasoning: 'low',
+      deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)', deep_reasoning: 'medium',
+      voice_question: 'deep',
+      listen: 'whisper small',
+      translation: { language: 'ru', available: true },
+    },
+  });
+  check(fastEff.textContent === 'low' && fastEff.dataset.auto === '0', 'Expected explicit fast effort badge low, got ' + fastEff.textContent);
+  check(deepEff.textContent === 'med' && deepEff.dataset.auto === '0', 'Expected compact deep effort badge med for medium, got ' + deepEff.textContent);
+  check(document.querySelector('#sb-fast-ic use')?.getAttribute('href') === '#i-zap', 'Expected #i-zap on Fast when voice_question=deep');
+  check(document.querySelector('#sb-deep-ic use')?.getAttribute('href') === '#i-mic', 'Expected #i-mic on Deep when voice_question=deep');
+  check(fastBtn.title.includes('Reasoning effort: low') && fastBtn.title.includes('spoken questions routed to Deep'),
+    'Expected Fast tooltip to report low effort and Deep PTT routing: ' + fastBtn.title);
+  check(deepBtn.title.includes('Reasoning effort: medium') && deepBtn.title.includes('Typed & spoken (push-to-talk) questions'),
+    'Expected Deep tooltip to report medium effort and spoken PTT routing: ' + deepBtn.title);
+
+  // Stopping coach hides effort badges cleanly, and re-emitting state restores them.
+  sb.sessionBar(null);
+  check(fastEff.hidden && deepEff.hidden, 'Expected effort badges hidden when coach state is null');
+  sb.sessionBar({
+    session_minutes: 42,
+    coach: { cost_usd: 0.125, calls: 7, cache_read_tokens: 800, uncached_in_tokens: 200, mode: 'offline' },
+    models: {
+      fast: 'ep:openai:gpt-6-luna', fast_name: 'gpt-6-luna (OpenAI)', fast_reasoning: 'minimal',
+      deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)', deep_reasoning: 'high',
+      voice_question: 'deep',
+      listen: 'whisper small',
+      translation: { language: 'ru', available: true },
+    },
+  });
+  check(!fastEff.hidden && fastEff.textContent === 'min' && deepEff.textContent === 'high',
+    'Expected minimal -> min and high badges restored after sessionBar(d)');
+
   // Offline coach mode dims/strikes only Fast and Deep, never STT or TTS.
   check(modelsEl.classList.contains('idle'), 'Expected models block to have idle class when coach is offline');
   check(getComputedStyle(document.getElementById('sb-fast')).textDecorationLine.includes('line-through'), 'Fast row should strike through when offline');

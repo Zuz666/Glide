@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 
+import types
 import desktop_ts
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,6 +25,7 @@ sys.path.insert(0, os.path.join(ROOT, "companion"))
 sys.path.insert(0, os.path.join(HERE, "golden"))
 import glideconfig  # noqa: E402
 from probe_dashboard import edge  # noqa: E402
+import app as companion_app  # noqa: E402
 
 exe = edge()
 if not exe or not desktop_ts.available():
@@ -135,6 +137,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data([{"id": "ru-RU-DmitryNeural", "name": "ru-RU-DmitryNeural · Male"}])
         return self.send_data(None)
 
+
+# Engine boundary: App._model_status exposes live reasoning efforts and spoken-question role routing.
+_cfg = {
+    "fast_model": "ep:openai:gpt-6-luna",
+    "deep_model": "ep:openai:gpt-6.1-terra",
+    "fast_reasoning_effort": "low",
+    "deep_reasoning_effort": "medium",
+    "voice_question_model": "deep",
+}
+_stub_app = types.SimpleNamespace(
+    coach=types.SimpleNamespace(
+        cfg=_cfg,
+        model_name=lambda m: {"ep:openai:gpt-6-luna": "gpt-6-luna (OpenAI)",
+                              "ep:openai:gpt-6.1-terra": "gpt-6.1-terra (OpenAI)"}.get(m, m),
+        localization=types.SimpleNamespace(language="ru"),
+        llm=types.SimpleNamespace(available=lambda _m: True, provider_for=lambda _m: object()),
+    ),
+    ptt=None,
+)
+_ms = companion_app.App._model_status(_stub_app)
+assert _ms["fast_reasoning"] == "low" and _ms["deep_reasoning"] == "medium" and _ms["voice_question"] == "deep", _ms
+_cfg["fast_reasoning_effort"] = "auto"
+assert companion_app.App._model_status(_stub_app)["fast_reasoning"] == "auto"
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=compiled))
 thread = threading.Thread(target=server.serve_forever, daemon=True)
