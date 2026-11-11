@@ -115,7 +115,7 @@ const {EdgeTts}=require(path.join(main,'edge-tts.js'));
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(predicate) {
   const deadline=performance.now()+2000;
-  while (!predicate()) {
+  while (!(await predicate())) {
     assert(performance.now()<deadline,'expected external child/IPC event did not arrive');
     await pause(5);
   }
@@ -288,11 +288,14 @@ function request(h,id,body=text,decode=true) {
   const heldFb = await invoke(a, 'tts:status:get');
   assert.equal(heldFb.phase, 'fallback');
   assert.equal(heldFb.holding, true);
+  assert.equal(heldFb.readySlots, 0);
 
   const heldAt = heldFb.updatedAt;
   // 1) Real pool-slot diagnostic arriving mid-hold must republish readySlots while preserving the original hold updatedAt.
   await until(async () => (await invoke(b, 'tts:status:get')).readySlots === 1);
   const heldAfterSlot = await invoke(b, 'tts:status:get');
+  assert.equal(heldAfterSlot.readySlots, 1);
+  assert.equal(b.statuses.at(-1).readySlots, 1);
   assert.equal(heldAfterSlot.phase, 'fallback');
   assert.equal(heldAfterSlot.holding, true);
   assert.equal(heldAfterSlot.updatedAt, heldAt, 'pool slot diagnostic during hold must not reset hold updatedAt');
