@@ -18,6 +18,10 @@ const fmtDur = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60
 export function sessionBar(d: LiteState | null): void {
   if (!d) {
     for (const id of ["sb-time", "sb-cost", "sb-calls", "sb-cache", "sb-fast", "sb-deep", "sb-listen", "sb-mode"]) $(id).textContent = "–";
+    $("sb-fast-eff").hidden = true;
+    $("sb-deep-eff").hidden = true;
+    $("sb-fast-ic").innerHTML = '<use href="#i-mic"/>';
+    $("sb-deep-ic").innerHTML = '<use href="#i-keyboard"/>';
     $("sb-mode").className = "";
     live.refresh = null;
     $("sb-translation").hidden = true;
@@ -50,11 +54,44 @@ function showUsage(minutes: number | undefined, c: Partial<CoachStats>): void {
   $("sb-cache").textContent = tot ? `${Math.round((100 * (c.cache_read_tokens || 0)) / tot)}%` : "–";
 }
 
+function shortEffort(effort: string): string {
+  if (effort === "minimal") return "min";
+  if (effort === "medium") return "med";
+  return effort;
+}
+
+function setEffortBadge(id: string, hasModel: boolean, effort: string): void {
+  const el = $(id);
+  el.hidden = !hasModel;
+  el.textContent = shortEffort(effort);
+  el.dataset.auto = effort === "auto" ? "1" : "0";
+}
+
+function fmtRoleModel(name: string | null | undefined, id: string | null | undefined): string {
+  if (name && id && name !== id) return `${name} (${id})`;
+  return name || id || "not configured";
+}
+
 function showModels(m: Partial<Models>): void {
-  $("sb-fast").textContent = m.fast_name || m.fast || "–";
-  $("sb-deep").textContent = m.deep_name || m.deep || "–";
-  $("sb-fast-btn").title = `Fast role: ${m.fast || "not configured"}\nCallouts, quest briefings and translation. Click to open Fast model settings.`;
-  $("sb-deep-btn").title = `Deep role: ${m.deep || "not configured"}\nTyped questions and pace reviews. Click to open Deep model settings.`;
+  const fastLabel = m.fast_name || m.fast || "–";
+  const deepLabel = m.deep_name || m.deep || "–";
+  const fastEff = (m.fast_reasoning || "auto").trim().toLowerCase() || "auto";
+  const deepEff = (m.deep_reasoning || "auto").trim().toLowerCase() || "auto";
+  const pttDeep = m.voice_question === "deep";
+  $("sb-fast").textContent = fastLabel;
+  $("sb-deep").textContent = deepLabel;
+  $("sb-fast-ic").innerHTML = `<use href="#i-${pttDeep ? "zap" : "mic"}"/>`;
+  $("sb-deep-ic").innerHTML = `<use href="#i-${pttDeep ? "mic" : "keyboard"}"/>`;
+  setEffortBadge("sb-fast-eff", Boolean(m.fast || m.fast_name), fastEff);
+  setEffortBadge("sb-deep-eff", Boolean(m.deep || m.deep_name), deepEff);
+  const fastUses = pttDeep
+    ? "Live callouts, quest briefings and translation (spoken questions routed to Deep)."
+    : "Live callouts, spoken (push-to-talk) questions, quest briefings and translation.";
+  const deepUses = pttDeep
+    ? "Typed & spoken (push-to-talk) questions, pace reviews and memory reflection."
+    : "Typed questions, pace reviews and memory reflection.";
+  $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${fastUses}\nClick to open Fast model settings.`;
+  $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${deepUses}\nClick to open Deep model settings.`;
   const listen = String(m.listen || ""), fb = m.listen_fallback ? String(m.listen_fallback) : "";
   $("sb-listen").textContent = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
   $("sb-listen-wrap").classList.toggle("off", listen === "off");

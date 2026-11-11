@@ -217,6 +217,7 @@ export interface NavBuild { state: "waiting" | "checking" | "building" | "done" 
   tile: number; tiles: number; maps_done: number; started: number | null; finished: number | null; force: boolean;
   outdated: number[]; built: number[] }
 export interface Models { fast: string | null; deep: string | null; fast_name: string | null; deep_name: string | null;
+  fast_reasoning?: string | null; deep_reasoning?: string | null; voice_question?: "fast" | "deep" | null;
   listen: string; listen_fallback: string | null;
   translation?: { language: string; available: boolean } }
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;

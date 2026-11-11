@@ -237,7 +237,11 @@ button.log-category { cursor: help; }
 .sb-stack-row:hover { background: var(--tip-2); }
 .sb-stack-row .icon { width: 12.5px; height: 12.5px; color: var(--ink-3); flex: none; }
 .sb-stack-row b { font-size: 11.5px; font-weight: 600; max-width: 155px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-effort { padding: 1px 4px; border-radius: 3px; font-size: 9.5px; font-weight: 600; line-height: 1.15; letter-spacing: 0.01em; color: var(--gold); background: rgba(242, 194, 79, 0.12); border: 1px solid rgba(242, 194, 79, 0.28); flex: none; white-space: nowrap; }
+.sb-effort[data-auto="1"] { color: var(--ink-3); background: rgba(255, 255, 255, 0.04); border-color: var(--edge-soft); font-weight: 500; }
+.sb-effort[hidden] { display: none; }
 .sb-models-stack.idle :is(#sb-fast, #sb-deep) { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--ink-3); }
+.sb-models-stack.idle .sb-effort { opacity: 0.55; color: var(--ink-3); background: none; border-color: var(--edge-soft); }
 .sb-models-stack.idle .sb-idle { display: inline; }
 .sb-stt { flex: 0 1 auto; min-width: 0; }
 .sb-stt b { max-width: 135px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -378,7 +382,7 @@ button.log-category { cursor: help; }
 @container sessionbar (max-width: 1280px) { #sessionbar [data-prio="7"] { display: none; } .sb-stack-row b { max-width: 130px; } }
 @container sessionbar (max-width: 1160px) { #sessionbar [data-prio="6"] { display: none; } .sb-task-label { max-width: 200px; } }
 @container sessionbar (max-width: 1040px) { #sessionbar [data-prio="5"] { display: none; } .sb-idle { display: none !important; } .sb-models-stack { height: auto; } }
-@container sessionbar (max-width: 940px) { .sb-mode b { display: none; } .sb-task-label { display: none; } }
+@container sessionbar (max-width: 940px) { .sb-mode b { display: none; } .sb-task-label { display: none; } .sb-effort { display: none; } }
 @container sessionbar (max-width: 860px) { #sessionbar [data-prio="4"] { display: none; } .sb-res span + span { display: none; } }
 @container sessionbar (max-width: 760px) { #sessionbar [data-prio="3"] { display: none; } .sb-task-meta { display: none; } }
 @container sessionbar (max-width: 640px) { .sb-res { display: none; } .sb-bar { width: 110px; } }

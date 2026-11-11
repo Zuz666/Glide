@@ -739,11 +739,15 @@ class App:
                 "kb_schema": self._built_versions[0], "nav": self._built_versions[1]}
 
     def _model_status(self):
-        """The models each coach path uses (ids and names) and push-to-talk's speech-to-text, for the status bar."""
+        """The models each coach path uses (ids, names, reasoning and PTT routing) and speech-to-text."""
         llm = self.coach.cfg
+        opt = getattr(self.coach, "opt", None) or settings.Settings("llm", llm)
         models = {"fast": llm.get("fast_model"), "deep": llm.get("deep_model"),
                   "fast_name": self.coach.model_name(llm.get("fast_model")),
-                  "deep_name": self.coach.model_name(llm.get("deep_model"))}
+                  "deep_name": self.coach.model_name(llm.get("deep_model")),
+                  "fast_reasoning": opt.get("fast_reasoning_effort"),
+                  "deep_reasoning": opt.get("deep_reasoning_effort"),
+                  "voice_question": "deep" if opt.get("voice_question_model") == "deep" else "fast"}
         language = self.coach.localization.language
         fast = llm.get("fast_model")
         models["translation"] = {"language": language, "available": bool(
