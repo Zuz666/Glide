@@ -48,8 +48,8 @@ export function $<T = any>(id: string): T {
     "state.ts": "export const live: any = { engineState: \"\", engineToken: \"\", engineUrl: null };\n",
     "status.ts": "export const refreshStatus = () => undefined;\n",
     "types.ts": """
-export type { LogAttribution } from "./ipc.js";
-export type { LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "./engine.js";
+export type { LogAttribution } from "../shared/ipc.js";
+export type { LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "../shared/engine.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
 export interface EngineStatus { state: string; detail: string; port: number; url: string | null; token: string }
@@ -118,15 +118,42 @@ globalThis.Audio = class {
   }
   pause() { if (this.paused) return; this.paused = true; log.push("pause:" + this.text); if (this.onpause) this.onpause(); }
 };
+const edgeListeners = new Set();
+const edgeEvent = (event) => { for (const fn of [...edgeListeners]) fn(event); };
+const edgeCandidates = new Map();
+globalThis.OfflineAudioContext = class {
+  decodeAudioData() { return Promise.resolve({ duration: 1, length: 44100, numberOfChannels: 1 }); }
+};
 globalThis.glide = {
   invoke: (ch, ...a) => {
+    if (ch === "tts:edgeStart") {
+      const [id, text] = a;
+      log.push("edge:" + text); edgeCandidates.set(id, text);
+      return sleep(10).then(() => {
+        edgeEvent({ type: "plan", id, fragments: [{ index: 0, start: 0, end: text.length }] });
+        edgeEvent({ type: "candidate", id, index: 0, attempt: id, start: 0, end: text.length,
+          mime: "audio/mpeg", data: new TextEncoder().encode(text) });
+      });
+    }
+    if (ch === "tts:edgeDecoded") {
+      const [id, attempt, ok] = a;
+      if (ok && edgeCandidates.has(id)) {
+        edgeEvent({ type: "accepted", id, index: 0, attempt });
+        edgeEvent({ type: "end", id, reason: "complete" });
+      }
+      return Promise.resolve();
+    }
+    if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
     if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
     if (ch === "tts:windowsStop") return nativeStop(a[0]);
     if (ch !== "tts:synth") return Promise.resolve();
     log.push("synth:" + a[0]);
     return sleep(10).then(() => ({ data: new TextEncoder().encode(a[0]), mime: "audio/mpeg" }));
   },
-  on: () => () => {},
+  on: (ch, fn) => {
+    if (ch !== "tts:edgeEvent") return () => {};
+    edgeListeners.add(fn); return () => edgeListeners.delete(fn);
+  },
 };
 // the engine's event stream: the page's listeners, fired by hand
 const streams = [];
@@ -207,23 +234,34 @@ fire("voice_spoken", { voice: "Eugene (Russian)", text: "Следующая це
 await p;
 take("sample_during_status");
 out.after_sample = speech.lastText;
+// Edge fragments use that same held-PTT barge-in path, including a prefetched tagged line.
+speech.configure(false, { provider: "edge" });
+fire("speak", { text: "edge-active", interrupt: false });
+p = mark(speech.speakAndWait("edge-guide", "guides"), "resolved:edge-guide");
+await sleep(30); fire("ptt", { state: "listening" }); await p;
+await sleep(DUR * 2); take("edge_ptt");
+fire("ptt", { state: "idle" });
+fire("speak", { text: "edge-answer", interrupt: false });
+await sleep(DUR * 2); take("edge_after");
 console.log(JSON.stringify(out));
 """
 
 tmp = tempfile.mkdtemp(prefix="glide-barge-in-")
 try:
-    files = dict(STUBS)
-    for name, folder in (("coach.ts", RENDERER), ("narrator.ts", RENDERER), ("engine.ts", SHARED), ("ipc.ts", SHARED)):
+    files = {f"renderer/{name}": data for name, data in STUBS.items()}
+    for name, folder, dest in (("coach.ts", RENDERER, "renderer"), ("narrator.ts", RENDERER, "renderer"),
+                               ("edge-speech.ts", RENDERER, "renderer"), ("engine.ts", SHARED, "shared"),
+                               ("ipc.ts", SHARED, "shared")):
         with open(os.path.join(folder, name), encoding="utf-8") as fh:
-            files[name] = fh.read()
-    out = desktop_ts.compiled("barge-in", files, ["coach.ts", "--target", "ES2023", "--module", "ES2022",
+            files[f"{dest}/{name}"] = fh.read()
+    out = desktop_ts.compiled("barge-in", files, ["renderer/coach.ts", "--target", "ES2023", "--module", "ES2022",
                                                   "--moduleResolution", "bundler", "--lib", "ES2023,DOM", "--strict",
                                                   "--skipLibCheck"])
     run = os.path.join(tmp, "run.mjs")
     with open(run, "w", encoding="utf-8") as fh:
         fh.write(RUN)
-    r = subprocess.run([node, run, desktop_ts.url(os.path.join(out, "coach.js")),
-                        desktop_ts.url(os.path.join(out, "narrator.js"))],
+    r = subprocess.run([node, run, desktop_ts.url(os.path.join(out, "renderer", "coach.js")),
+                        desktop_ts.url(os.path.join(out, "renderer", "narrator.js"))],
                        capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, "running the coach page failed: %s" % r.stderr[-2000:]
     got = json.loads(r.stdout)
@@ -264,4 +302,8 @@ assert got["standalone"][2] > 0 and got["standalone_audio"] == [], got
 assert got["after_old_status"] == got["standalone"], got["after_old_status"]
 assert got["sample_during_status"] == ["start:in-app sample", "end:in-app sample"], got["sample_during_status"]
 assert got["after_sample"] == "in-app sample", got["after_sample"]
+c = got["edge_ptt"]
+assert c[:4] == ["edge:edge-active", "edge:edge-guide", "play:edge-active", "pause:edge-active"], c
+assert c[4:] == ["resolved:edge-guide"], c
+assert got["edge_after"] == ["edge:edge-answer", "play:edge-answer", "ended:edge-answer"], got["edge_after"]
 print("OK")

@@ -53,6 +53,15 @@ export interface SpeechSettings {
 }
 export interface Voice { id: string; name: string }
 
+/** Complete Edge fragments remain provisional until Chromium's decode verdict is accepted by the worker. */
+export type EdgeTtsEvent =
+  | { type: "plan"; id: string; fragments: { index: number; start: number; end: number }[]; attribution?: LogAttribution }
+  | { type: "candidate"; id: string; index: number; attempt: string; start: number; end: number;
+      mime: "audio/mpeg"; data: Uint8Array; attribution?: LogAttribution }
+  | { type: "accepted"; id: string; index: number; attempt: string; attribution?: LogAttribution }
+  | { type: "end"; id: string; reason: "complete" | "failed" | "deadline" | "cancelled";
+      error?: string; attribution?: LogAttribution };
+
 /** The app's own settings (userData/app-settings.json, main/store.ts). */
 export interface AppSettings {
   engineHome?: string;            // overrides paths.defaultHome
@@ -435,6 +444,9 @@ export interface InvokeMap {
   "tts:voices": (provider: TtsProvider) => Voice[];
   "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">) => { voice: string };
   "tts:windowsStop": (id?: string) => void;
+  "tts:edgeStart": (id: string, text: string) => void;
+  "tts:edgeDecoded": (id: string, attempt: string, ok: boolean) => void;
+  "tts:edgeCancel": (id: string) => void;
   "res:watch": (on: boolean) => void;
   "update:get": () => UpdateStatus;
   "update:check": () => void;
@@ -484,6 +496,7 @@ export interface EventMap {
   "update:status": UpdateStatus;
   "speech:status": SpeechStatus;
   "res:sample": Footprint;
+  "tts:edgeEvent": EdgeTtsEvent;
   "overlay:unlocked": boolean;
   "overlay:held": boolean;
 }

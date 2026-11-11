@@ -1,8 +1,8 @@
 // The narrator: speaks the coach's lines ("speak" events on the engine's event stream) with the voice picked in
 // Settings > Voice.
 //
-// Windows voices use the main process's persistent SAPI5 worker. Online providers return audio, prefetched as
-// lines are queued and played here in order; a failed online request uses that same native Windows path.
+// Windows voices use the main process's persistent SAPI5 worker. Online audio is prefetched as lines are queued;
+// Edge streams complete accepted fragments, falling back only from the first unstarted original-text offset.
 //
 // Coach and tagged Guides lines share one queue. Cancelling a tag releases its waiters immediately, even during
 // synthesis or worker startup, without dropping other lines. A late result can never take ownership from a newer
@@ -14,10 +14,13 @@ import { call, glide, ipcError } from "./bridge.js";
 import { toast } from "./dom.js";
 import { Obj, SpeechSettings } from "./types.js";
 import type { LogAttribution } from "./types.js";
+import { edgeSpeech } from "./edge-speech.js";
+import type { EdgeStream } from "./edge-speech.js";
 
 interface Line {
   text: string;
   audio: Promise<Blob | null> | null;
+  edge?: EdgeStream;
   provider: string;
   voiceLabel: string;
   windows: Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
@@ -113,6 +116,7 @@ class Narrator {
 
   private cancelLine(line: Line): void {
     line.cancelled = true;
+    line.edge?.cancel();
     if (line.nativeId) void call("tts:windowsStop", line.nativeId);
     line.player?.pause();
     this.finish(line);
@@ -138,7 +142,9 @@ class Narrator {
       text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done, audio: null, requestId: crypto.randomUUID(),
       windows: { voiceName: this.voiceName, rate: this.rate, volume: this.volume },
     };
-    if (line.provider !== "windows") {
+    if (line.provider === "edge") {
+      line.edge = edgeSpeech.start(text, line.requestId);
+    } else if (line.provider !== "windows") {
       line.audio = glide.invoke("tts:synth", text, style, tone, line.requestId)
         .then((r) => {
           line.attribution = r.attribution;
@@ -153,17 +159,54 @@ class Narrator {
     void this.next();
   }
 
-  private async windowsSay(line: Line): Promise<void> {
+  private async windowsSay(line: Line, text = line.text): Promise<void> {
     line.nativeId = line.requestId;
     try {
-      const result = await glide.invoke("tts:windowsSpeak", line.nativeId, line.text, line.windows);
-      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, line.text);
+      const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text, line.windows);
+      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text);
     } catch (error) {
       if (this.current === line && !line.cancelled) {
         this.voiceError(`Windows SAPI5 voice failed: ${ipcError(error)}`);
       }
     } finally {
       line.nativeId = undefined;
+    }
+  }
+
+  private fallback(line: Line): void {
+    call("app:note", `[voice] TTS fallback: online synthesis failed; using Windows SAPI5 requested_voice=${JSON.stringify(line.windows.voiceName || "Windows default")}`,
+      { category: "TTS", operation: "fallback", provider: "SAPI5", request_id: line.requestId, status: "requested" });
+  }
+
+  private async edgeSay(line: Line): Promise<void> {
+    const stream = line.edge!;
+    let unstarted = 0;
+    let playbackFailed = false;
+    while (this.current === line && !line.cancelled) {
+      const fragment = await stream.next();
+      if (this.current !== line || line.cancelled) return;
+      if (!fragment) break;
+      // Failure discards every unstarted accepted file, including one whose next() just resolved.
+      if (stream.terminal && stream.terminal.reason !== "complete") break;
+      const result = await this.play(fragment.blob, line, line.text.slice(fragment.start, fragment.end),
+        fragment.attribution, () => { unstarted = fragment.end; }, stream);
+      if (this.current !== line || line.cancelled) return;
+      if (result.failed) {
+        stream.cancel();
+        if (result.started) {
+          this.voiceError("Edge voice playback failed; stopped to avoid repeating spoken words.");
+          return;
+        }
+        playbackFailed = true;
+        break;
+      }
+    }
+    if (this.current !== line || line.cancelled) return;
+    const terminal = stream.terminal;
+    if ((playbackFailed || terminal?.reason === "failed" || terminal?.reason === "deadline") && unstarted < line.text.length) {
+      this.voiceError(`Voice (edge) failed, using the Windows voice${terminal?.error ? `: ${terminal.error}` : ""}`);
+      this.fallback(line);
+      await this.windowsSay(line, line.text.slice(unstarted));
     }
   }
 
@@ -174,13 +217,12 @@ class Narrator {
     this.current = line;
     const blob = line.audio ? await line.audio : null;
     if (this.current !== line) return;
-    if (blob) {
+    if (line.edge) {
+      await this.edgeSay(line);
+    } else if (blob) {
       await this.play(blob, line);
     } else {
-      if (line.provider !== "windows") {
-        call("app:note", `[voice] TTS fallback: online synthesis failed; using Windows SAPI5 requested_voice=${JSON.stringify(line.windows.voiceName || "Windows default")}`,
-          { category: "TTS", operation: "fallback", provider: "SAPI5", request_id: line.requestId, status: "requested" });
-      }
+      if (line.provider !== "windows") this.fallback(line);
       await this.windowsSay(line);
     }
     if (this.current !== line) return;
@@ -189,7 +231,8 @@ class Narrator {
     void this.next();
   }
 
-  private async play(blob: Blob, line: Line): Promise<void> {
+  private async play(blob: Blob, line: Line, text = line.text, source = line.attribution,
+    onStart?: () => void, stream?: EdgeStream): Promise<{ started: boolean; failed: boolean }> {
     const url = URL.createObjectURL(blob);
     const a = new Audio(url);
     line.player = a;
@@ -197,10 +240,12 @@ class Narrator {
     a.playbackRate = line.windows.rate ?? 1;
     a.preservesPitch = true;
     const started = performance.now();
-    const attribution: LogAttribution = { ...line.attribution, category: "TTS", operation: "audio playback",
+    const attribution: LogAttribution = { ...source, category: "TTS", operation: "audio playback",
       request_id: line.requestId, rate: a.playbackRate, volume: a.volume };
     call("app:note", `[voice] playback requested${attribution.provider ? ` provider=${attribution.provider}` : ""} audio_bytes=${blob.size}`,
       { ...attribution, status: "requested", elapsed_ms: 0 });
+    let began = false;
+    let failed = false;
     await new Promise<void>((resolve) => {
       let finished = false;
       const finish = (result: string, status: string) => {
@@ -211,17 +256,31 @@ class Narrator {
         resolve();
       };
       a.onended = () => finish("ended", "done");
-      a.onerror = () => finish(`failed media_code=${a.error?.code || 0}`, "error");
-      a.onpause = () => finish("paused", "cancelled");
+      a.onerror = () => { failed = true; finish(`failed media_code=${a.error?.code || 0}`, "error"); };
+      a.onpause = () => finish(a.ended ? "ended" : "paused", a.ended ? "done" : "cancelled");
+      void stream?.finished.then((terminal) => {
+        if (!finished && (terminal.reason === "cancelled" || (!began && terminal.reason !== "complete"))) {
+          a.pause();
+          finish("stopped before start", "cancelled");
+        }
+      });
       a.play().then(() => {
-        if (!finished) call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
+        if (finished || this.current !== line || line.cancelled) return;
+        began = true;
+        onStart?.();
+        call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
           { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });
-        if (this.current === line) this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, line.text);
-      }).catch((e: unknown) => finish(`rejected reason=${e instanceof Error
-        && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`, "error"));
+        this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, text);
+      }).catch((e: unknown) => {
+        if (finished) return;
+        failed = true;
+        finish(`rejected reason=${e instanceof Error
+          && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`, "error");
+      });
     });
     URL.revokeObjectURL(url);
     line.player = undefined;
+    return { started: began, failed };
   }
 
   stop(): void {

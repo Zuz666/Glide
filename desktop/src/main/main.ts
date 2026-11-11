@@ -10,6 +10,7 @@ import { pathToFileURL } from "url";
 import type { EventChannel, EventMap } from "../shared/ipc";
 import * as addon from "./addon";
 import { Engine } from "./engine";
+import { EdgeTts } from "./edge-tts";
 import { GameIcons, iconId } from "./game-icons";
 import { LogFile } from "./logfile";
 import { isDev, logsDir, shippedEngine, syncEngine } from "./paths";
@@ -69,6 +70,8 @@ const updater = new Updater((m) => engine.note(m));
 const speechMgr = new Speech(engine);
 const windowsTts = new WindowsTts(path.join(shippedEngine, "companion", "sapi5.ps1"),
   (line, attribution) => engine.note(line, attribution));
+const edgeTts = new EdgeTts(() => path.join(engineHome(), "companion", "edge_tts_worker.py"),
+  (line, attribution) => engine.note(line, attribution));
 const sampler = new ResourceSampler();
 
 const mainWindow = new MainWindow(() => !quitting && !!settings.current.closeToTray && tray.exists);
@@ -117,6 +120,7 @@ function setMuted(muted: boolean): void {
   settings.current.muted = muted;
   settings.save();
   if (muted) windowsTts.stop();
+  edgeTts.configure(!muted && settings.current.speech?.provider === "edge");
   broadcast("app:settings", settings.current);         // the window's voices stop and stay quiet
   pushMute();
   tray.update();
@@ -216,7 +220,8 @@ async function start(): Promise<void> {
   } catch (e) {
     engine.note(`could not prepare the engine home ${engineHome()}: ${(e as Error).message}`);
   }
-  registerIpc({ engine, updater, speech: speechMgr, windowsTts, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
+  edgeTts.configure(!settings.current.muted && settings.current.speech?.provider === "edge");
+  registerIpc({ engine, updater, speech: speechMgr, windowsTts, edgeTts, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
                 installUpdate, applyOverlaySettings, updateTray: () => tray.update(), ensureSpeech });
   mainWindow.create();
   mainWindow.win!.webContents.on("render-process-gone", () => windowsTts.stop());
@@ -247,7 +252,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => mainWindow.show());
   app.whenReady().then(start);
-  app.on("before-quit", () => { quitting = true; sampler.stop(); windowsTts.dispose(); });
+  app.on("before-quit", () => { quitting = true; sampler.stop(); windowsTts.dispose(); edgeTts.close(); });
   app.on("quit", () => engine.file?.flushSync());        // the last lines (the coach stopping) reach the file
   // stop the coach first, then quit for real (app.quit, not app.exit: a downloaded update installs on quit)
   let engineStopped = false;

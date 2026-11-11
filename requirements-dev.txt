@@ -1,6 +1,7 @@
 # What the tests and linters need (CI installs this): py -3 -m pip install -r requirements-dev.txt
 # luacheck isn't a Python package: see CONTRIBUTING.md. faster-whisper (requirements.txt) isn't needed for tests.
 numpy==2.5.4            # same pin as requirements.txt
+edge-tts==7.3.1         # Edge worker tests and type checks; same pin as requirements.txt
 lupa==2.8               # runs the addon (Lua 5.1) against a mocked game API: test_addon, test_extras, test_link, ...
 ruff==0.17.3            # tests/test_lint.py
 pyright==1.1.414        # tests/test_types.py (the pip package fetches its own node on first run)

@@ -1,17 +1,18 @@
 // What the windows can ask the main process (window.glide.invoke, preload.ts), by area, and the engine's events
 // forwarded to them. Channel names and arguments are an interface: the renderer calls them as they are here.
 import { app, dialog, ipcMain, shell } from "electron";
+import type { WebContents } from "electron";
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import * as addon from "../addon";
 import { Engine } from "../engine";
-import { EdgeTtsError } from "../edge-tts";
+import type { EdgeTts } from "../edge-tts";
 import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } from "../paths";
 import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
 import { listWhisperModels, Speech } from "../speech";
-import type { AppSettingsPatch, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
+import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import type { WindowsTts } from "../windows-tts";
@@ -28,6 +29,7 @@ export interface IpcDeps {
   updater: Updater;
   speech: Speech;
   windowsTts: WindowsTts;
+  edgeTts: EdgeTts;
   sampler: ResourceSampler;
   mainWindow: MainWindow;
   overlay: Overlay;
@@ -55,12 +57,15 @@ function vendorKeyAllowed(keyEnv: string, baseUrl: string): boolean {
 
 /** Answer a channel; its arguments and answer are the ones shared/ipc.ts gives it (the renderer is typed the same).
  * Only Glide's own pages are answered (a page the window was somehow pointed at, or a frame, never is). */
-const handle = <K extends InvokeChannel>(ch: K, fn: (...a: InvokeArgs<K>) => InvokeResult<K> | Promise<InvokeResult<K>>) =>
+type HandlerArgs<K extends InvokeChannel, Sender extends boolean> = Sender extends true
+  ? [WebContents, ...InvokeArgs<K>] : InvokeArgs<K>;
+const handle = <K extends InvokeChannel, Sender extends boolean = false>(ch: K,
+  fn: (...a: HandlerArgs<K, Sender>) => InvokeResult<K> | Promise<InvokeResult<K>>, withSender?: Sender) =>
   ipcMain.handle(ch, (e, ...a) => {
     if (!e.senderFrame || e.senderFrame !== e.sender.mainFrame || !isOwnPage(e.senderFrame.url)) {
       throw new Error(`${ch}: not from one of Glide's own pages`);
     }
-    return fn(...(a as InvokeArgs<K>));
+    return fn(...((withSender ? [e.sender, ...a] : a) as HandlerArgs<K, Sender>));
   });
 
 /** A folder on this PC (never a network share: opening or reading one sends Windows' sign-in to that server). */
@@ -69,6 +74,7 @@ const isUnc = (p: string) => /^[\\/]{2}/.test(String(p || ""));
 export function registerIpc(d: IpcDeps): void {
   engineChannels(d);
   appChannels(d);
+  edgeChannels(d);
   configChannels(d);
   keyChannels();
   addonChannels(d);
@@ -105,6 +111,7 @@ function appChannels(d: IpcDeps): void {
     const prevHome = engineHome();
     settings.merge(patch);
     if (settings.current.muted) d.windowsTts.stop();
+    d.edgeTts.configure(!settings.current.muted && settings.current.speech?.provider === "edge");
     d.applyOverlaySettings();
     d.updateTray();
     if (patch.autoUpdate !== undefined) updater.start(settings.current.autoUpdate !== false);
@@ -136,8 +143,9 @@ function appChannels(d: IpcDeps): void {
   let ttsSequence = 0, ttsActive = 0;
   handle("tts:synth", async (text: string, style?: string, tone?: string, requestId?: string) => {
     const s = structuredClone(settings.current.speech || {}), id = ++ttsSequence, started = performance.now();
+    if (s.provider === "edge") throw new Error("Edge TTS: use streaming speech");
     const input = String(text || "").slice(0, 4000), provider = s.provider || "unknown";
-    const voice = provider === "edge" ? s.edge?.voice : provider === "openai" ? s.openai?.voice || "coral"
+    const voice = provider === "openai" ? s.openai?.voice || "coral"
       : provider === "azure" ? s.azure?.voice || "en-US-AndrewMultilingualNeural"
       : provider === "google" ? s.google?.voice || "en-US-Chirp3-HD-Charon"
       : provider === "elevenlabs" ? s.elevenlabs?.voiceId || "JBFqnCBsd6RMkjVDRZzb" : undefined;
@@ -156,9 +164,7 @@ function appChannels(d: IpcDeps): void {
       engine.note(`[voice] TTS #${id} ready elapsed_ms=${elapsed} audio_bytes=${data.length}`, ready);
       return { mime: "audio/mpeg", data, attribution: ready };
     } catch (error) {
-      const detail = error instanceof EdgeTtsError
-        ? { reason: error.reason, audio_bytes: error.audioBytes, exit_code: error.exitCode, http_status: error.httpStatus }
-        : { reason: "ProviderError" };
+      const detail = { reason: "ProviderError" };
       const elapsed = Math.round(performance.now() - started);
       engine.note(`[voice] TTS #${id} failed elapsed_ms=${elapsed} ${JSON.stringify(detail)}`,
         { ...attribution, status: "error", elapsed_ms: elapsed });
@@ -185,6 +191,84 @@ function appChannels(d: IpcDeps): void {
   handle("update:check", () => updater.check());
   handle("update:install", () => d.installUpdate());
   handle("update:download", () => updater.download());
+}
+
+/** Edge events belong to the invoking page, never to every window listening on the event channel. */
+function edgeChannels({ edgeTts }: IpcDeps): void {
+  type Request = { sender: WebContents; frame: WebContents["mainFrame"] };
+  type Owner = { ids: Set<string>; cleanup: () => void;
+    navigation: (event: Electron.Event, url: string, inPlace: boolean, mainFrame: boolean) => void };
+  const requests = new Map<string, Request>(), owners = new Map<WebContents, Owner>();
+  const remove = (id: string) => {
+    const request = requests.get(id);
+    if (!request) return;
+    requests.delete(id);
+    const owner = owners.get(request.sender);
+    owner?.ids.delete(id);
+    if (owner && !owner.ids.size) {
+      owners.delete(request.sender);
+      request.sender.removeListener("destroyed", owner.cleanup);
+      request.sender.removeListener("render-process-gone", owner.cleanup);
+      request.sender.removeListener("did-start-navigation", owner.navigation);
+    }
+  };
+  const watch = (sender: WebContents, id: string) => {
+    let owner = owners.get(sender);
+    if (!owner) {
+      const cleanup = () => {
+        // Remove ownership before cancellation: no terminal/late event may reach the next page in this window.
+        for (const ownedId of [...(owners.get(sender)?.ids || [])]) {
+          remove(ownedId);
+          edgeTts.cancel(ownedId);
+        }
+      };
+      const navigation = (_event: Electron.Event, _url: string, inPlace: boolean, mainFrame: boolean) => {
+        if (mainFrame && !inPlace) cleanup();
+      };
+      owner = { ids: new Set(), cleanup, navigation };
+      owners.set(sender, owner);
+      sender.once("destroyed", cleanup);
+      sender.on("render-process-gone", cleanup);
+      sender.on("did-start-navigation", navigation);
+    }
+    owner.ids.add(id);
+  };
+  handle("tts:edgeStart", (sender, id, text) => {
+    if (settings.current.muted || settings.current.speech?.provider !== "edge") {
+      throw new Error("Edge TTS: speech is muted or Edge is not selected");
+    }
+    if (typeof id !== "string" || !/^[A-Za-z0-9_.:-]{1,128}$/.test(id)) throw new Error("Edge TTS: invalid request id");
+    if (requests.has(id)) throw new Error("Edge TTS: duplicate request id");
+    const request: Request = { sender, frame: sender.mainFrame };
+    requests.set(id, request);
+    watch(sender, id);
+    const receive = (event: EdgeTtsEvent) => {
+      if (requests.get(id) !== request) return;
+      if (sender.isDestroyed() || sender.mainFrame !== request.frame || !isOwnPage(sender.mainFrame.url)) {
+        remove(id);
+        edgeTts.cancel(id);
+        return;
+      }
+      if (event.type === "end") remove(id);
+      try { sender.send("tts:edgeEvent", event); } catch { remove(id); edgeTts.cancel(id); }
+    };
+    try {
+      edgeTts.start(id, String(text || "").slice(0, 4000), settings.current.speech?.edge?.voice || "", receive);
+    } catch (error) { remove(id); throw error; }
+  }, true);
+  handle("tts:edgeDecoded", (sender, id, attempt, ok) => {
+    const request = requests.get(id);
+    if (!request) return;
+    if (request.sender !== sender) throw new Error("Edge TTS: request belongs to another window");
+    if (typeof attempt !== "string" || typeof ok !== "boolean") throw new Error("Edge TTS: invalid decode verdict");
+    edgeTts.decoded(id, attempt, ok);
+  }, true);
+  handle("tts:edgeCancel", (sender, id) => {
+    const request = requests.get(id);
+    if (!request) return;
+    if (request.sender !== sender) throw new Error("Edge TTS: request belongs to another window");
+    edgeTts.cancel(id);
+  }, true);
 }
 
 function configChannels({ engine, overlay, ensureSpeech }: IpcDeps): void {

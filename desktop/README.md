@@ -19,7 +19,7 @@ Electron app (TypeScript)                                     Python engine (com
     secrets.ts     API keys (Windows DPAPI) -> engine environment
     addon.ts       WoW folder detection, addon install / update
   main window ── iframe ──> http://127.0.0.1:N/            (the coach screen)
-              ── events ──> /events "speak"                 (voice output: Windows voices via speechSynthesis)
+              ── events ──> /events "speak"                 (voice output: SAPI5 or online audio; Edge streams fragments)
   overlay     ── events ──> /events state.overlay_step, message
 ```
 
@@ -140,13 +140,18 @@ The key can be changed under Settings > Overlay (`companion.overlay.drag_key`, a
 ## Voice
 
 - **Coach voice:** Settings > Voice > Coach voice. The services:
-  - Windows voices: offline and free.
+  - Windows voices: offline SAPI5, including installed third-party voices.
+  - Edge-TTS: experimental, free online speech without an API key, including multilingual voices.
   - OpenAI: gpt-4o-mini-tts or tts-1.
   - ElevenLabs.
   - Azure Speech: neural voices.
   - Google Cloud Text-to-Speech.
 
-  Keys go under Settings > API keys. If a service fails, that line is spoken with the Windows voice.
+  Keys go under Settings > API keys. Other online services fall back to the Windows voice for a failed line. Edge-TTS falls back only for the text that has not started playing; an already playing fragment finishes without repeating its beginning.
+
+  Edge-TTS uses one persistent speech worker with two pools of three connections. Short sentences stay whole; long sentences split near natural punctuation or word boundaries. Two copies of each fragment run in parallel, and Chromium must decode a completed copy before it can win. Fragments play in text order as soon as they are ready. If both copies fail, that fragment gets at most one additional pair within the same 15-second online-synthesis deadline, including worker startup, queueing and decoding. Playback time is not part of that deadline.
+
+  Idle connections receive configuration messages approximately every 20 seconds; broken connections reconnect with backoff. Losing copies may finish in the background to preserve their connections, but yield to queued work and the original deadline. Push-to-talk, urgent speech and tag cancellation also cancel synthesis. Muting, switching away from Edge-TTS or quitting closes the worker. No external FFmpeg executable is required. This is an unofficial service: connection renewal and duplicate requests cannot guarantee availability.
 - **Push-to-talk recognition:**
   - **Offline:** Whisper (model small.en by default, downloaded on first use, about 460 MB) or the Windows recognizer. Until the model is on the PC, push-to-talk uses the Windows recognizer.
   - **Online:** OpenAI (gpt-4o-mini-transcribe), Groq (whisper-large-v3-turbo) or Deepgram (nova-3).

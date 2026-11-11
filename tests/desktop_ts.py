@@ -222,6 +222,7 @@ def compiled(name, files, args, esm=True):
         src = os.path.join(os.path.dirname(out), "src")
         os.makedirs(src)
         for f, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(src, f)), exist_ok=True)
             with open(os.path.join(src, f), "w", encoding="utf-8") as fh:
                 fh.write(text)
         return _run(args + ["--outDir", out], src)
