@@ -1,38 +1,12 @@
 """Documented reasoning controls for a model's actual API; no probes or fallback requests."""
-import urllib.parse
-
+import openai_capabilities
 import openai_compat
-
 
 # Schema vocabulary is not a promise that every compatible server accepts every value.
 # https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
-_COMPAT_LEVELS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+_COMPAT_LEVELS = openai_capabilities.COMPAT_LEVELS
 _STANDARD = ("low", "medium", "high")
 _EXTENDED = (*_STANDARD, "xhigh")
-_GPT6 = ("none", *_EXTENDED, "max")
-# Keep exact models separate: 6 Sol permits none; 6.1 Sol's observed error lists only low through xhigh.
-# https://developers.openai.com/api/docs/models/gpt-6.1-sol (public max conflicts with observed API)
-# https://developers.openai.com/api/docs/models/gpt-6-luna (reasoning + tools requires Responses)
-_OPENAI_PROFILES = {
-    "gpt-6-luna": (_GPT6, "responses"),
-    "gpt-6-sol": (_GPT6, "responses"),
-    "gpt-6.1-terra": (_GPT6, "responses"),
-    "gpt-6.1-sol": (_EXTENDED, "responses"),
-    "gpt-6-astra": ((*_EXTENDED, "max"), "responses"),
-    "gpt-5.6-terra": (_GPT6, "chat"),
-    "gpt-5.5": (("none", *_EXTENDED), "chat"),
-    "gpt-5.4": (("none", *_EXTENDED), "chat"),
-    "gpt-5.2": (("none", *_EXTENDED), "chat"),
-    "gpt-5.1": (("none", *_STANDARD), "chat"),
-    "gpt-5": (("minimal", *_STANDARD), "chat"),
-    "o3": (_STANDARD, "chat"),
-    "gpt-4.1": ((), "chat"),
-    "gpt-4.1-mini": ((), "chat"),
-    "gpt-4.1-nano": ((), "chat"),
-    "gpt-4o": ((), "chat"),
-    "gpt-4o-mini": ((), "chat"),
-}
-
 # These are Google's OpenAI-compatibility values, not native thinkingLevel names/budgets.
 # https://ai.google.dev/gemini-api/docs/openai#thinking
 # https://ai.google.dev/gemini-api/docs/thinking?generate-content=true#thinking-levels
@@ -67,27 +41,15 @@ _CLAUDE_PROFILES = {
 }
 
 
-def _result(levels, note, transport, known):
-    return {"levels": list(levels), "note": note, "transport": transport, "known": known}
-
-
-def _unknown_compatible():
-    return _result(_COMPAT_LEVELS,
-                   "Supported levels are not advertised. Select only levels documented by this provider; "
-                   "auto is safest.", "chat", False)
-
-
-def _official_openai(endpoint):
-    """An endpoint's normalized URL, not its user-chosen id, determines OpenAI API policy."""
-    if not endpoint:
-        return False
-    try:
-        url = urllib.parse.urlsplit(endpoint["base_url"])
-        return (url.scheme == "https" and url.hostname == "api.openai.com" and url.port in (None, 443)
-                and url.path == "/v1" and not url.username and not url.password and not url.query and not url.fragment)
-    except ValueError:
-        return False
-
+def _result(levels, note, transport, known, limit_field=None, suitability=None, reason=None):
+    out = {"levels": list(levels), "note": note, "transport": transport, "known": known}
+    if limit_field is not None:
+        out["limit_field"] = limit_field
+    if suitability is not None:
+        out["suitability"] = suitability
+    if reason is not None:
+        out["reason"] = reason
+    return out
 
 def _catalog_entry(model, entry):
     """Ignore entries belonging to another selection, including a stale model-picker entry."""
@@ -134,22 +96,9 @@ def describe(model, cfg, entry=None) -> dict:
     """Return explicit choices (excluding auto), documentation confidence and tool-capable transport."""
     entry = _catalog_entry(model, entry)
     if openai_compat.is_endpoint(model):
-        eid, name = openai_compat.split_endpoint(model)
-        endpoint = openai_compat.endpoints(cfg).get(eid)
-        if _official_openai(endpoint):
-            profile = _OPENAI_PROFILES.get(name)
-            if profile is not None:
-                levels, transport = profile
-                if not levels:
-                    note = "This model does not support reasoning effort controls."
-                elif name == "gpt-6.1-sol":
-                    note = "Observed OpenAI Sol levels exclude none and max; tool calls use the Responses API."
-                elif transport == "responses":
-                    note = "OpenAI reasoning with tool calls uses the Responses API."
-                else:
-                    note = "Documented OpenAI model effort levels; auto leaves the provider default unchanged."
-                return _result(levels, note, transport, True)
-        return _unknown_compatible()
+        contract = openai_capabilities.describe_endpoint_model(model, cfg, entry)
+        return _result(contract.efforts, contract.note, contract.transport, contract.known,
+                       limit_field=contract.limit_field, suitability=contract.suitability, reason=contract.reason)
     if openai_compat.is_openrouter(model):
         return _openrouter(entry)
     if openai_compat.is_gemini(model):

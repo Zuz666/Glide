@@ -193,6 +193,39 @@ async function configChecks() {
   } } }, stopped);
   await config.saveConfig({ companion: { voice: { volume: 80 } } }, stopped);
   assert.strictEqual(config.readConfig().companion.llm.fast_reasoning_effort, "low");
+  // Stopped-coach local save rejects excluded official OpenAI specialty models on the edited role,
+  // while allowing edits to the other role and allowing the same name on non-OpenAI compatible origins.
+  write(p, JSON.stringify({ companion: { llm: {
+    endpoints: [{ id: "openai", base_url: "https://api.openai.com/v1" },
+                { id: "local", base_url: "http://127.0.0.1:11434/v1" }],
+    fast_model: "ep:openai:tts-1",
+    deep_model: "ep:openai:gpt-6.1-terra",
+  } } }));
+  const beforeStoppedEx = read(p);
+  await assert.rejects(
+    config.saveConfig({ companion: { llm: { deep_model: "ep:openai:gpt-4o-mini-tts" } } }, stopped),
+    /speech synthesis/
+  );
+  assert.strictEqual(read(p), beforeStoppedEx);
+  await config.saveConfig({ companion: { llm: { deep_model: "ep:openai:gpt-5.6-luna" } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.deep_model, "ep:openai:gpt-5.6-luna");
+  await config.saveConfig({ companion: { llm: { fast_model: "ep:local:tts-1" } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.fast_model, "ep:local:tts-1");
+  // Stopped-coach local save also honors valid past shutdown_date in cached data/live/models.json (ignoring invalid dates).
+  const liveDir = path.join(h, "data", "live");
+  fs.mkdirSync(liveDir, { recursive: true });
+  write(path.join(liveDir, "models.json"), JSON.stringify({
+    models: [
+      { id: "ep:openai:gpt-5", shutdown_date: "2020-01-01" },
+      { id: "ep:openai:gpt-5.1", shutdown_date: "2020-02-30" },
+    ],
+  }));
+  await assert.rejects(
+    config.saveConfig({ companion: { llm: { deep_model: "ep:openai:gpt-5" } } }, stopped),
+    /shut down on 2020-01-01/
+  );
+  await config.saveConfig({ companion: { llm: { deep_model: "ep:openai:gpt-5.1" } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.deep_model, "ep:openai:gpt-5.1");
 
   // A mixed Save applies the live model while normalizing the language fallback in the same write.
   const http = require("http");
@@ -233,6 +266,11 @@ async function configChecks() {
     } }, running, { fast_model: "bad-model" }), /live selection refused/);
     assert.strictEqual(read(p), before, "a refused combined Save must not fall back to a local write");
     assert.strictEqual(selectedModel, "c-model");
+    // Save-and-restart (no liveChanges) refused with HTTP 400 must ALSO throw rather than write locally.
+    await assert.rejects(config.saveConfig({ companion: {
+      llm: { fast_model: "ep:openai:tts-1" },
+    } }, running), /live selection refused/);
+    assert.strictEqual(read(p), before, "a save-only HTTP 400 rejection must not fall back to updateConfig");
     await assert.rejects(config.saveConfig(mixed, stopped, { fast_model: "c-model" }), /not connected/);
     assert.strictEqual(read(p), before);
   } finally {

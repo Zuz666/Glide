@@ -412,17 +412,29 @@ class App:
         import tuning
         if refresh:
             self.catalog.refresh()
+        import openai_capabilities
+        import openai_compat
         import reasoning
         llm = self.coach.cfg
         opt = settings.Settings("llm", llm)
+        if hasattr(self.catalog, "endpoints") and "endpoints" in llm:
+            prev_eps = self.catalog.endpoints or {}
+            self.catalog.endpoints = {
+                eid: {**ep, "key": (prev_eps.get(eid) or {}).get("key", "")}
+                for eid, ep in openai_compat.endpoints(llm).items()
+            }
         if reasoning_model is not None:
             return {"model": reasoning_model,
-                    "reasoning": reasoning.describe(reasoning_model, llm, self.catalog.get(reasoning_model))}
+                    "reasoning": reasoning.describe(
+                        reasoning_model, llm, openai_capabilities.catalog_raw_entry(self.catalog, reasoning_model))}
         return {"status": self.catalog.status(), "models": self.catalog.entries(),
                 "selected": {path + suffix: opt.get(path + suffix)
                              for path in ("fast", "deep") for suffix in ("_model", "_reasoning_effort")},
-                "reasoning": {path: reasoning.describe(opt.get(path + "_model"), llm,
-                                                      self.catalog.get(opt.get(path + "_model"))) for path in ("fast", "deep")},
+                "selected_prices": {path: self.catalog.price(opt.get(path + "_model"), llm) for path in ("fast", "deep")},
+                "reasoning": {path: reasoning.describe(
+                    opt.get(path + "_model"), llm,
+                    openai_capabilities.catalog_raw_entry(self.catalog, opt.get(path + "_model")))
+                    for path in ("fast", "deep")},
                 "profile": tuning.profile(self.coach), "spent_usd": round(self.coach.stats.get("cost_usd", 0.0), 4)}
 
     def on_new_knowledge(self, glide_path, kb_path):
@@ -562,6 +574,12 @@ class App:
                 companion["llm"] = llm
                 patch["companion"] = companion
             saved_before = saved_llm(glideconfig.read(ROOT)[0])
+            patch_llm = saved_llm(patch)
+            prospective_saved = {**self.coach.cfg, **saved_before,
+                                 **{k: v for k, v in patch_llm.items() if v is not None}}
+            for mk in tuning.MODEL_KEYS:
+                if mk in patch_llm and patch_llm[mk] is not None:
+                    tuning.validate_model_choice(patch_llm[mk], prospective_saved, catalog=self.catalog)
             saved = glideconfig.patch((), patch, ROOT)  # the app's saves also land in sim
             saved_after = saved_llm(saved)
             self.coach.cfg.update(applied)

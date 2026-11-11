@@ -15,6 +15,8 @@ import glideconfig
 import models
 import settings
 import reasoning
+import openai_capabilities
+import openai_compat
 
 # what the dashboard (and push-to-talk) may change: the live settings in settings_manifest.json
 _LIVE = {k: settings.ENTRIES["llm." + k] for k in settings.live_keys()}
@@ -35,7 +37,7 @@ def input_price(model, catalog=None):
         p = catalog.price(model)
         if p and p.get("in") is not None:
             return p["in"]
-    p = models.anthropic_price(model)
+    p = models.static_price(model)
     return p["in"] if p else 2.0
 
 
@@ -133,15 +135,30 @@ def _inputs(coach, review_minutes):
             convo[-1].get("t") if convo else None, id(getattr(coach, "catalog", None)))
 
 
+def validate_model_choice(model, cfg, catalog=None):
+    """Reject malformed IDs and excluded official OpenAI specialty/shut-down models before saving."""
+    if not isinstance(model, str) or not MODEL_RE.match(model.strip()):
+        raise ValueError("not a model id: %r" % (model,))
+    clean = model.strip()
+    if openai_compat.is_endpoint(clean):
+        entry = openai_capabilities.catalog_raw_entry(catalog, clean)
+        contract = openai_capabilities.describe_endpoint_model(clean, cfg, entry)
+        if contract.suitability == "excluded":
+            raise ValueError("%s cannot be used as a coach model (%s)." % (clean, contract.reason))
+
+
 def apply(cfg, changes, config_path=None, catalog=None):
     """Apply dashboard changes to the live coach config (cfg = the coach's "llm" dict) and save them in config.json
     under companion.llm, keeping everything else in the file. Returns the values applied."""
     changes = dict(changes or {})
     prospective = dict(cfg, **changes)
     for model_key, effort_key in zip(MODEL_KEYS, REASONING_KEYS):
+        if model_key in changes:
+            validate_model_choice(changes[model_key], prospective, catalog=catalog)
         model = str(prospective.get(model_key) or settings.default("llm." + model_key)).strip()
         if effort_key in changes:
-            reasoning.validate(model, prospective, changes[effort_key], catalog.get(model) if catalog is not None else None)
+            reasoning.validate(model, prospective, changes[effort_key],
+                               openai_capabilities.catalog_raw_entry(catalog, model))
         elif model_key in changes and model != cfg.get(model_key, settings.default("llm." + model_key)):
             if cfg.get(effort_key, "auto") != "auto":
                 changes[effort_key] = "auto"     # the previous role override belonged to another model
@@ -154,8 +171,6 @@ def apply(cfg, changes, config_path=None, catalog=None):
                 raise ValueError("%s takes true or false, not %r" % (k, v))
             applied[k] = v
         elif k in MODEL_KEYS:
-            if not isinstance(v, str) or not MODEL_RE.match(v.strip()):
-                raise ValueError("not a model id: %r" % (v,))
             applied[k] = v.strip()
         elif k in TEXTS:
             if not isinstance(v, str):

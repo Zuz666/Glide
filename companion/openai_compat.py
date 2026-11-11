@@ -106,8 +106,8 @@ def _text(content):
     return "".join(b.get("text", "") for b in content or () if isinstance(b, dict) and b.get("type") == "text")
 
 
-def to_openai(body, flavor="openrouter"):
-    """Anthropic Messages body -> OpenAI-style chat/completions body (flavor "openrouter" or "gemini")."""
+def to_openai(body, flavor="openrouter", limit_field="max_tokens"):
+    """Anthropic Messages body -> OpenAI-style chat/completions body (flavor "openrouter", "gemini", or "endpoint")."""
     model = body["model"]
     cache = flavor == "openrouter" and model.startswith(CACHE_VENDORS)
     if flavor == "gemini" and is_gemini(model):
@@ -169,10 +169,7 @@ def to_openai(body, flavor="openrouter"):
                 for b in blocks if b.get("type") == "text"]})
         elif txt:
             msgs.append({"role": "user", "content": txt})
-    out = {"model": model, "messages": msgs, "max_tokens": body.get("max_tokens")}
-    if flavor == "endpoint" and model.startswith("gpt-6"):
-        # Reasoning and visible output share this limit; effort is selected by the provider.
-        out["max_completion_tokens"] = out.pop("max_tokens")
+    out = {"model": model, "messages": msgs, limit_field: body.get("max_tokens")}
     if flavor == "openrouter":
         out["usage"] = {"include": True}
     tools = body.get("tools")
@@ -183,6 +180,20 @@ def to_openai(body, flavor="openrouter"):
         tc = (body.get("tool_choice") or {}).get("type", "auto")
         out["tool_choice"] = {"auto": "auto", "none": "none", "any": "required"}.get(tc, "auto")
     return out
+
+
+def normalize_token_usage(total_input, output_tokens, details):
+    """Normalize cached read and 30m/12h cache-write token counts across OpenAI Chat and Responses shapes."""
+    details = details or {}
+    cached = details.get("cached_tokens") or 0
+    written = details.get("cache_write_tokens") or 0
+    wdetails = details.get("cache_write_tokens_details") or {}
+    usage = {"input_tokens": max(0, (total_input or 0) - cached - written),
+             "output_tokens": output_tokens or 0,
+             "cache_read_input_tokens": cached, "cache_creation_input_tokens": written}
+    if wdetails.get("ttl_12h_tokens"):
+        usage["cache_creation_12h_input_tokens"] = min(written, int(wdetails["ttl_12h_tokens"]))
+    return usage
 
 
 def from_openai(data):
@@ -214,9 +225,7 @@ def from_openai(data):
     if any(b["type"] == "tool_use" for b in content):
         stop = "tool_use"
     u = data.get("usage") or {}
-    cached = ((u.get("prompt_tokens_details") or {}).get("cached_tokens")) or 0
-    usage = {"input_tokens": max(0, (u.get("prompt_tokens") or 0) - cached), "output_tokens": u.get("completion_tokens") or 0,
-             "cache_read_input_tokens": cached, "cache_creation_input_tokens": 0}
+    usage = normalize_token_usage(u.get("prompt_tokens"), u.get("completion_tokens"), u.get("prompt_tokens_details"))
     if u.get("cost") is not None:
         usage["cost_usd"] = float(u["cost"])
     return {"content": content, "stop_reason": stop, "usage": usage, "model": data.get("model")}

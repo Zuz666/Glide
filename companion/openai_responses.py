@@ -6,7 +6,7 @@ The private output block belongs only in canonical history, never another provid
 """
 import json
 
-from openai_compat import is_endpoint, split_endpoint
+from openai_compat import is_endpoint, normalize_token_usage, split_endpoint
 
 META_BLOCK = "openai_responses_output"
 
@@ -99,8 +99,6 @@ def from_responses(data):
     if items:
         content.append({"type": META_BLOCK, "items": items})
     usage = data.get("usage") or {}
-    cached = (usage.get("input_tokens_details") or {}).get("cached_tokens") or 0
-    canonical_usage = {"input_tokens": max(0, (usage.get("input_tokens") or 0) - cached),
-                       "output_tokens": usage.get("output_tokens") or 0,
-                       "cache_read_input_tokens": cached, "cache_creation_input_tokens": 0}
+    canonical_usage = normalize_token_usage(
+        usage.get("input_tokens"), usage.get("output_tokens"), usage.get("input_tokens_details"))
     return {"content": content, "stop_reason": stop, "usage": canonical_usage, "model": data.get("model")}

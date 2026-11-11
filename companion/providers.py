@@ -217,9 +217,8 @@ class OpenAICompatProvider(_HTTP):
             assert self.url is not None
             url = self.url.removesuffix("/chat/completions") + "/responses"
             return _json_request(url, openai_responses.to_responses(body, attempt.get("reasoning_effort")), headers), False
-        converted = openai_compat.to_openai(body, "endpoint")
-        if profile["known"] and profile["levels"]:
-            converted["max_completion_tokens"] = converted.pop("max_tokens")
+        limit_field = profile.get("limit_field") or "max_tokens"
+        converted = openai_compat.to_openai(body, "endpoint", limit_field=limit_field)
         return _json_request(self.url, {**converted, **attempt}, headers), False
 
     def parse(self, data):

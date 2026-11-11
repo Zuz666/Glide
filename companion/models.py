@@ -8,12 +8,15 @@ models get the published list prices below (cache read/write included); a model 
 no price.
 """
 import json
+from datetime import datetime, timezone
 import threading
 import time
 import urllib.error
 import urllib.request
 
 import jsonfile
+import openai_capabilities
+import openai_compat
 
 # $/MTok as of 2026-10-11: (id substring, input, output, cache read, cache write 5 min); first match wins.
 # Cache reads are 0.1x input, except Opus/Sonnet 5.5 (0.05x) and Fable/Mythos 5.1 (0.025x); 1-hour writes are 2x.
@@ -58,9 +61,12 @@ def fetch_endpoint(ep, key=None, getter=None):
     for m in d.get("data") or d.get("models") or ():
         mid = m.get("id") or m.get("name") if isinstance(m, dict) else None
         if mid:
-            out.append({"id": "ep:%s:%s" % (ep["id"], mid), "provider": "endpoint", "endpoint": ep["id"],
-                        "name": "%s (%s)" % (mid, ep["label"]), "context": m.get("context_length"),
-                        "tools": None, "price": None})
+            row = {"id": "ep:%s:%s" % (ep["id"], mid), "provider": "endpoint", "endpoint": ep["id"],
+                   "name": "%s (%s)" % (mid, ep["label"]), "context": m.get("context_length"),
+                   "tools": None, "price": None}
+            if isinstance(m.get("shutdown_date"), str):
+                row["shutdown_date"] = m["shutdown_date"]
+            out.append(row)
     return out
 
 
@@ -101,6 +107,17 @@ def anthropic_price(model):
     for k, i, o, r, w in ANTHROPIC_PRICES:
         if k in m:
             return {"in": i, "out": o, "cache_read": r, "cache_write": w}
+    return None
+
+def static_price(model, cfg=None):
+    """First-party published price dict when known statically for anthropic, gemini, or official_openai."""
+    prov = provider(model)
+    if prov == "anthropic":
+        return anthropic_price(model)
+    if prov == "gemini":
+        return gemini_price(model)
+    if prov == "endpoint":
+        return openai_capabilities.describe_endpoint_model(model, cfg).price
     return None
 
 
@@ -178,9 +195,46 @@ class Catalog:
             pass
         self._index()
 
-    def _index(self):
-        self.by_id = {m["id"]: m for m in self.data.get("models") or ()}
+    def _ep_cfg(self):
+        return {"endpoints": list(self.endpoints.values())}
 
+    def _project_entry(self, m, ep_cfg):
+        mid = m.get("id")
+        if m.get("provider") != "endpoint" or not openai_compat.is_endpoint(mid):
+            return m
+        contract = openai_capabilities.describe_endpoint_model(mid, ep_cfg, m)
+        if contract.scope != "official_openai":
+            return {k: v for k, v in m.items() if k != "unverified"} if "unverified" in m else m
+        if contract.suitability == "excluded":
+            return None
+        out = {k: v for k, v in m.items() if k != "unverified"}
+        if contract.suitability == "coach":
+            if out.get("context") is None and contract.context is not None:
+                out["context"] = contract.context
+            if out.get("price") is None and contract.price is not None:
+                out["price"] = contract.price
+        elif contract.suitability == "unclassified":
+            out["unverified"] = True
+        return out
+
+    def _projection_key(self):
+        models_list = self.data.get("models")
+        eps = tuple(sorted((str(k), str((v or {}).get("base_url") or ""))
+                           for k, v in (self.endpoints or {}).items() if isinstance(v, dict)))
+        return (id(self.data), id(models_list), len(models_list or ()), eps,
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+
+    def _index(self):
+        raw = list(self.data.get("models") or ())
+        self.raw_by_id = {m["id"]: m for m in raw if isinstance(m, dict) and "id" in m}
+        ep_cfg = self._ep_cfg()
+        self.projected = [p for m in raw if isinstance(m, dict) for p in (self._project_entry(m, ep_cfg),) if p is not None]
+        self.by_id = {m["id"]: m for m in self.projected}
+        self._proj_key = self._projection_key()
+
+    def _ensure_projected(self):
+        if getattr(self, "_proj_key", None) != self._projection_key():
+            self._index()
     def refresh(self):
         """Fetch both lists (a failing provider keeps its old entries); returns the status dict."""
         old = self.data.get("models") or []
@@ -220,24 +274,30 @@ class Catalog:
             threading.Thread(target=self.refresh, daemon=True).start()
 
     def status(self):
+        self._ensure_projected()
         d = self.data
-        return {"updated": d.get("updated"), "errors": d.get("errors") or {}, "count": len(d.get("models") or ()),
+        return {"updated": d.get("updated"), "errors": d.get("errors") or {}, "count": len(self.projected),
                 "keys": {k: bool(v) for k, v in self.keys.items()}, "endpoints": sorted(self.endpoints)}
 
     def entries(self):
-        return list(self.data.get("models") or ())
+        self._ensure_projected()
+        return list(self.projected)
 
     def get(self, model):
+        self._ensure_projected()
         return self.by_id.get(model)
 
-    def price(self, model):
+    def raw_get(self, model):
+        self._ensure_projected()
+        return self.raw_by_id.get(model) or self.by_id.get(model)
+
+    def price(self, model, cfg=None):
         """{"in", "out", "cache_read", "cache_write"} $/MTok, or None."""
         e = self.get(model)
         if e and e.get("price"):
             return e["price"]
-        prov = provider(model)
-        return anthropic_price(model) if prov == "anthropic" else gemini_price(model) if prov == "gemini" else None
-
+        ep_cfg = cfg if cfg is not None else {"endpoints": list(self.endpoints.values())}
+        return static_price(model, ep_cfg)
     def supports_tools(self, model):
         e = self.get(model)
         return True if e is None or e.get("tools") is None else bool(e["tools"])
@@ -252,7 +312,9 @@ def cost_usd(price, usage):
     pread = price.get("cache_read") if price.get("cache_read") is not None else pin
     pwrite = price.get("cache_write") if price.get("cache_write") is not None else pin
     written = u.get("cache_creation_input_tokens") or 0
-    hour = min(written, ((u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens")) or 0)   # 1-hour TTL: 2x
+    hour = min(written, ((u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens")) or 0)   # Anthropic 1h: 2x
+    ttl_12h = min(written - hour, u.get("cache_creation_12h_input_tokens") or 0)                   # OpenAI 12h: 2.5x
+    std_written = written - hour - ttl_12h
     return ((u.get("input_tokens") or 0) * pin + (u.get("output_tokens") or 0) * pout
             + (u.get("cache_read_input_tokens") or 0) * pread
-            + (written - hour) * pwrite + hour * pin * 2) / 1e6
+            + std_written * pwrite + hour * pin * 2 + ttl_12h * pin * 2.5) / 1e6
