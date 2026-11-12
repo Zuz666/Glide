@@ -416,10 +416,12 @@ try {
   const samples = [];
   speech.say = (...args) => samples.push(args);
   try {
+    await page.renderSettings();
     const source = document.getElementById('sv-sample-source');
     const play = document.getElementById('sv-test');
     await until(() => !play.disabled, 'Expected prepared template to be playable');
-    const template = document.getElementById('sv-sample').textContent;
+    const preview = document.getElementById('sv-sample');
+    const template = preview.value;
     check(play.closest('.field').querySelector('.lab small').textContent.includes('Russian')
       && play.closest('.field').querySelector('.lab small').textContent.includes('(ru)'),
       'Voice test must identify the saved Russian speech language');
@@ -437,7 +439,7 @@ try {
     check(samples.at(-1)[0] === 'Последняя произнесённая фраза.',
       'Replay must use the actual last-spoken text rather than the template');
     speech.noteVoice('OpenAI gpt-4o-mini-tts, coral', 'Новая последняя фраза.', Date.now(), 2700);
-    await until(() => document.getElementById('sv-sample').textContent === 'Новая последняя фраза.',
+    await until(() => document.getElementById('sv-sample').value === 'Новая последняя фраза.',
       'Replay preview must follow a newly spoken line');
     play.click();
     check(samples.at(-1)[0] === 'Новая последняя фраза.', 'Replay must snapshot the latest text at click time');
@@ -445,12 +447,49 @@ try {
     source.dispatchEvent(new Event('change', { bubbles: true }));
     play.click();
     check(samples.at(-1)[0] === template, 'Switching back must restore template playback');
+    const custom = 'Проверка моего голоса.\\nТекст <без разметки> & без перевода.';
+    preview.value = custom;
+    preview.dispatchEvent(new Event('input', { bubbles: true }));
+    check(source.value === 'custom', 'Editing the preview must select custom text automatically');
+    play.click();
+    check(samples.at(-1)[0] === custom, 'Custom playback must preserve multiline text literally');
+    preview.setSelectionRange(3, 3);
+    speech.noteVoice('Windows SAPI5', 'Другая произнесённая фраза.', Date.now(), 400);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    check(preview.value === custom && preview.selectionStart === 3,
+      'Incoming speech must not overwrite a custom draft or move its caret');
+    source.value = 'last';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    check(preview.value === 'Другая произнесённая фраза.', 'Last-line selection must still follow speech');
+    source.value = 'custom';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    check(preview.value === custom, 'Switching sources must preserve the custom draft');
+    preview.value = ' \\n ';
+    preview.dispatchEvent(new Event('input', { bubbles: true }));
+    const played = samples.length;
+    play.click();
+    check(play.disabled && samples.length === played, 'Whitespace-only custom text must not start speech');
+    preview.value = custom;
+    preview.dispatchEvent(new Event('input', { bubbles: true }));
+    page.openSettingsTab('voice');
+    await until(() => document.getElementById('sv-sample') !== preview
+      && !!document.getElementById('sv-sample-source'), 'Expected a fresh voice settings render');
+    check(document.getElementById('sv-sample-source').value === 'custom'
+      && document.getElementById('sv-sample').value === custom,
+      'Settings rerenders must retain the selected custom draft');
+    document.getElementById('sv-test').click();
+    check(samples.at(-1)[0] === custom, 'Custom text must remain playable after rerendering');
+    const restoredSource = document.getElementById('sv-sample-source');
+    restoredSource.value = 'template';
+    restoredSource.dispatchEvent(new Event('change', { bubbles: true }));
   } finally {
     speech.say = originalSay;
   }
-  page.openSettingsTab('language');
-  await until(() => !!document.querySelector('[data-key="companion.voice.language"] select'),
-    'Expected the editable coach language control');
+  document.getElementById('sv-test').closest('.field').querySelector('button[data-jump-tab="language"]').click();
+  await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'language'
+    && inSetBodyView('[data-key="companion.voice.language"]')
+    && !!document.querySelector('[data-key="companion.voice.language"].jump-target'),
+    'The displayed speech language must navigate to and highlight its editable setting');
   const draftLanguage = document.querySelector('[data-key="companion.voice.language"] select');
   draftLanguage.value = 'de';
   draftLanguage.dispatchEvent(new Event('change', { bubbles: true }));
@@ -477,6 +516,9 @@ try {
     'Process voice controls must live inside Coach voice');
   check(!customToggle.checked && getComputedStyle(processRow).display === 'none',
     'Linked process voice must hide the redundant independent selector');
+  const processSummary = () => document.getElementById('sv-process-summary').textContent;
+  check(processSummary().includes('Xenia (Russian)'),
+    'Linked voice summary must identify the app Windows voice');
   customToggle.checked = true;
   customToggle.dispatchEvent(new Event('change', { bubbles: true }));
   check(!processRow.hidden && !processRow.querySelector('select').disabled,
@@ -486,10 +528,14 @@ try {
   processSelect.dispatchEvent(new Event('change', { bubbles: true }));
   check(fieldsMod.edits.get('companion.voice.voice') === 'Microsoft Zira',
     'A custom process voice must be staged for the engine settings save');
+  check(processSummary().includes('Microsoft Zira') && !processSummary().includes('Xenia (Russian)'),
+    'Separate voice summary must show the selected process voice, not the app voice');
   customToggle.checked = false;
   customToggle.dispatchEvent(new Event('change', { bubbles: true }));
   check(!fieldsMod.edits.has('companion.voice.voice'),
     'Returning to shared mode must discard an unsaved independent voice');
+  check(processSummary().includes('Xenia (Russian)') && !processSummary().includes('Microsoft Zira'),
+    'Returning to shared mode must update the summary to the app voice');
   await window.glide.invoke('config:set', { companion: { voice: { output: 'windows' } } });
   await window.glide.invoke('app:settings:set', { speech: { provider: 'google' } });
   page.openSettingsTab('voice');
@@ -574,6 +620,56 @@ try {
   });
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
+  }
+  for (const width of [2560, 1280]) {
+    await send("Emulation.setDeviceMetricsOverride", { width, height: 1440, deviceScaleFactor: 1, mobile: false });
+    const jumps = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
+(async () => {
+  const page = await import('/renderer/settings/page.js');
+  const keys = await window.glide.invoke('keys:list');
+  const routes = [
+    ['language', 'companion.voice.language'],
+    ['models', 'fast'], ['models', 'deep'],
+    ['voice', 'tts'], ['voice', 'stt'],
+    ['models', 'Custom endpoints'],
+    ...keys.status.map((key) => ['keys', 'key:' + key.env]),
+  ];
+  for (const [tab, target] of routes) {
+    const previous = document.querySelector('#set-body .jump-target');
+    page.openSettingsTab(tab, target);
+    let frame;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      frame = document.querySelector('#set-body .jump-target');
+      if (frame && frame !== previous) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const name = tab + ' > ' + target;
+    if (!frame || frame === previous) throw Error('Missing navigation highlight: ' + name);
+    const row = frame.matches('.field, .keyrow');
+    const boundary = row ? frame.closest('.sgroup').querySelector(':scope > .fields') : frame.closest('.sgroup');
+    const actual = frame.getBoundingClientRect(), outer = boundary.getBoundingClientRect();
+    if (Math.abs(actual.left - outer.left) > 1 || Math.abs(actual.right - outer.right) > 1) {
+      throw Error('Highlight must match the outer card edges: ' + name + ' ' + JSON.stringify({
+        frame: [actual.left, actual.right], card: [outer.left, outer.right],
+      }));
+    }
+    const content = [...frame.querySelectorAll('input, select, textarea, button, .lab, .keyrow-head')];
+    const before = content.map((element) => element.getBoundingClientRect());
+    frame.classList.remove('jump-target');
+    const after = content.map((element) => element.getBoundingClientRect());
+    frame.classList.add('jump-target');
+    for (let i = 0; i < before.length; i++) {
+      if (['left', 'top', 'width', 'height'].some((edge) => Math.abs(before[i][edge] - after[i][edge]) > 1)) {
+        throw Error('Navigation highlight must not shift or resize its content: ' + name);
+      }
+    }
+    if (target.startsWith('key:') && document.activeElement?.dataset.env !== target.slice(4)) {
+      throw Error('Credential navigation must keep focus on its requested editor: ' + name);
+    }
+  }
+  return routes.length;
+})()` });
+    if (jumps.exceptionDetails) throw Error(jumps.exceptionDetails.exception?.description || jumps.exceptionDetails.text);
   }
   await send("Emulation.setDeviceMetricsOverride", { width: 960, height: 520, deviceScaleFactor: 1, mobile: false });
   const narrowResult = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `

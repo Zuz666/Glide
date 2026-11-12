@@ -9,7 +9,7 @@ import { filterEdgeVoices, LANGUAGE_OPTIONS, languageCode, speechLanguage as lan
 import { live } from "../state.js";
 import { bindField, edits, fieldHtml, getPath, updateDirty } from "./fields.js";
 import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
-import { keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
+import { jumpLinkHtml, keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
@@ -23,30 +23,33 @@ const PROVIDERS: [string, string, string][] = [   // id, label, key
 const edgeVoice = (sp: SpeechSettings) => sp.edge?.voice || "";
 // The providers with a voice list: where the pick is stored in their settings.
 const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], elevenlabs: ["elevenlabs", "voiceId"], azure: ["azure", "voice"], google: ["google", "voice"] };
-let sampleSource: "template" | "last" = "template";
+let sampleSource: "template" | "last" | "custom" = "template";
+let customSample = "";
 let sampleObserver: MutationObserver | null = null;
 
 function sampleLanguageHelp(): string {
   const saved = language();
   const selected = edits.has("companion.voice.language") ? languageCode(edits.get("companion.voice.language")) : saved;
-  const label = (code: string) => `${LANGUAGE_OPTIONS.find(([value]) => value === code)?.[1] || code} (${code})`;
+  const label = (code: string) => jumpLinkHtml(`${LANGUAGE_OPTIONS.find(([value]) => value === code)?.[1] || code} (${code})`, "language", "companion.voice.language");
   return selected !== saved
-    ? `Selected language: ${label(selected)} (not saved). Save to update the template; currently saved: ${label(saved)}. Replay keeps the original text.`
-    : `Saved speech language: ${label(saved)}. Template translation requires the coach; replay keeps the original text.`;
+    ? `Selected language: ${label(selected)} (not saved). Save to update the template; currently saved: ${label(saved)}. Last-spoken and custom text are not translated.`
+    : `Saved speech language: ${label(saved)}. Template translation requires the coach; last-spoken and custom text are not translated.`;
 }
 
 function bindSample(host: HTMLElement): void {
   const source = host.querySelector<HTMLSelectElement>("#sv-sample-source")!;
   const button = host.querySelector<HTMLButtonElement>("#sv-test")!;
-  const preview = host.querySelector<HTMLElement>("#sv-sample")!;
+  const preview = host.querySelector<HTMLTextAreaElement>("#sv-sample")!;
   const lastText = host.querySelector<HTMLElement>("#sv-last-text")!;
   let template: string | undefined;
   let preparing = false;
   source.value = sampleSource;
   const draw = () => {
-    const text = sampleSource === "last" ? speech.lastText : template;
-    preview.textContent = text || (sampleSource === "last" ? "No line has been spoken in this session." : "Preparing template…");
-    button.disabled = !text?.trim();
+    const text = sampleSource === "last" ? speech.lastText : sampleSource === "custom" ? customSample : template || "";
+    if (preview.value !== text) preview.value = text;
+    preview.placeholder = sampleSource === "last" ? "No line has been spoken in this session."
+      : sampleSource === "custom" ? "Enter text to test this voice." : "Preparing template…";
+    button.disabled = !text.trim();
     button.querySelector("span")!.textContent = sampleSource === "last" ? "Play last line" : "Play sample";
     lastText.hidden = !speech.lastText || sampleSource === "last";
   };
@@ -61,12 +64,18 @@ function bindSample(host: HTMLElement): void {
     });
   };
   source.onchange = () => {
-    sampleSource = source.value === "last" ? "last" : "template";
+    sampleSource = source.value === "last" ? "last" : source.value === "custom" ? "custom" : "template";
     prepare();
     draw();
   };
+  preview.oninput = () => {
+    customSample = preview.value;
+    sampleSource = "custom";
+    source.value = "custom";
+    draw();
+  };
   button.onclick = () => {
-    const text = sampleSource === "last" ? speech.lastText : template;
+    const text = sampleSource === "last" ? speech.lastText : sampleSource === "custom" ? customSample : template || "";
     if (!text?.trim()) return;
     const rate = edits.has("app:speech.rate") ? Number(edits.get("app:speech.rate") ?? 1) : undefined;
     const volume = edits.has("app:speech.volume") ? Number(edits.get("app:speech.volume") ?? 1) : undefined;
@@ -98,10 +107,17 @@ function bindProcessVoice(fields: Field[], host: HTMLElement): void {
     select.disabled = !toggle.checked || select.dataset.loading === "true";
     if (!toggle.checked) {
       edits.delete("companion.voice.voice");
+      select.value = String(getPath(live.config, "companion.voice.voice") ?? "");
       updateDirty();
+    }
+    const summary = host.querySelector<HTMLElement>("#sv-process-summary");
+    if (summary) {
+      const voice = toggle.checked ? select.value : live.appSettings.speech?.voiceName;
+      summary.textContent = `Selected Windows voice: ${voice || "Windows default"} (${toggle.checked ? "separate voice" : "follows the app's Windows voice"}). Used only when Spoken by is Windows speech process; online voice services do not apply. Save to apply changes.`;
     }
   };
   toggle.addEventListener("change", sync);
+  select.addEventListener("change", sync);
   sync();
 }
 
@@ -168,11 +184,11 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   const save = (patch: Obj) => updateAppSettings({ speech: patch });
   host.innerHTML = field("Voice service", output === "windows"
     ? "Coach callouts currently use the Windows speech process. This selection is used for this app's voice test; online failures fall back to the app's Windows voice."
-    : "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If online synthesis fails, the unspoken text uses the selected Windows voice.",
+    : "Windows voices work offline. Online services send text to the provider and may require an API key or payment. If online speech fails, unspoken text uses the app's Windows voice.",
       `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}${VOICE_SETUP_GUIDE}`)
     + providerFields(prov, sp)
-    + (showProcess ? `<section class="voice-process"><h3>Windows speech process</h3><p>Shared Windows voice: ${esc(sp.voiceName || "Windows default")}. Used when Spoken by is Windows speech process; an online Voice service is not used for those callouts.</p>${process.map(fieldHtml).join("")}${prov !== "windows" ? `<button type="button" class="btn" id="sv-process-load">Reload Windows voices</button>` : ""}</section>` : "")
-    + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><p id="sv-sample" class="help voice-text" aria-live="polite">Preparing template…</p></div>`)
+    + (showProcess ? `<section class="voice-process"><h3>Windows speech process</h3><p id="sv-process-summary" aria-live="polite"></p>${process.map(fieldHtml).join("")}${prov !== "windows" ? `<button type="button" class="btn" id="sv-process-load">Reload Windows voices</button>` : ""}</section>` : "")
+    + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option><option value="custom">Custom text</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><textarea id="sv-sample" class="voice-text" aria-label="Voice test text" rows="2" placeholder="Preparing template…"></textarea></div>`)
     + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
   const activeEnv = PROVIDERS.find((p) => p[0] === prov)?.[2] || "";

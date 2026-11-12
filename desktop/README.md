@@ -25,9 +25,11 @@ Electron app (TypeScript)                                     Python engine (com
 
 The engine is the same Python code that `start-glide.cmd` runs. With `--app` it changes three things:
 
-- It publishes speech as `speak` events instead of speaking itself (`voice.output = "app"`).
+- It normally publishes speech as `speak` events instead of speaking itself (`voice.output = "app"`). Selecting `voice.output = "windows"` keeps the engine's own SAPI5 speech process.
 - It leaves the overlay to the app.
 - It exits when the app closes.
+
+To use Glide without the desktop app, follow the [command-line setup and launch guide](../docs/TECHNICAL.md#one-time-setup-command-line).
 
 Push-to-talk, screen capture, the knowledge base and the background rebuilds all stay in Python.
 
@@ -138,6 +140,21 @@ The overlay is click-through. To change it, hold **Alt** with the mouse over it,
 The key can be changed under Settings > Overlay (`companion.overlay.drag_key`, as before). **Ctrl+Alt+O** or the tray menu unlocks it without holding a key. Opacity and font size are under Settings > Overlay too.
 
 ## Voice
+
+### Choosing how the coach speaks
+
+Open **Settings > Voice > Voice output > Spoken by**:
+
+- **this app** is the default. Use it to choose either an installed Windows voice or an online service under **Coach voice > Voice service**.
+- **Windows speech process** lets the coach use its own Windows voice instead of the selected Voice service. Choose it if you want the coach's callouts to use a separate Windows voice. Online services are not used for those callouts.
+
+For a separate voice, select **Windows speech process**, then under **Coach voice** turn on **Use a separate voice for the Windows speech process** and choose a voice. Leave that switch off to use the app's Windows voice instead. Click **Save and restart coach** to apply the output change.
+
+If you run Glide from source with `start-glide.cmd`, without the desktop app, the coach uses Windows speech automatically. You can use the coach screen in your browser; see the [command-line guide](../docs/TECHNICAL.md#run-command-line).
+
+**Test voice:** choose **Template phrase** or **Last spoken line**, or edit the text beneath the play button. Editing selects **Custom text** automatically; the test speaks that text as written, without translation. Your custom text is kept while switching sources or revisiting settings in the current app session, but is not saved for the next launch. Click the language name to open **Language > Coach and speech language**.
+
+### Voice services and recognition
 
 - **Coach voice:** Settings > Voice > Coach voice. The services:
   - Windows voices: offline SAPI5, including installed third-party voices.
