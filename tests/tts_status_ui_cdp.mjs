@@ -605,6 +605,40 @@ try {
     const clearHeight = Math.round(box.getBoundingClientRect().height * 10) / 10;
     check(Math.abs(clearHeight - afterStepHeight) === 0,
       'Overlay height bounced across #link show/hide (collapsed=' + collapsed + '): ' + afterStepHeight + ' -> ' + clearHeight);
+    // Push-to-talk pill: its own badge between #link and #tts (red dot while the key is held, gold while
+    // transcribing), coexisting with AI thinking… and the link badge, with 0 px height bounce.
+    const ptt = document.getElementById('ptt');
+    activeEs.dispatch('state', { overlay_step: 'L12  Turn in Kobold Camp Cleanup', frames: 46,
+      coach: { link_issue: 'Patchy data (44%)', link_status: 'warn', thinking: null } });
+    activeEs.dispatch('thinking', { role: 'question' });
+    activeEs.dispatch('ptt', { state: 'listening' });
+    await raf();
+    check(!link.hidden && getComputedStyle(link).display !== 'none', 'Link pill must show at 560px');
+    check(!ptt.hidden && ptt.classList.contains('listening') && ptt.textContent.trim() === 'Listening',
+      'Expected a Listening pill, got: ' + ptt.textContent);
+    check(getComputedStyle(ptt.querySelector('i')).backgroundColor === 'rgb(255, 98, 87)',
+      'The Listening dot must be red');
+    check(!tts.hidden && tts.textContent.trim() === 'AI thinking…',
+      'AI thinking… must stay up beside the PTT pill');
+    check(document.body.classList.contains('ptt-listening'), 'The box glow class must be set while listening');
+    check(Math.abs(Math.round(box.getBoundingClientRect().height * 10) / 10 - baseHeight) === 0,
+      'Overlay height bounced showing the PTT pill (collapsed=' + collapsed + ')');
+    activeEs.dispatch('ptt', { state: 'transcribing' });
+    await raf();
+    check(!ptt.hidden && ptt.classList.contains('transcribing') && ptt.textContent.trim() === 'Transcribing',
+      'Expected a Transcribing pill, got: ' + ptt.textContent);
+    check(getComputedStyle(ptt.querySelector('i')).animationDuration === '0.6s',
+      'The Transcribing dot must pulse faster than Listening (0.6s), got: '
+        + getComputedStyle(ptt.querySelector('i')).animationDuration);
+    check(!document.body.classList.contains('ptt-listening'), 'The glow is only while the key is held');
+    check(Math.abs(Math.round(box.getBoundingClientRect().height * 10) / 10 - baseHeight) === 0,
+      'Overlay height bounced during Transcribing (collapsed=' + collapsed + ')');
+    activeEs.dispatch('ptt', { state: 'idle' });
+    activeEs.dispatch('thinking', { role: null });
+    activeEs.dispatch('state', { overlay_step: 'L12  Turn in Kobold Camp Cleanup', frames: 47,
+      coach: { link_issue: null, link_status: null, thinking: null } });
+    await raf();
+    check(ptt.hidden && tts.hidden && link.hidden, 'All three pills must hide when idle');
   }
   // Post-fallback hold on overlay auto-hides after 5 s from updatedAt without vertical height bounce.
   emit('tts:status', {
@@ -614,11 +648,52 @@ try {
   check(!tts.hidden, '#tts should still show just before 5s hold expiry');
   await new Promise((r) => setTimeout(r, 90));
   check(tts.hidden, '#tts must auto-hide once 5s overlay hold expires');
-  return 'OK: 48px session bar, TTS synth latency, AI thinking -> TTS synth -> Speaking, #link addon loss, and 0px bounce';
+  window.__drive = { es: activeEs, emit };   // the narrow-width phase below drives the same live page
+  return 'OK: 48px session bar, TTS synth latency, AI thinking -> TTS synth -> Speaking, #link addon loss, PTT pill, and 0px bounce';
 })()`,
   });
   if (overlayResult.exceptionDetails) {
     throw Error(overlayResult.exceptionDetails.exception?.description || overlayResult.exceptionDetails.text);
+  }
+  // Narrow overlay: 240 px is the main process's minimum width; the link pill gives way (the amber box border
+  // still reports it) and the remaining two pills — at their widest, Transcribing + SAPI5 fallback — fit whole.
+  await send("Emulation.setDeviceMetricsOverride", { width: 240, height: 220, deviceScaleFactor: 1, mobile: false });
+  const narrowOverlayResult = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
+(async () => {
+  const check = (cond, why) => { if (!cond) throw Error(why); };
+  const raf = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const { es, emit } = window.__drive;
+  const box = document.getElementById('box');
+  const link = document.getElementById('link');
+  const ptt = document.getElementById('ptt');
+  const tts = document.getElementById('tts');
+  const before = Math.round(box.getBoundingClientRect().height * 10) / 10;
+  es.dispatch('state', { overlay_step: 'L12  Turn in Kobold Camp Cleanup', frames: 48,
+    coach: { link_issue: 'Patchy data (44%)', link_status: 'warn', thinking: null } });
+  es.dispatch('ptt', { state: 'transcribing' });
+  emit('tts:status', { provider: 'edge', voiceLabel: 'Edge · Dmitry',
+    fullVoice: 'Edge-TTS (ru-RU-DmitryNeural)', phase: 'fallback', fallbackVoice: 'Xenia',
+    holding: true, updatedAt: Date.now() });
+  await raf();
+  check(getComputedStyle(link).display === 'none', 'The link pill must give way at 240px');
+  check(box.classList.contains('link-lost'), 'The amber link-lost border still reports it');
+  check(!ptt.hidden && !tts.hidden, 'PTT and TTS pills must stay visible at 240px');
+  const r = (el) => el.getBoundingClientRect();
+  check(r(ptt).left >= r(box).left + 10 && r(tts).right <= r(box).right - 10,
+    'The two pills must fit inside the box at 240px: ptt.left=' + r(ptt).left
+      + ' tts.right=' + r(tts).right + ' box.right=' + r(box).right);
+  const h = Math.round(box.getBoundingClientRect().height * 10) / 10;
+  check(Math.abs(h - before) === 0, 'Overlay height changed at 240px: ' + before + ' -> ' + h);
+  emit('app:settings', { overlay: { collapsed: false, opacity: 0.85, fontSize: 24 } });
+  await raf();
+  check(r(ptt).left >= r(box).left + 10 && r(tts).right <= r(box).right - 10,
+    'The two pills must still fit at 240px with the largest overlay font (24px): tts.right=' + r(tts).right
+      + ' box.right=' + r(box).right);
+  return 'narrow-overlay-ok';
+})()`,
+  });
+  if (narrowOverlayResult.exceptionDetails) {
+    throw Error(narrowOverlayResult.exceptionDetails.exception?.description || narrowOverlayResult.exceptionDetails.text);
   }
   console.log(overlayResult.result.value);
 } finally {

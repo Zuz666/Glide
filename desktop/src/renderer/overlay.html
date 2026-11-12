@@ -12,10 +12,11 @@
        font-size:var(--fs,13px);line-height:1.35;box-sizing:border-box;width:100vw}
   #step-row{display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0}
   #step{flex:1;min-width:0;font-family:var(--f-title);font-weight:400;font-size:1.08em;color:#f2c24f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #link,#tts{flex:none;display:inline-flex;align-items:center;gap:5px;padding:1px 6px;border-radius:999px;font-size:.82em;line-height:1;font-weight:600;box-sizing:border-box;border:1px solid rgba(242,194,79,.35);background:rgba(20,22,30,.85);color:#f2c24f;white-space:nowrap}
-  #link[hidden],#tts[hidden]{display:none}
-  #link i,#tts i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
-  #link{color:#ffad3b;border-color:rgba(255,173,59,.48)}
+  #link,#ptt,#tts{flex:none;display:inline-flex;align-items:center;gap:5px;padding:1px 6px;border-radius:999px;font-size:.82em;line-height:1;font-weight:600;box-sizing:border-box;border:1px solid rgba(242,194,79,.35);background:rgba(20,22,30,.85);color:#f2c24f;white-space:nowrap}
+  #link[hidden],#ptt[hidden],#tts[hidden]{display:none}
+  #link i,#ptt i,#tts i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  #link{color:#ffad3b;border-color:rgba(255,173,59,.48);max-width:38vw}
+  #linkl{min-width:0;overflow:hidden;text-overflow:ellipsis}
   #link.error{color:#ff6257;border-color:rgba(255,98,87,.52)}
   #box.link-lost{border-color:rgba(255,173,59,.5)}
   #box.link-lost #step{opacity:.72}
@@ -24,6 +25,10 @@
   #tts.speaking{color:#4cd471;border-color:rgba(76,212,113,.38)}
   #tts.fallback{color:#ffad3b;border-color:rgba(255,173,59,.45)}
   #tts.error{color:#ff6257;border-color:rgba(255,98,87,.5)}
+  #ptt{border-color:rgba(242,194,79,.45)}
+  #ptt.listening i,#ptt.transcribing i{animation:pulse 1s ease-in-out infinite}
+  #ptt.listening i{background:#ff6257}
+  #ptt.transcribing i{background:#f2c24f;animation-duration:.6s}
   #msg{margin-top:3px}
   #msg.urgent{color:#ffb3ab}
   #msg:empty,#box.collapsed #msg{display:none}
@@ -35,20 +40,24 @@
   #ctl button{background:#1a1d26;color:#f1ede3;border:1px solid #30343f;border-radius:5px;font:inherit;padding:1px 8px;cursor:pointer}
   #ctl button:hover{border-color:#f2c24f}
   #msg.old{opacity:.55}
-  /* push-to-talk as it happens: a gold "Listening" with a pulsing dot while the key is held */
-  #ptt{display:none;align-items:center;gap:7px;margin-top:5px;font-weight:650;color:#f2c24f}
-  #ptt i{width:8px;height:8px;border-radius:50%;background:#ff6257;animation:pulse 1s ease-in-out infinite}
-  body.ptt-listening #ptt,body.ptt-transcribing #ptt{display:flex}
+  /* push-to-talk as it happens: its own badge between the others, gold with a pulsing dot (red while the key is
+     held); the whole box glows while it listens. The engine ignores a press that comes while the last recording
+     is still being turned into text, until the key is let go again. */
   body.ptt-listening #box{border-color:#f2c24f;box-shadow:0 0 14px rgba(242,194,79,.45)}
-  body.ptt-transcribing #ptt i{background:#f2c24f;animation-duration:.6s}
+  @media (max-width:449px){
+    /* three badges don't fit a narrow overlay: the link badge gives way (the amber border still says it), the
+       two that remain get a tighter fit, and their text is pinned so the largest overlay font still fits */
+    #link{display:none}
+    #step-row{gap:5px}
+    #link,#ptt,#tts{padding:1px 5px;font-size:11px}
+  }
   @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.45;transform:scale(.75)}}
 </style>
 </head>
 <body>
 <div id="box">
-  <div id="step-row"><div id="step">Glide</div><span id="link" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="linkl"></span></span><span id="tts" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="ttsl"></span></span></div>
+  <div id="step-row"><div id="step">Glide</div><span id="link" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="linkl"></span></span><span id="ptt" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="pttl">Listening</span></span><span id="tts" hidden role="status" aria-live="polite"><i aria-hidden="true"></i><span id="ttsl"></span></span></div>
   <div id="state"></div>
-  <div id="ptt" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="pttl">Listening</span></div>
   <div id="msg"></div>
   <div id="ctl"><span>Drag to move (or hold Alt any time)</span><button id="narrow">− width</button><button id="wide">+ width</button>
     <button id="collapse">collapse</button><button id="lock">lock (Ctrl+Alt+O)</button></div>

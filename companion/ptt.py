@@ -286,6 +286,7 @@ def beep(freq, ms):
 class PushToTalk:
     on_state = None                             # set in __init__; a bare instance (the tests) has no indicator
     key_down = False                            # the key is held now ("idle" from a previous press may come later)
+    transcribing = False                        # the last recording is still being turned into text
 
     @property
     def opt(self):
@@ -358,10 +359,14 @@ class PushToTalk:
 
     def _loop(self):
         down_at = None
+        skip = False                            # a press that arrived while transcribing: wait for a fresh one
         while True:
             time.sleep(0.02)
             held = self._held()
             if held and down_at is None:
+                if skip or self.transcribing:   # a press during transcription is ignored, not queued
+                    skip = True
+                    continue
                 if self.focus_check and not self.focus_check():
                     continue
                 try:
@@ -375,7 +380,10 @@ class PushToTalk:
                 self._state("listening")
                 if self.opt.get("beep"):
                     threading.Thread(target=beep, args=(880, 60), daemon=True).start()
-            elif not held and down_at is not None:
+            elif not held:
+                skip = False
+                if down_at is None:
+                    continue
                 dur = time.time() - down_at
                 down_at = None
                 self.key_down = False
@@ -392,12 +400,14 @@ class PushToTalk:
                     self._state("idle")
                     continue
                 self._state("transcribing")
+                self.transcribing = True
                 threading.Thread(target=self._handle, args=(path,), daemon=True).start()
 
     def _handle(self, path):
         try:
             self._transcribe(path)
         finally:
+            self.transcribing = False
             self._state("idle")
 
     def _transcribe(self, path):
