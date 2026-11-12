@@ -207,6 +207,9 @@ export async function renderSettings(): Promise<void> {
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
     renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
   });
+  body.querySelector<HTMLSelectElement>('[data-key="companion.voice.output"] select')?.addEventListener("change", () => {
+    renderSettings();
+  });
   if (searching) highlightSearch(body);
   body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = () => {
     const key = b.dataset.reset!;

@@ -36,6 +36,20 @@ interface Line {
   reportedFallback?: boolean;
 }
 
+/** Full request identity for the last-spoken record; speakLabel deliberately stays compact for the status bar. */
+function onlineVoiceLabel(line: Line, source?: LogAttribution): string {
+  const provider = source?.provider || line.provider;
+  const name = provider === "openai" ? "OpenAI"
+    : provider === "google" ? "Google"
+    : provider === "elevenlabs" ? "ElevenLabs"
+    : provider === "azure" ? "Azure"
+    : provider === "edge" ? "Edge-TTS" : provider;
+  const model = source?.reported_model || source?.model || "", voice = source?.voice || "";
+  // Successful IPC replies supply the resolved defaults. Never resolve them again from newer settings.
+  if (model || voice) return `${name} ${model}${model && voice ? ", " : ""}${voice}`;
+  return provider === line.provider ? line.voiceLabel : name;
+}
+
 class Narrator {
   private provider = "windows";
   private voiceName = "";
@@ -332,7 +346,7 @@ class Narrator {
         onStart?.();
         call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
           { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });
-        this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, text,
+        this.noteVoice(`${onlineVoiceLabel(line, source)} (online voice)`, text,
           Date.now(), fragmentSynthMs ?? line.synthMs ?? null, line.requestId);
       }).catch((e: unknown) => {
         if (finished) return;

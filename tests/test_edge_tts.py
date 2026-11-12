@@ -224,7 +224,8 @@ function request(h,id,body=text,decode=true) {
   let storedKeys={};
   cache('app/settings',{settings});
   cache('app/config',{engineHome:()=>root,keyValue:k=>storedKeys[k]||'',endpointKeyEnvs:()=>[],engineOptions:()=>({}),
-    configPath:()=>path.join(root,'config.json'),readConfig:()=>({}),saveConfig:async p=>p});
+    configPath:()=>path.join(root,'config.json'),readConfig:()=>({}),saveConfig:async p=>p,
+    saveAppSettingsPatch:async p=>settings.merge(p)});
   cache('secrets',{KNOWN_KEYS:[],keyStatus:()=>[],setKey:async(k,v)=>{storedKeys[k]=v;}});
   let synthImpl = async () => Buffer.from([1,2,3]);
   cache('tts',{TTS_KEYS:{openai:'OPENAI_API_KEY',elevenlabs:'ELEVENLABS_API_KEY',azure:'AZURE_SPEECH_KEY',google:'GOOGLE_TTS_API_KEY'},
@@ -370,13 +371,13 @@ function request(h,id,body=text,decode=true) {
   }
   invoke(a,'tts:edgeStart','muted-via-settings','muted while awaiting decode');
   await until(()=>a.events.some(e=>e.id==='muted-via-settings'&&e.type==='candidate'));
-  invoke(a,'app:settings:set',{muted:true});
+  await invoke(a,'app:settings:set',{muted:true});
   assert.equal(a.events.at(-1).reason,'cancelled');
   assert.throws(()=>invoke(a,'tts:edgeStart','while-muted','speech'),/muted/i);
-  invoke(a,'app:settings:set',{muted:false});
+  await invoke(a,'app:settings:set',{muted:false});
   invoke(a,'tts:edgeStart','switch-provider','pending decode');
   await until(()=>a.events.some(e=>e.id==='switch-provider'&&e.type==='candidate'));
-  invoke(a,'app:settings:set',{speech:{provider:'windows'}});
+  await invoke(a,'app:settings:set',{speech:{provider:'windows'}});
   assert.equal(a.events.at(-1).reason,'cancelled');
   assert.throws(()=>invoke(a,'tts:edgeStart','wrong-provider','speech'),/not selected/i);
   h.close();

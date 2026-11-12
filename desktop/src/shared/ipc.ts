@@ -43,6 +43,7 @@ export type TtsProvider = "windows" | "edge" | "openai" | "elevenlabs" | "azure"
 export interface SpeechSettings {
   provider?: TtsProvider;
   voiceName?: string;                      // installed SAPI5 voice's display name; empty = Windows default
+  windowsProcessUseAppVoice?: boolean;       // absent: preserve an explicit engine voice, otherwise follow voiceName
   rate?: number;
   volume?: number;
   edge?: { voice?: string };
