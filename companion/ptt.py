@@ -407,8 +407,8 @@ class PushToTalk:
         try:
             self._transcribe(path)
         finally:
-            self.transcribing = False
-            self._state("idle")
+            self._state("idle")           # published while the gate is still closed: a later press's
+            self.transcribing = False     # "listening" can never be hidden by this stale "idle"
 
     def _transcribe(self, path):
         while self.stt is None:
