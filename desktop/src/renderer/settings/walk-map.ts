@@ -2,6 +2,7 @@
 // the state stream (navbuild); Settings > General shows it with a Rebuild button, as do the activity and Status.
 import { taskBar } from "../activity.js";
 import { $, esc, icon, toast } from "../dom.js";
+import { dateTimeHtml } from "../date-time.js";
 import { currentPage } from "../nav.js";
 import { Group } from "../settings-schema.js";
 import { coachRunning, enginePost, live } from "../state.js";
@@ -22,7 +23,7 @@ function walkMapLine(): string {
   if (n.state === "failed") return `<span class="bad">The last build failed: the Logs page says why.</span>`;
   if ((n.outdated || []).length)
     return `<span class="warn">${icon("circle-alert")}Made by an older version of the map builder.</span> <span class="dim">Rebuilding gives better routes; it's up to you, and the current map is used until it's done.</span>`;
-  return `<span class="ok">${icon("check")}Built</span>${n.finished && n.maps_done ? ` <span class="dim">${n.maps_done} map${n.maps_done > 1 ? "s" : ""} rebuilt ${new Date(n.finished * 1000).toLocaleString()}</span>` : ""}`;
+  return `<span class="ok">${icon("check")}Built</span>${n.finished && n.maps_done ? ` <span class="dim">${n.maps_done} map${n.maps_done > 1 ? "s" : ""} rebuilt ${dateTimeHtml(n.finished * 1000, "dateTime")}</span>` : ""}`;
 }
 
 /** The Rebuild button stands out when a better map can be made. */

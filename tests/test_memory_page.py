@@ -178,16 +178,18 @@ console.log(JSON.stringify(out));
 
 tmp = tempfile.mkdtemp(prefix="glide-memory-page-")
 try:
-    files = dict(STUBS)
-    for name in ("memory.ts", "memory-search.ts"):
+    files = {f"renderer/{name}": data for name, data in STUBS.items()}
+    for name in ("memory.ts", "memory-search.ts", "date-time.ts"):
         with open(os.path.join(RENDERER, name), encoding="utf-8") as fh:
-            files[name] = fh.read()
-    out = desktop_ts.compiled("memory-page", files, ["memory.ts", "--target", "ES2023", "--module", "ES2022",
+            files[f"renderer/{name}"] = fh.read()
+    with open(os.path.join(RENDERER, "..", "shared", "date-time.ts"), encoding="utf-8") as fh:
+        files["shared/date-time.ts"] = fh.read()
+    out = desktop_ts.compiled("memory-page", files, ["renderer/memory.ts", "--target", "ES2023", "--module", "ES2022",
                                                      "--moduleResolution", "bundler", "--lib", "ES2023,DOM", "--strict",
                                                      "--skipLibCheck"])
     run = os.path.join(tmp, "run.mjs")
     with open(run, "w", encoding="utf-8") as fh:
-        fh.write(RUN % (json.dumps(FIXTURE), json.dumps(desktop_ts.url(os.path.join(out, "memory.js")))))
+        fh.write(RUN % (json.dumps(FIXTURE), json.dumps(desktop_ts.url(os.path.join(out, "renderer", "memory.js")))))
     r = subprocess.run([node, run], capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, "running the Memory page failed: %s" % r.stderr[-2000:]
     got = json.loads(r.stdout)

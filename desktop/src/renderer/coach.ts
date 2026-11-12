@@ -45,7 +45,7 @@ function showEngineState(s: EngineStatus): void {
 
 function showDashboard(url: string): void {
   const f = $<HTMLIFrameElement>("dash");
-  f.src = `${url}/#t=${encodeURIComponent(live.engineToken)}`;      // the page reads its token from the fragment
+  f.src = `${url}/#t=${encodeURIComponent(live.engineToken)}&dates=native`; // only this embedded view uses Windows formatting
   f.classList.add("on");
   $("dash-empty").style.display = "none";
   connectEvents(url);

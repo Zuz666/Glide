@@ -3,6 +3,7 @@
 import { taskBar } from "./activity.js";
 import { call, glide, quiet } from "./bridge.js";
 import { $, toast } from "./dom.js";
+import { bindDateTime, clearDateTime } from "./date-time.js";
 import { speech } from "./narrator.js";
 import { getPath } from "./settings/fields.js";
 import { enginePost, JSON_HEADERS, live } from "./state.js";
@@ -57,9 +58,15 @@ export function onUpdate(s: UpdateStatus): void {
   showFooterButton(s);
   taskBar();
   wnUpdateLine();
-  $("app-ver").title = s.state === "none" ? `What's new. Up to date (checked ${new Date(s.checkedAt!).toLocaleTimeString()})`
-    : s.state === "disabled" ? (s.error || "automatic updates are off") : s.state === "error" ? `update check failed: ${s.error}. Click to retry`
-    : s.state === "checking" ? "checking for updates…" : "click to check for updates";
+  const version = $("app-ver");
+  if (s.state === "none" && s.checkedAt != null) {
+    bindDateTime(version, s.checkedAt, "longTime", { attribute: "title", prefix: "What's new. Up to date (checked ", suffix: ")" });
+  } else {
+    clearDateTime(version);
+    version.title = s.state === "none" ? "What's new. Up to date"
+      : s.state === "disabled" ? (s.error || "automatic updates are off") : s.state === "error" ? `update check failed: ${s.error}. Click to retry`
+      : s.state === "checking" ? "checking for updates…" : "click to check for updates";
+  }
 }
 
 function showFooterButton(s: UpdateStatus): void {

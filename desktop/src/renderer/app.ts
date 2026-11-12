@@ -10,6 +10,7 @@ import { applyAppSettings, wireAppSettings } from "./app-settings.js";
 import { call } from "./bridge.js";
 import { onEngine, wireCoach } from "./coach.js";
 import { $, toast } from "./dom.js";
+import { wireDateTimes } from "./date-time-bridge.js";
 import { loadLog, renderLog, wireLogs } from "./logs.js";
 import { refreshMemory, wireMemory } from "./memory.js";
 import { show, whenShown, wireNav } from "./nav.js";
@@ -48,6 +49,7 @@ registerPanels({
   "setup-again": renderSetupAgain,
 });
 
+wireDateTimes();
 wireNav();
 whenShown("addon", refreshAddon);
 whenShown("guides", refreshGuides);

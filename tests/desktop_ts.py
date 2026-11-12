@@ -45,7 +45,7 @@ node = shutil.which("node")
 RENDERER = ("rxp-model", "rxp-geometry", "rxp-icons", "rxp-narration", "rxp-plan", "rxp-prep", "rxp-quests",
             "rxp-route", "settings-schema", "settings/page", "settings/model-picker", "settings/keys",
             "settings/voices", "settings/endpoints", "settings/language", "settings/whisper",
-            "memory-search", "session-bar", "overlay")
+            "memory-search", "session-bar", "overlay", "addon", "memory", "logs", "updates", "whats-new", "date-time-bridge")
 RENDERER_ARGS = ["--target", "ES2023", "--module", "ES2022", "--moduleResolution", "bundler", "--strict",
                  "--skipLibCheck"]
 

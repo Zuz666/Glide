@@ -3,6 +3,7 @@
 import type { RxpImport } from "../shared/ipc.js";
 import { call, quiet } from "./bridge.js";
 import { $, esc, icon, toast } from "./dom.js";
+import { dateTimeHtml } from "./date-time.js";
 import { browseGuide, wireRxpBrowser } from "./rxp-browser.js";
 import { enginePost, live } from "./state.js";
 import { refreshStatus } from "./status.js";
@@ -54,8 +55,8 @@ async function refreshRxp(): Promise<void> {
   const list = ((await quiet("addon:rxpImports")) as RxpImport[]) || [];
   // RestedXP's free guides come last: the Explorer lists them, but they aren't a string the player added
   $("rxp-list").innerHTML = list.filter((r) => !r.free).map((r) => {
-    const when = r.added ? new Date(r.added * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
-    return `<li><div class="row"><b>${esc(packName(r.guides))}</b>${when ? ` <span class="dim">added ${esc(when)}</span>` : ""}<span class="grow"></span><button type="button" class="btn rxp-browse-pack" data-pack="${esc(r.id)}">Browse guides</button></div><span>${rxpState(r)}</span></li>`;
+    const when = r.added ? dateTimeHtml(r.added * 1000, "date") : "";
+    return `<li><div class="row"><b>${esc(packName(r.guides))}</b>${when ? ` <span class="dim">added ${when}</span>` : ""}<span class="grow"></span><button type="button" class="btn rxp-browse-pack" data-pack="${esc(r.id)}">Browse guides</button></div><span>${rxpState(r)}</span></li>`;
   }).join("");
   $("rxp-list").querySelectorAll<HTMLButtonElement>(".rxp-browse-pack").forEach((b) => {
     b.onclick = () => browseGuide(b.dataset.pack!, 0);

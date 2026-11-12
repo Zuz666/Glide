@@ -2,6 +2,7 @@
 import { updateAppSettings } from "./app-settings.js";
 import { call } from "./bridge.js";
 import { $, esc } from "./dom.js";
+import { dateTimeHtml } from "./date-time.js";
 import { show } from "./nav.js";
 import { live } from "./state.js";
 import { Obj } from "./types.js";
@@ -29,7 +30,7 @@ export async function showWhatsNew(): Promise<void> {
   $("wn-lede").textContent = `You have Glide ${appVersion || "?"}. The last ${list.length} versions, newest first.`;
   $("wn-list").innerHTML = list.length ? list.map((v) => {
     const mine = v.version === appVersion, fresh = notesBefore && vnewer(v.version, notesBefore) && !vnewer(v.version, appVersion);
-    return `<article class="wn-card${mine ? " mine" : ""}"><header><b class="wn-ver">${esc(v.version)}</b>${mine ? `<span class="wn-tag mine">You have this</span>` : ""}${fresh ? `<span class="wn-tag new">New</span>` : ""}<span class="wn-date">${esc(v.date || "")}</span></header>
+    return `<article class="wn-card${mine ? " mine" : ""}"><header><b class="wn-ver">${esc(v.version)}</b>${mine ? `<span class="wn-tag mine">You have this</span>` : ""}${fresh ? `<span class="wn-tag new">New</span>` : ""}<span class="wn-date">${v.date ? dateTimeHtml(v.date, "date") : ""}</span></header>
       <h2>${esc(v.title || "")}</h2><ul>${(v.items || []).map((i: string) => `<li>${esc(i)}</li>`).join("")}</ul></article>`;
   }).join("") : `<p class="dim">No release notes in this build.</p>`;
   wnUpdateLine();

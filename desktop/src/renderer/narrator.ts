@@ -11,7 +11,8 @@
 // The player can talk over it: holding push-to-talk (the "ptt" event's "listening", coach.ts) calls bargeIn(), which
 // stops the line being said and drops the queued ones at once.
 import { call, glide, ipcError } from "./bridge.js";
-import { toast } from "./dom.js";
+import { esc, toast } from "./dom.js";
+import { dateTimeHtml, dateTimeText } from "./date-time.js";
 import { Obj, SpeechSettings } from "./types.js";
 import type { LogAttribution, TtsStatus } from "../shared/ipc.js";
 import { edgeSpeech } from "./edge-speech.js";
@@ -88,7 +89,7 @@ class Narrator {
     this.lastSynthMs = synthMs;
     this.lastRequestId = requestId;
     const el = document.getElementById("sv-last");
-    if (el) el.textContent = voiceLastLine();
+    if (el) el.innerHTML = voiceLastLineHtml();
     const line = document.getElementById("sv-last-text");
     if (line) {
       line.textContent = text;
@@ -268,7 +269,7 @@ class Narrator {
       if (terminal?.reason === "complete" && this.lastRequestId === line.requestId && stream.synthMs !== undefined) {
         this.lastSynthMs = stream.synthMs;
         const el = document.getElementById("sv-last");
-        if (el) el.textContent = voiceLastLine();
+        if (el) el.innerHTML = voiceLastLineHtml();
       }
       this.reportPlayback(line, "ended");
     }
@@ -388,10 +389,19 @@ export function fmtSynthDuration(ms: number | null): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
-/** "Last line spoken with" (Settings > Voice): the voice, online synthesis latency, and time. */
-export function voiceLastLine(): string {
+function voiceLastAttribution(): string {
   if (!speech.lastVoice) return "nothing spoken yet this session";
   const dur = fmtSynthDuration(speech.lastSynthMs);
-  const synth = dur ? `, generated in ${dur}` : "";
-  return `${speech.lastVoice}${synth}, ${new Date(speech.lastVoiceAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  return `${speech.lastVoice}${dur ? `, generated in ${dur}` : ""}`;
+}
+
+/** Plain-text last-spoken metadata for consumers that do not accept markup. */
+export function voiceLastLine(): string {
+  const time = speech.lastVoice ? dateTimeText(speech.lastVoiceAt, "shortTime") : "";
+  return `${voiceLastAttribution()}${time ? `, ${time}` : ""}`;
+}
+
+/** The attribution stays escaped prose; only the timestamp is a live semantic time leaf. */
+export function voiceLastLineHtml(): string {
+  return `${esc(voiceLastAttribution())}${speech.lastVoice ? `, ${dateTimeHtml(speech.lastVoiceAt, "shortTime")}` : ""}`;
 }
