@@ -215,7 +215,7 @@ export const SCHEMA: Tab[] = [
         { key: "companion.voice.enabled", label: "Speak callouts and answers", type: "bool" },
         { key: "companion.voice.output", label: "Spoken by", type: "select",
           options: [["app", "this app (Windows or online voices, below)"], ["windows", "Windows speech process (Windows voices only)"]],
-          help: "This app uses the Voice service below. The coach's separate Windows speech process uses Windows voices only, not the selected online service. Its voice can follow or override the app's Windows voice in Coach voice." },
+          help: "This app speaks through Voice service below (Windows or online). Windows speech process lets the Python coach speak through SAPI5, as it does when launched without the desktop app. It supports Windows voices only; configure its voice in Coach voice. This setting changes who speaks, not how the coach is launched." },
         { key: "companion.voice.announce", label: "Announce readiness at startup", type: "bool" },
         { key: "app:speech.rate", label: "Speed", type: "range", def: 1, min: 0.5, max: 2, step: 0.05,
           help: "Playback speed multiplier (1 = normal). Applies to online voices, Windows SAPI5 and the Windows speech process." },
