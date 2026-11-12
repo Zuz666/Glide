@@ -69,6 +69,36 @@ until("the next question", lambda: len(got) >= 3 and len(states) >= 11)
 assert got[1] == got[2] == "and the next question" and states[-3:] == ["listening", "transcribing", "idle"], (got, states)
 print("ptt press during transcription ignored OK")
 
+# the transcription's "idle" is published before the gate opens: a press that arrives while that idle is
+# still being delivered is ignored, so a stale "idle" can never land after the next press's "listening"
+class HeldStates:
+    def __init__(self): self.states = []; self.release = threading.Event()
+    def __call__(self, st):
+        if st == "idle" and not self.release.is_set():
+            self.release.wait(5)
+        self.states.append(st)
+p2 = ptt.PushToTalk.__new__(ptt.PushToTalk)
+p2.cfg = {"key": "F8", "beep": False, "min_seconds": 0.2}
+p2.keys = ptt.parse_key("F8"); p2.user32 = FakeUser32(); p2.rec = FakeRec()
+slow2 = SlowSTT(); p2.stt = slow2; p2.fallback = None
+p2.on_question = lambda text: None; p2.on_status = lambda m: None; p2.prompt_fn = None; p2.focus_check = None
+held = HeldStates(); p2.on_state = held
+threading.Thread(target=p2._loop, daemon=True).start()
+p2.user32.down = True; until("p2 listening", lambda: held.states == ["listening"])
+time.sleep(0.25); p2.user32.down = False
+until("p2 transcribing", lambda: len(held.states) >= 2 and held.states[-1] == "transcribing")
+slow2.gate.set(); time.sleep(0.3)             # the transcription ends; its idle sits undelivered
+p2.user32.down = True; time.sleep(0.3)        # a press while that idle is still in flight
+assert held.states == ["listening", "transcribing"], held.states
+assert p2.rec.calls == ["start", "stop"], p2.rec.calls
+held.release.set()
+until("the held idle lands", lambda: held.states == ["listening", "transcribing", "idle"])
+p2.user32.down = False; time.sleep(0.15)      # the skipped press needs a fresh one after the gate opens
+p2.user32.down = True
+until("a fresh press listens after the gate", lambda: len(held.states) == 4 and held.states[-1] == "listening")
+p2.user32.down = False
+print("ptt idle published before the gate opens OK")
+
 # coach: voice question -> fast model, short answer, urgent (interrupts speech)
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
