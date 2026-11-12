@@ -103,10 +103,10 @@ class Narrator {
   }
 
   /** A coach line. Only the online providers interpret the optional persona style and tone. */
-  say(text: string, interrupt = false, style = "", tone = ""): void {
+  say(text: string, interrupt = false, style = "", tone = "", overrides?: { rate?: number; volume?: number }): void {
     if (!text || this.muted) return;
     if (interrupt) this.stop();
-    this.enqueue(text, undefined, undefined, style, tone);
+    this.enqueue(text, undefined, undefined, style, tone, overrides);
   }
 
   /** Holding push-to-talk interrupts the active line and drops all queued lines. */
@@ -168,10 +168,10 @@ class Narrator {
     }
   }
 
-  private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = ""): void {
+  private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = "", overrides?: { rate?: number; volume?: number }): void {
     const line: Line = {
       text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done, audio: null, requestId: crypto.randomUUID(),
-      windows: { voiceName: this.voiceName, rate: this.rate, volume: this.volume },
+      windows: { voiceName: this.voiceName, rate: overrides?.rate ?? this.rate, volume: overrides?.volume ?? this.volume },
     };
     if (line.provider === "edge") {
       line.edge = edgeSpeech.start(text, line.requestId);

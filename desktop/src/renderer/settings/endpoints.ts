@@ -24,7 +24,7 @@ function endpointHtml(e: Endpoint, i: number): string {
       <span class="lbl">Id</span><input data-k="id" value="${esc(e.id)}" spellcheck="false" placeholder="ollama" aria-label="Endpoint id">
       <span class="lbl">Name</span><input data-k="label" value="${esc(e.label || "")}" placeholder="Ollama (local)" aria-label="Endpoint name">
       <span class="lbl">Base URL</span><input data-k="base_url" value="${esc(e.base_url)}" spellcheck="false" placeholder="http://127.0.0.1:11434/v1" aria-label="Base URL">
-      <span class="lbl">Key</span><span class="help">Set <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}"><code>${esc(endpointKeyEnv(e))}</code></button> in <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}">API keys</button>. Local servers don't need one.</span>
+      <span class="lbl">Key</span><span class="help">Set <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}"><code>${esc(endpointKeyEnv(e))}</code></button> in <button type="button" class="reset" data-endpoint-keys data-key-env="${esc(endpointKeyEnv(e))}">Credentials</button>. Local servers don't need one.</span>
       <div class="actions"><button class="btn" data-act="test">${icon("search")}Test and list models</button><button class="btn ghost danger" data-act="del">Remove</button>
         <span data-out></span></div>
       <div class="models" data-models></div></div>`;
@@ -35,11 +35,11 @@ export function renderEndpoints(g: Group, host: HTMLElement): void {
   host.innerHTML = list.map(endpointHtml).join("") +
     `<div class="addrow"><select id="ep-preset" aria-label="Add an endpoint"><option value="">Add an endpoint…</option>${PRESETS.map(([n], i) => `<option value="${i}">${esc(n)}</option>`).join("")}<option value="custom">Other (custom)</option></select>
      <button class="btn" id="ep-save">Save endpoints</button></div>
-     <p class="help" id="ep-key-note" ${unsavedEndpoints.has(host) ? "" : "hidden"}>Save endpoints before opening API keys, so your changes are kept and new endpoint keys appear there.</p>`;
+     <p class="help" id="ep-key-note" ${unsavedEndpoints.has(host) ? "" : "hidden"}>Save endpoints before opening Credentials, so your changes are kept and new endpoint keys appear there.</p>`;
   host.querySelectorAll<HTMLButtonElement>("[data-endpoint-keys]").forEach((button) => {
     button.disabled = unsavedEndpoints.has(host);
     const env = button.dataset.keyEnv || "";
-    button.title = button.disabled ? "Save endpoints before opening API keys" : `Open ${env || "service"} in API keys`;
+    button.title = button.disabled ? "Save endpoints before opening Credentials" : `Open ${env || "service"} in Credentials`;
     button.onclick = () => openSettingsTab("keys", env ? `key:${env}` : undefined);
   });
   const markUnsaved = () => {
@@ -47,7 +47,7 @@ export function renderEndpoints(g: Group, host: HTMLElement): void {
     host.querySelector<HTMLElement>("#ep-key-note")!.hidden = false;
     host.querySelectorAll<HTMLButtonElement>("[data-endpoint-keys]").forEach((button) => {
       button.disabled = true;
-      button.title = "Save endpoints before opening API keys";
+      button.title = "Save endpoints before opening Credentials";
     });
   };
   host.querySelectorAll<HTMLInputElement>(".ep input").forEach((input) => input.addEventListener("input", markUnsaved));

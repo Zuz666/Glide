@@ -54,11 +54,11 @@ async function renderWhisperModels(list?: WhisperModel[]): Promise<void> {
   host.innerHTML = whisperModels.map((m) => {
     const inUse = m.name === sp.modelName;
     const fetching = sp.fetching === m.name;
-    const state = fetching ? `<span class="warn">Downloading${sp.totalMB ? ` ${sp.gotMB || 0} of ${sp.totalMB} MB` : "…"}</span>`
-      : m.downloaded ? `<span class="ok">${icon("check")}On this PC${inUse ? ", in use" : ""}</span>` : `<span class="dim">Not downloaded</span>`;
+    const state = fetching ? `<span class="sp-state warn">Downloading${sp.totalMB ? ` ${sp.gotMB || 0} of ${sp.totalMB} MB` : "…"}</span>`
+      : m.downloaded ? `<span class="sp-state ok">On this PC${inUse ? ", in use" : ""}</span>` : `<span class="sp-state dim">Not downloaded</span>`;
     const btn = m.downloaded
-      ? (inUse || m.shipped ? "" : `<button class="btn" data-sp-del="${esc(m.name)}" ${busy ? "disabled" : ""}>${icon("trash-2")}Delete</button>`)
-      : `<button class="btn" data-sp-get="${esc(m.name)}" ${busy ? "disabled" : ""}>${icon("download")}Download</button>`;
+      ? (inUse || m.shipped ? `<span class="sp-slot" aria-hidden="true"></span>` : `<button class="btn sp-act" data-sp-del="${esc(m.name)}" ${busy ? "disabled" : ""}>${icon("trash-2")}Delete</button>`)
+      : `<button class="btn sp-act" data-sp-get="${esc(m.name)}" ${busy ? "disabled" : ""}>${icon("download")}Download</button>`;
     return `<div class="rem-row"><div class="grow"><b>${esc(m.name)}</b> <span class="dim">${m.mb >= 1024 ? (m.mb / 1024).toFixed(1) + " GB" : m.mb + " MB"}</span><small>${esc(m.note)}</small></div>${state}${btn}</div>`;
   }).join("");
   host.querySelectorAll<HTMLButtonElement>("[data-sp-get]").forEach((b) => (b.onclick = async () => {

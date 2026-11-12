@@ -72,7 +72,7 @@ export function jumpLinkHtml(label: string, tab: string, target?: string, asCode
 export function keyRequirementHtml(env: string, configuredKeys?: ReadonlySet<string> | null, suffix = ""): string {
   if (!env) return "";
   const keyJump = jumpLinkHtml(env, "keys", `key:${env}`, true);
-  const tabJump = jumpLinkHtml("Settings > API keys", "keys", `key:${env}`);
+  const tabJump = jumpLinkHtml("Settings > Credentials", "keys", `key:${env}`);
   if (configuredKeys?.has(env)) {
     return `<span class="help">Uses ${keyJump} in ${tabJump}${suffix}.</span>`;
   }
@@ -116,7 +116,7 @@ export function modelRequirementHtml(
     if (!isLocalBaseUrl(ep.base_url)) {
       const env = endpointKeyEnv(ep);
       if (configuredKeys && !configuredKeys.has(env)) {
-        return `<span class="key-missing">Needs ${jumpLinkHtml(env, "keys", `key:${env}`, true)} in ${jumpLinkHtml("Settings > API keys", "keys", `key:${env}`)} (endpoint ${jumpLinkHtml(`ep:${eid}`, "models", "Custom endpoints")}).</span>`;
+        return `<span class="key-missing">Needs ${jumpLinkHtml(env, "keys", `key:${env}`, true)} in ${jumpLinkHtml("Settings > Credentials", "keys", `key:${env}`)} (endpoint ${jumpLinkHtml(`ep:${eid}`, "models", "Custom endpoints")}).</span>`;
       }
     }
     return "";
@@ -130,7 +130,7 @@ export function modelRequirementHtml(
     : catalogKeys && prov in catalogKeys ? Boolean(catalogKeys[prov]) : true;
   if (hasKey) return "";
   const keyJump = jumpLinkHtml(env, "keys", `key:${env}`, true);
-  const tabJump = jumpLinkHtml("Settings > API keys", "keys", `key:${env}`);
+  const tabJump = jumpLinkHtml("Settings > Credentials", "keys", `key:${env}`);
   return `<span class="key-missing">Needs ${keyJump} in ${tabJump}.</span>`;
 }
 

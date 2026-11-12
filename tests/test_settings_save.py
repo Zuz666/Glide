@@ -42,14 +42,17 @@ try:
         "llm": {"fast_model": "a-model"}, "ptt": {"key": "F9"}}}
     assert a.coach.cfg == {"fast_model": "a-model", "deep_model": "b-model"}, "a save alone changes nothing live"
 
-    # with a live change in the same request: both
+    # with a live change in the same request: both, and voice settings live-apply to self.voice
     a = fake_app(sim=False)
-    out = glide_app.App.on_settings(a, {"save": {"companion": {"voice": {"rate": 2}}}, "fast_model": "c-model"})
+    vcfg = {"rate": 1, "volume": 100}
+    a.cfg = {"voice": vcfg}
+    a.voice = types.SimpleNamespace(cfg=vcfg)
+    out = glide_app.App.on_settings(a, {"save": {"companion": {"voice": {"rate": 2, "volume": 60}}}, "fast_model": "c-model"})
     assert out == {"fast_model": "c-model", "saved": True}, out
     saved = json.load(open(p, encoding="utf-8"))
-    assert saved["companion"]["voice"] == {"rate": 2} and saved["companion"]["llm"]["fast_model"] == "c-model", saved
+    assert saved["companion"]["voice"] == {"rate": 2, "volume": 60} and saved["companion"]["llm"]["fast_model"] == "c-model", saved
     assert a.coach.cfg["fast_model"] == "c-model" and announced, announced
-
+    assert a.voice.cfg == {"rate": 2, "volume": 60}, a.voice.cfg
     # the old flat body still works and still says whether it saved
     assert glide_app.App.on_settings(fake_app(sim=True), {"deep_model": "d-model"}) == {"deep_model": "d-model",
                                                                                         "saved": False}

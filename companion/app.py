@@ -584,6 +584,13 @@ class App:
             saved = glideconfig.patch((), patch, ROOT)  # the app's saves also land in sim
             saved_after = saved_llm(saved)
             self.coach.cfg.update(applied)
+            v_saved = (saved.get("companion") or {}).get("voice")
+            if isinstance(v_saved, dict):
+                if hasattr(self, "cfg") and isinstance(self.cfg, dict):
+                    self.cfg.setdefault("voice", {}).update(v_saved)
+                voice_inst = getattr(self, "voice", None)
+                if voice_inst is not None and hasattr(voice_inst, "cfg") and isinstance(voice_inst.cfg, dict):
+                    voice_inst.cfg.update(v_saved)
             log_settings(saved_before, saved_after, "pending restart", self.catalog)
         else:
             applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)

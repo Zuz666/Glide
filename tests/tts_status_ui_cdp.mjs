@@ -283,18 +283,121 @@ try {
 
 
   // Deep-link navigation for missing voice & model API keys and unconfigured custom endpoints.
-  const [keysMod, voicesMod, endpointsMod, mpMod] = await Promise.all([
+  const [keysMod, voicesMod, endpointsMod, mpMod, langMod, whisperMod, stateMod] = await Promise.all([
     import('/renderer/settings/keys.js'),
     import('/renderer/settings/voices.js'),
     import('/renderer/settings/endpoints.js'),
     import('/renderer/settings/model-picker.js'),
+    import('/renderer/settings/language.js'),
+    import('/renderer/settings/whisper.js'),
+    import('/renderer/state.js'),
   ]);
+  stateMod.live.speech = { state: 'ready', package: true, model: true, modelName: 'small' };
   page.registerPanels({
     keys: keysMod.renderKeys,
     voices: voicesMod.renderVoices,
     endpoints: endpointsMod.renderEndpoints,
     'model-picker': mpMod.renderModelPicker,
+    language: langMod.renderLanguage,
+    'speech-install': whisperMod.renderSpeechInstall,
   });
+
+  // Item 1: Credentials tab title, 4 standalone .sgroup panel cards, OpenAI multi-service in model group, and 0 duplicate inputs until expanded.
+  page.openSettingsTab('keys');
+  await until(() => document.querySelectorAll('.sgroup[data-key-group]').length === 4
+    && !!document.querySelector('.sgroup[data-key-group="model"] .fields [data-key-row="OPENAI_API_KEY"]'),
+    'Expected 4 standalone .sgroup panel cards in Credentials with OPENAI_API_KEY in model card');
+  check(document.querySelector('#set-tabs button[data-tab="keys"]')?.textContent?.includes('Credentials'),
+    'Expected keys tab title to read Credentials');
+  check(document.querySelectorAll('.key-editor').length === 0, 'Expected 0 expanded duplicate input editors initially');
+  document.querySelector('[data-edit-env="OPENAI_API_KEY"]').click();
+  await until(() => document.querySelectorAll('.key-editor').length === 1
+    && document.activeElement?.getAttribute('data-env') === 'OPENAI_API_KEY',
+    'Expected clicking Replace on OPENAI_API_KEY to mount single inline editor');
+  document.querySelector('[data-edit-env="GROQ_API_KEY"]').click();
+  await until(() => document.querySelectorAll('.key-editor').length === 1
+    && document.activeElement?.getAttribute('data-env') === 'GROQ_API_KEY',
+    'Expected clicking another row to move the single inline editor rather than duplicating inputs');
+  // Async ownership guard: delayed Save on GEMINI_API_KEY -> open GROQ_API_KEY & type draft -> GEMINI settles without discarding GROQ draft/focus; Remove updates row.
+  document.querySelector('[data-edit-env="GEMINI_API_KEY"]').click();
+  await until(() => document.activeElement?.getAttribute('data-env') === 'GEMINI_API_KEY',
+    'Expected GEMINI_API_KEY editor focused');
+  const gemInp = document.querySelector('input[data-env="GEMINI_API_KEY"]');
+  gemInp.value = 'AIza-delayed-save';
+  gemInp.dispatchEvent(new Event('input', { bubbles: true }));
+  document.querySelector('[data-save="GEMINI_API_KEY"]').click();
+  // Immediately switch to TAVILY_API_KEY and type an unsaved draft while GEMINI_API_KEY save is still in-flight (120ms).
+  document.querySelector('[data-edit-env="TAVILY_API_KEY"]').click();
+  await until(() => document.activeElement?.getAttribute('data-env') === 'TAVILY_API_KEY',
+    'Expected TAVILY_API_KEY editor focused while GEMINI save is in-flight');
+  const tavInp = document.querySelector('input[data-env="TAVILY_API_KEY"]');
+  tavInp.value = 'tvly-unsaved-draft';
+  tavInp.dispatchEvent(new Event('input', { bubbles: true }));
+  await until(() => document.querySelector('[data-key-row="GEMINI_API_KEY"] .key-pill')?.textContent?.includes('Saved · …save'),
+    'Expected delayed GEMINI_API_KEY save to update GEMINI status pill');
+  check(document.querySelectorAll('.key-editor').length === 1
+    && document.querySelector('input[data-env="TAVILY_API_KEY"]')?.value === 'tvly-unsaved-draft'
+    && document.activeElement?.getAttribute('data-env') === 'TAVILY_API_KEY',
+    'Delayed save on GEMINI_API_KEY clobbered TAVILY_API_KEY draft or focus');
+  // Same-row edit during delayed Save: editing GEMINI_API_KEY while its save is in-flight preserves the newer draft and keeps editor open.
+  document.querySelector('[data-edit-env="GEMINI_API_KEY"]').click();
+  await until(() => document.activeElement?.getAttribute('data-env') === 'GEMINI_API_KEY',
+    'Expected GEMINI_API_KEY reopened');
+  const gemInp2 = document.querySelector('input[data-env="GEMINI_API_KEY"]');
+  gemInp2.value = 'AIza-delayed-save';
+  gemInp2.dispatchEvent(new Event('input', { bubbles: true }));
+  document.querySelector('[data-save="GEMINI_API_KEY"]').click();
+  gemInp2.value = 'AIza-newer-same-row-draft';
+  gemInp2.dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 170));
+  await until(() => document.querySelector('input[data-env="GEMINI_API_KEY"]')?.value === 'AIza-newer-same-row-draft'
+    && document.activeElement?.getAttribute('data-env') === 'GEMINI_API_KEY',
+    'Same-row edit during delayed save lost newer draft or closed editor');
+  // Test Remove on GROQ_API_KEY
+  document.querySelector('[data-edit-env="GROQ_API_KEY"]').click();
+  await until(() => !!document.querySelector('[data-del="GROQ_API_KEY"]'), 'Expected Remove button on saved GROQ_API_KEY');
+  document.querySelector('[data-del="GROQ_API_KEY"]').click();
+  await until(() => document.querySelector('[data-key-row="GROQ_API_KEY"] .key-pill')?.textContent === 'Not set'
+    && document.querySelectorAll('.key-editor').length === 0,
+    'Expected Remove on GROQ_API_KEY to clear saved status and close its editor');
+
+  // Item 2: Language popup heading clarified + TTS setup guide moved to Voice > Coach voice.
+  page.openSettingsTab('language');
+  await until(() => document.getElementById('language-provider-title')?.textContent === 'Language support by voice service',
+    'Expected clarified language help popup heading');
+  check(!document.querySelector('#set-body #language-silero'), 'Expected Silero TTS setup guide removed from Language tab');
+
+  // Item 3: Voice service credential note sits consistently below #sv-prov for both OpenAI and Google.
+  for (const prov of ['openai', 'google']) {
+    await window.glide.invoke('app:settings:set', { speech: { provider: prov } });
+    page.openSettingsTab('voice', 'tts');
+    await until(() => !!document.getElementById('sv-key-note') && !!document.getElementById('sv-silero'),
+      'Expected #sv-key-note and voice setup guide under Coach voice for ' + prov);
+    const provRect = document.getElementById('sv-prov').getBoundingClientRect();
+    const noteRect = document.getElementById('sv-key-note').getBoundingClientRect();
+    check(noteRect.top >= provRect.bottom - 1,
+      'Expected #sv-key-note below #sv-prov for ' + prov + ': noteTop=' + noteRect.top + ', provBottom=' + provRect.bottom);
+  }
+  // Unified Speed & Volume in Voice output (no duplicate sv-rate/sv-vol or companion.voice.rate/volume) + Whisper 3-column alignment.
+  check(!!document.querySelector('[data-group="voice:Voice output"] [data-key="app:speech.rate"]')
+    && !!document.querySelector('[data-group="voice:Voice output"] [data-key="app:speech.volume"]')
+    && !document.getElementById('sv-rate')
+    && !document.getElementById('sv-vol')
+    && !document.querySelector('[data-key="companion.voice.rate"]')
+    && !document.querySelector('[data-key="companion.voice.volume"]'),
+    'Expected Speed and Volume unified inside Voice output without duplicates in Coach voice or Windows speech process');
+  await until(() => document.querySelectorAll('#sp-models .rem-row').length === 3,
+    'Expected 3 Whisper model rows rendered');
+  const spRows = [...document.querySelectorAll('#sp-models .rem-row')];
+  const stateLefts = spRows.map((r) => Math.round(r.querySelector('.sp-state').getBoundingClientRect().left));
+  check(stateLefts[0] === stateLefts[1] && stateLefts[1] === stateLefts[2],
+    'Expected Not downloaded, On this PC, and On this PC, in use to share identical left X, got: ' + JSON.stringify(stateLefts));
+  check(!spRows[1].querySelector('.sp-state svg') && !spRows[2].querySelector('.sp-state svg'),
+    'Expected no checkmark SVG inside On this PC status labels');
+  const dlRect = spRows[0].querySelector('.sp-act').getBoundingClientRect();
+  const delRect = spRows[1].querySelector('.sp-act').getBoundingClientRect();
+  check(Math.abs(dlRect.width - delRect.width) <= 0.5 && Math.abs(dlRect.left - delRect.left) <= 0.5,
+    'Expected Download and Delete buttons to have identical width and X alignment');
   await window.glide.invoke('app:settings:set', { speech: { provider: 'elevenlabs' } });
   page.openSettingsTab('voice', 'tts');
   await until(() => !!document.querySelector('#sv-key-note button[data-jump-target="key:ELEVENLABS_API_KEY"]'),

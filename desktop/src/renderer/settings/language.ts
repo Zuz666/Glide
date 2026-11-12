@@ -50,22 +50,11 @@ export function renderLanguage(_g: Group, host: HTMLElement): void {
       `Selected language: ${speechLanguage()}. Non-English Whisper needs a multilingual model, such as small, not a .en model. Online recognition falls back to ${model}; language support depends on the recognition provider. Windows requires a matching installed recognizer.`, "voice", "Recognition settings")
     + row("Speech output", `${voice.enabled === false ? "Disabled · " : ""}${name} / ${selectedVoice}`,
       "Speech synthesis reads the coach's text; it does not translate it.", "voice", "Voice settings",
-      `<button class="language-help-trigger" type="button" popovertarget="language-provider-help" aria-label="Language support" title="Language support"><span aria-hidden="true">i</span></button>`)
-    + `<details class="keyhow"><summary>How to set up speech synthesis (TTS)</summary>
-      <p class="keyfree"><b>Offline speech · Windows SAPI5</b></p>
-      <ol><li>Install a Windows voice or a third-party SAPI5 engine for your language. SileroTTS offers local CIS-language voices.</li><li>In Voice settings, choose Windows voices (SAPI5), reload the voice list, select an installed voice and play a sample. No cloud TTS connection is needed.</li></ol>
-      <div class="row"><button type="button" class="btn primary" id="language-silero">${icon("external-link")}SileroTTS for Windows</button></div>
-      <p><b>Online speech · Edge-TTS (experimental)</b></p>
-      <p>Support is still being worked on. This free online service needs no registration or API key and offers natural-sounding voices, including multilingual models. It is unofficial and can fail or limit requests; Glide then uses the selected Windows SAPI5 voice.</p>
-      <ol><li>In Voice settings, choose Edge-TTS and load voices. Select a voice for your language, or use the multilingual voice filter.</li><li>Keep a working Windows SAPI5 voice selected for fallback. For dependable offline use, select Windows voices instead.</li></ol>
-    </details>`
+      `<button class="language-help-trigger" type="button" popovertarget="language-provider-help" aria-label="Language support by voice service" title="Language support by voice service"><span aria-hidden="true">i</span></button>`)
     + `<div id="language-provider-help" class="language-help-popup" popover role="dialog" aria-labelledby="language-provider-title">
-      <header><h3 id="language-provider-title">Speech languages and setup</h3><button class="btn" popovertarget="language-provider-help" popovertargetaction="hide" aria-label="Close language support">${icon("x")}</button></header>
-      <dl>${Object.entries(PROVIDERS).map(([key, [label, help]]) => `<dt>${esc(label)}</dt><dd>${esc(help)}${key === "windows" ? `<p class="row"><button class="btn" id="language-windows-speech" type="button">${icon("external-link")}Open Windows speech settings</button><button class="btn" id="language-sapi-speech" type="button">${icon("external-link")}Open SAPI5 voice settings</button></p>` : ""}</dd>`).join("")}</dl></div>`;
+      <header><h3 id="language-provider-title">Language support by voice service</h3><button class="btn" popovertarget="language-provider-help" popovertargetaction="hide" aria-label="Close language support">${icon("x")}</button></header>
+      <dl>${Object.entries(PROVIDERS).map(([, [label, help]]) => `<dt>${esc(label)}</dt><dd>${esc(help)}</dd>`).join("")}</dl></div>`;
   host.querySelectorAll<HTMLButtonElement>("[data-language-go]").forEach((button) => {
     button.onclick = () => openSettingsTab(button.dataset.languageGo!);
   });
-  host.querySelector<HTMLButtonElement>("#language-windows-speech")!.onclick = () => call("shell:open", "ms-settings:speech");
-  host.querySelector<HTMLButtonElement>("#language-sapi-speech")!.onclick = () => call("shell:speechPanel");
-  host.querySelector<HTMLButtonElement>("#language-silero")!.onclick = () => call("shell:open", "https://github.com/snakers4/silero-models/releases/tag/v5.6");
 }

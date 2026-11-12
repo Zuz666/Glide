@@ -44,7 +44,8 @@ node = shutil.which("node")
 # emitted JavaScript is byte for byte the same). A test that runs another renderer module adds it here.
 RENDERER = ("rxp-model", "rxp-geometry", "rxp-icons", "rxp-narration", "rxp-plan", "rxp-prep", "rxp-quests",
             "rxp-route", "settings-schema", "settings/page", "settings/model-picker", "settings/keys",
-            "settings/voices", "settings/endpoints", "memory-search", "session-bar", "overlay")
+            "settings/voices", "settings/endpoints", "settings/language", "settings/whisper",
+            "memory-search", "session-bar", "overlay")
 RENDERER_ARGS = ["--target", "ES2023", "--module", "ES2022", "--moduleResolution", "bundler", "--strict",
                  "--skipLibCheck"]
 

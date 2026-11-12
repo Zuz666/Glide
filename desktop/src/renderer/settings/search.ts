@@ -4,10 +4,10 @@ import { esc } from "../dom.js";
 import { Field, Group, SCHEMA, Tab } from "../settings-schema.js";
 
 const SPECIAL_WORDS: Record<string, string> = {
-  keys: "api key keys anthropic claude openai gpt gemini google openrouter groq deepgram elevenlabs azure paste secret",
+  keys: "api key keys credential credentials token anthropic claude openai gpt gemini google openrouter groq deepgram elevenlabs azure tavily brave paste secret",
   "model-picker": "model models fast deep callouts reviews choose pick claude gpt gemini",
   endpoints: "custom endpoint endpoints ollama lm studio openai compatible local url server model",
-  voices: "voice voices speak speech narrator tts text to speech provider windows zira david openai elevenlabs azure google rate speed volume sample",
+  voices: "voice voices speak speech narrator tts text to speech provider windows zira david silero silerotts edge openai elevenlabs azure google rate speed volume sample",
   "speech-install": "whisper offline speech recognition push to talk model models download delete repair tiny base small medium distil multilingual",
   "capture-check": "capture calibrate calibration check strip pixels what the coach sees window screenshot",
   "walk-map": "walking map route path directions terrain slope cliffs buildings caves tunnels bridges flight rebuild navigation",

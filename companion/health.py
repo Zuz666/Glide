@@ -253,7 +253,7 @@ class Health:
         co = app.coach
         if not co.enabled:
             add("ai", "ai", "warn", "AI coach is off",
-                "No API key or endpoint is set, so callouts are rule-based only. Add a key under Settings > AI models & keys.",
+                "No model credential or endpoint is set, so callouts are rule-based only. Add one under Settings > Credentials.",
                 "keys")
         elif co.suspended:
             add("ai", "ai", "error", "AI coach paused: %s" % co.suspended,
