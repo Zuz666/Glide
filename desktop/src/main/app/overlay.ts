@@ -54,13 +54,12 @@ export class Overlay {
     win.on("closed", () => (this.win = null));
   }
 
-  /** Unlocked: the overlay takes the mouse (drag to move, buttons for width); locked: clicks go through to the game.
-   * (Transparent windows can't be resized by their edges on Windows.) */
+  /** Unlocking enables mouse editing without taking the game's keyboard focus (push-to-talk is focus-gated).
+   * Transparent windows can't be resized by their edges on Windows. */
   setUnlocked(on: boolean): void {
     if (!this.win) return;
     this.unlocked = on;
     this.win.setIgnoreMouseEvents(!on && !this.held);
-    this.win.setFocusable(on);
     if (!on) this.saveBounds();
     this.broadcast("overlay:unlocked", on);
     this.onLockChange();

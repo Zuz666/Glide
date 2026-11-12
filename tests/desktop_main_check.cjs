@@ -279,9 +279,52 @@ async function configChecks() {
   }
 }
 
+function overlayFocusChecks() {
+  let keyboardTarget = "game";
+  class OverlayWindow {
+    constructor(options) {
+      this.focusable = options.focusable;
+      this.bounds = { x: options.x, y: options.y, width: options.width, height: options.height };
+      this.webContents = { setWindowOpenHandler() {}, on() {} };
+    }
+    setAlwaysOnTop() {}
+    setIgnoreMouseEvents(on) { this.ignoreMouse = on; }
+    setVisibleOnAllWorkspaces() {}
+    loadFile() {}
+    once() {}
+    on() {}
+    setFocusable(on) { this.focusable = on; }
+    getBounds() { return { ...this.bounds }; }
+    setBounds(bounds) { this.bounds = { ...bounds }; }
+    click() {
+      if (!this.ignoreMouse && this.focusable) keyboardTarget = "overlay";
+    }
+  }
+  electron.BrowserWindow = OverlayWindow;
+  const keysPath = path.join(dist, "keys.js");
+  require.cache[keysPath] = { id: keysPath, filename: keysPath, loaded: true,
+    exports: { VK: { ALT: 0x12 }, keyDown: () => false, keysAvailable: () => false } };
+  const { Overlay } = require(path.join(dist, "app", "overlay.js"));
+  const previous = settings.current;
+  try {
+    settings.current = { overlay: { enabled: true, width: 600, height: 80 } };
+    const overlay = new Overlay(() => {}, () => {});
+    overlay.sync();
+    overlay.setUnlocked(true);
+    overlay.changeWidth(-200);
+    overlay.fitHeight(39);
+    overlay.win.click();
+    assert.strictEqual(keyboardTarget, "game",
+      "Editing, resizing and collapsing the overlay must leave keyboard focus in the game so F8 stays eligible");
+  } finally {
+    settings.current = previous;
+  }
+}
+
 (async () => {
   syncChecks();
   await engineChecks();
   await configChecks();
+  overlayFocusChecks();
   console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });
