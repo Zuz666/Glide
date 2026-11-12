@@ -17,6 +17,7 @@ export interface Field {
   min?: number;
   max?: number;
   step?: number;
+  format?: "percent";             // a fractional range shown as 0–100%, without changing storage
   options?: [string, string][];   // [value, label]
   wide?: boolean;
   restart?: boolean;              // only takes effect after a coach restart (most config.json values)
@@ -217,7 +218,7 @@ export const SCHEMA: Tab[] = [
         { key: "companion.voice.announce", label: "Announce readiness at startup", type: "bool" },
         { key: "app:speech.rate", label: "Speed", type: "range", def: 1, min: 0.5, max: 2, step: 0.05,
           help: "Playback speed multiplier (1 = normal). Applies to online voices, Windows SAPI5 and the Windows speech process." },
-        { key: "app:speech.volume", label: "Volume", type: "range", def: 1, min: 0, max: 1, step: 0.05,
+        { key: "app:speech.volume", label: "Volume", type: "range", def: 1, min: 0, max: 1, step: 0.05, format: "percent",
           help: "Narrator volume (also adjustable from the speaker icon in the session bar)." },
       ] },
       { title: "Coach voice", special: "voices" },
