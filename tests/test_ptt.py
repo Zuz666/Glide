@@ -45,6 +45,29 @@ assert p.stt.prompt == "Names: Wolf Den" and status[0]["kind"] == "question", st
 # the indicator, as it happens: a tap listens and goes idle; a hold listens, transcribes, then goes idle
 assert states == ["listening", "idle", "listening", "transcribing", "idle"], states
 print("ptt loop OK", p.rec.calls)
+# a press that arrives while the last recording is still being turned into text is ignored until the key is
+# let go again: no second recording, no second listening state; a fresh press after idle works as before
+class SlowSTT:
+    name = "slow"
+    def __init__(self): self.gate = threading.Event()
+    def transcribe(self, path, prompt=""): self.gate.wait(5); return "and the next question"
+slow = SlowSTT(); p.stt = slow
+p.user32.down = True; until("listening again", lambda: len(states) >= 6)
+time.sleep(0.25); p.user32.down = False
+until("slow transcription starts", lambda: len(states) >= 7 and states[-1] == "transcribing")
+p.user32.down = True; time.sleep(0.3)                      # pressed during transcription: ignored
+assert len(states) == 7 and p.rec.calls == ["start", "stop", "start", "stop", "start", "stop"], (states, p.rec.calls)
+slow.gate.set()                                             # transcription ends while the key is still held
+until("idle with the key still held", lambda: len(states) >= 8)
+time.sleep(0.25)                                            # holding through idle must not start recording
+assert len(states) == 8 and len(p.rec.calls) == 6, (states, p.rec.calls)
+p.user32.down = False; time.sleep(0.15)                     # releasing the ignored press changes nothing
+assert len(states) == 8, states
+p.user32.down = True; until("a fresh press listens", lambda: len(states) >= 9 and states[-1] == "listening")
+time.sleep(0.25); p.user32.down = False
+until("the next question", lambda: len(got) >= 3 and len(states) >= 11)
+assert got[1] == got[2] == "and the next question" and states[-3:] == ["listening", "transcribing", "idle"], (got, states)
+print("ptt press during transcription ignored OK")
 
 # coach: voice question -> fast model, short answer, urgent (interrupts speech)
 class H(http.server.BaseHTTPRequestHandler):

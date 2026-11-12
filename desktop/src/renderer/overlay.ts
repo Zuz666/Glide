@@ -118,9 +118,9 @@ function connect(u: string | null): void {
   es.addEventListener("ptt", (e) => {
     const st = (JSON.parse((e as MessageEvent).data) as PttEvent).state;
     document.body.classList.toggle("ptt-listening", st === "listening");
-    document.body.classList.toggle("ptt-transcribing", st === "transcribing");
+    $("ptt").hidden = st === "idle";
+    $("ptt").className = st === "transcribing" ? "transcribing" : "listening";
     $("pttl").textContent = st === "transcribing" ? "Transcribing" : "Listening";
-    fit();
   });
   es.addEventListener("message", (e) => {
     const m: CoachMessage = JSON.parse((e as MessageEvent).data);
