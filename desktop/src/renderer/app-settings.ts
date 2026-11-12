@@ -43,6 +43,12 @@ function showVolume(v: number, muted: boolean): void {
   $("sb-vol-v").textContent = muted ? "Muted" : pct(Number(range.value));
   $("sb-vol-pop").classList.toggle("muted", muted);
   range.style.setProperty("--fill", pct(Number(range.value)));
+  const settingsVol = document.getElementById("f_app_speech_volume") as HTMLInputElement | null;
+  const fieldEl = settingsVol?.closest(".field");
+  if (settingsVol && document.activeElement !== settingsVol && !fieldEl?.classList.contains("changed")) {
+    settingsVol.value = String(v);
+    if (settingsVol.nextElementSibling) settingsVol.nextElementSibling.textContent = String(v);
+  }
 }
 
 /** A volume from the bar or the wheel: saved, and it unmutes (turning the narrator up means you want to hear it). */

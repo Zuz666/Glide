@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 import types
 import desktop_ts
@@ -66,6 +67,7 @@ app_settings = {
 }
 resize_heights = []
 
+saved_keys = {"OPENAI_API_KEY": "sk-proj-1234", "GROQ_API_KEY": "gsk-1234"}
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, *args):
@@ -138,24 +140,50 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data(None)
         if channel == "tts:voices":
             return self.send_data([{"id": "ru-RU-DmitryNeural", "name": "ru-RU-DmitryNeural · Male"}])
-        if channel == "keys:list":
+        if channel == "speech:models":
+            return self.send_data([
+                {"name": "tiny.en", "mb": 74, "note": "Fastest and smallest", "downloaded": False, "shipped": False},
+                {"name": "base.en", "mb": 141, "note": "Fast; fine for short commands", "downloaded": True, "shipped": False},
+                {"name": "small", "mb": 464, "note": "Multilingual", "downloaded": True, "shipped": False},
+            ])
+        if channel in ("keys:list", "keys:set"):
+            if channel == "keys:set":
+                env_name, val = args[0], args[1]
+                if val == "AIza-delayed-save":
+                    time.sleep(0.12)
+                if val:
+                    saved_keys[env_name] = val
+                else:
+                    saved_keys.pop(env_name, None)
             envs = [
-                ("ANTHROPIC_API_KEY", "Anthropic (Claude)", "model", False),
-                ("GEMINI_API_KEY", "Google Gemini", "model", False),
-                ("OPENROUTER_API_KEY", "OpenRouter", "model", False),
-                ("TAVILY_API_KEY", "Tavily", "search", False),
-                ("BRAVE_API_KEY", "Brave", "search", False),
-                ("GROQ_API_KEY", "Groq", "speech", True),
-                ("DEEPGRAM_API_KEY", "Deepgram", "speech", False),
-                ("OPENAI_API_KEY", "OpenAI", "voice", True),
-                ("ELEVENLABS_API_KEY", "ElevenLabs", "voice", False),
-                ("AZURE_SPEECH_KEY", "Azure Speech", "voice", False),
-                ("GOOGLE_TTS_API_KEY", "Google Cloud TTS", "voice", False),
+                ("ANTHROPIC_API_KEY", "Anthropic (Claude)", "model", None),
+                ("GEMINI_API_KEY", "Google Gemini", "model", None),
+                ("OPENROUTER_API_KEY", "OpenRouter", "model", None),
+                ("OPENAI_API_KEY", "OpenAI", "model", ["Models", "Voice", "STT", "Memory"]),
+                ("TAVILY_API_KEY", "Tavily", "search", None),
+                ("BRAVE_API_KEY", "Brave Search", "search", None),
+                ("ELEVENLABS_API_KEY", "ElevenLabs", "voice", None),
+                ("AZURE_SPEECH_KEY", "Azure Speech", "voice", None),
+                ("GOOGLE_TTS_API_KEY", "Google Cloud TTS", "voice", None),
+                ("GROQ_API_KEY", "Groq", "speech", ["STT", "Endpoint"]),
+                ("DEEPGRAM_API_KEY", "Deepgram", "speech", None),
             ]
-            status = [{"env": e, "saved": s, "fromEnv": False, "hint": "…1234" if s else ""} for e, _, _, s in envs]
-            status.append({"env": "GLIDE_ENDPOINT_PROXY_KEY", "saved": False, "fromEnv": False, "hint": ""})
+            status = [{
+                "env": e,
+                "saved": e in saved_keys,
+                "fromEnv": False,
+                "hint": ("…" + saved_keys[e][-4:]) if e in saved_keys else "",
+            } for e, _, _, _ in envs]
+            status.append({
+                "env": "GLIDE_ENDPOINT_PROXY_KEY",
+                "saved": "GLIDE_ENDPOINT_PROXY_KEY" in saved_keys,
+                "fromEnv": False,
+                "hint": ("…" + saved_keys["GLIDE_ENDPOINT_PROXY_KEY"][-4:]) if "GLIDE_ENDPOINT_PROXY_KEY" in saved_keys else "",
+            })
+            if channel == "keys:set":
+                return self.send_data(status)
             return self.send_data({
-                "known": [{"env": e, "label": l, "help": l, "kind": k} for e, l, k, _ in envs],
+                "known": [{"env": e, "label": l, "help": l, "kind": k, **({"scopes": sc} if sc else {})} for e, l, k, sc in envs],
                 "status": status,
             })
         return self.send_data(None)

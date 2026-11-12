@@ -149,7 +149,7 @@ export function showTtsStatus(s: TtsStatus): void {
     ? ` (worker: ${s.workerState}${s.totalSlots ? `, ${s.readySlots ?? 0}/${s.totalSlots} slots` : ""})`
     : "";
   wrap.title = `Coach voice: ${s.fullVoice}\nStatus: ${stateText}${workerLine}`
-    + `${s.detail ? `\nDiagnostic: ${s.detail}` : ""}\n${missingKey ? `Click to set ${missingKey} in API keys.` : "Click to open Voice settings."}`;
+    + `${s.detail ? `\nDiagnostic: ${s.detail}` : ""}\n${missingKey ? `Click to set ${missingKey} in Credentials.` : "Click to open Voice settings."}`;
 }
 
 export function refreshTtsStatus(): void {

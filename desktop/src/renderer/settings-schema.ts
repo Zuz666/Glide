@@ -23,7 +23,7 @@ export interface Field {
   invert?: boolean;               // a bool shown positively but stored as its negation ("Push-to-talk" over noPtt)
 }
 
-export interface Group { title: string; intro?: string; fields?: Field[]; special?: string }
+export interface Group { title: string; intro?: string; fields?: Field[]; special?: string; keyKind?: "model" | "voice" | "speech" | "search" }
 export interface Tab { id: string; title: string; groups: Group[] }
 
 const L = "companion.llm.";
@@ -56,9 +56,15 @@ export const SCHEMA: Tab[] = [
     ],
   },
   {
-    id: "keys", title: "API keys", groups: [
-      { title: "Service API keys", special: "keys",
-        intro: "Credentials for AI models, speech recognition, speech synthesis and search. Keys are encrypted with your Windows account and passed to the coach when it starts. They are never written to config.json. Changes apply on the next coach restart." },
+    id: "keys", title: "Credentials", groups: [
+      { title: "AI coaching & multi-service models", special: "keys", keyKind: "model",
+        intro: "One model credential (or a local server under AI models > Custom endpoints) turns AI coaching and translation on. OpenAI's key also covers OpenAI voice, push-to-talk and memory search. Stored encrypted with your Windows account; engine credentials apply on the next coach restart." },
+      { title: "Voice synthesis (TTS)", special: "keys", keyKind: "voice",
+        intro: "Optional cloud voices for Settings > Voice. Windows SAPI5 and Edge-TTS need no credential; OpenAI TTS uses OPENAI_API_KEY above." },
+      { title: "Speech recognition (Push-to-talk)", special: "keys", keyKind: "speech",
+        intro: "Optional online speech-to-text. Bundled Whisper and Windows speech work offline without a credential; OpenAI transcription uses OPENAI_API_KEY above." },
+      { title: "Web search", special: "keys", keyKind: "search",
+        intro: "Optional live web lookup for Gemini, OpenRouter and custom-endpoint models. Claude models search without a separate key." },
     ],
   },
   {
@@ -209,12 +215,14 @@ export const SCHEMA: Tab[] = [
         { key: "companion.voice.output", label: "Spoken by", type: "select",
           options: [["app", "this app (Windows or online voices, below)"], ["windows", "the coach's own Windows speech process"]] },
         { key: "companion.voice.announce", label: "Announce readiness at startup", type: "bool" },
+        { key: "app:speech.rate", label: "Speed", type: "range", def: 1, min: 0.5, max: 2, step: 0.05,
+          help: "Playback speed multiplier (1 = normal). Applies to online voices, Windows SAPI5 and the Windows speech process." },
+        { key: "app:speech.volume", label: "Volume", type: "range", def: 1, min: 0, max: 1, step: 0.05,
+          help: "Narrator volume (also adjustable from the speaker icon in the session bar)." },
       ] },
       { title: "Coach voice", special: "voices" },
       { title: "Windows speech process", intro: "Only used when \"Spoken by\" is the coach's own process.", fields: [
         { key: "companion.voice.voice", label: "Voice name", type: "text", help: "e.g. Microsoft Zira Desktop. Empty: the Windows default." },
-        { key: "companion.voice.rate", label: "Rate", type: "range" },
-        { key: "companion.voice.volume", label: "Volume", type: "range" },
       ] },
       { title: "Push-to-talk", fields: [
         { key: "companion.ptt.enabled", label: "Push-to-talk", type: "bool" },

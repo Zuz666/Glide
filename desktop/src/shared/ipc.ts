@@ -444,7 +444,7 @@ export interface RxpImportResult {
  * free or cheapest way to use it. */
 export interface KeyGuide { url: string; steps: string[]; looks?: string; cost?: string; plan?: "free" | "free-tier" | "credit" | "paid";
   free?: string; links?: { label: string; url: string }[] }
-export interface KnownKey { env: string; label: string; help: string; kind: "model" | "search" | "voice"; guide?: KeyGuide }
+export interface KnownKey { env: string; label: string; help: string; kind: "model" | "voice" | "speech" | "search"; scopes?: string[]; guide?: KeyGuide }
 /** A key's state for the window: never the key, only whether it is set and its last characters (hint). */
 export interface KeyStatus { env: string; saved: boolean; fromEnv: boolean; hint: string }
 

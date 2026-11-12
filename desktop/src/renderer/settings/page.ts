@@ -11,6 +11,7 @@ import { live } from "../state.js";
 import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
 import { keyRequirementHtml, loadConfiguredKeys, modelRequirementHtml, STT_ENGINE_KEY } from "./key-links.js";
+import { activateCredentialRow } from "./keys.js";
 import { bindModelReasoning } from "./model-picker.js";
 import { highlightSearch, queryWords, searchQuery, searchSchema, setSearchQuery } from "./search.js";
 import { bindThinkingHelp } from "./thinking-help.js";
@@ -139,6 +140,11 @@ export function registerPanels(p: Record<string, Panel>): void {
 
 /** Go to the Settings page on one section, optionally scrolling to a subsection or field. */
 export function openSettingsTab(id: string, target?: string): void {
+  if (id === "keys" && target?.startsWith("key:")) {
+    activateCredentialRow(target.slice(4));
+  } else if (id === "keys" && !target) {
+    activateCredentialRow(null);
+  }
   pendingScrollTarget = target;
   tab = id;
   setSearchQuery("");
@@ -171,7 +177,7 @@ export async function renderSettings(): Promise<void> {
     : focused?.dataset.effort ? `[data-effort="${CSS.escape(focused.dataset.effort)}"]` : null;
   const selection = focused instanceof HTMLInputElement && ["text", "search"].includes(focused.type)
     ? [focused.selectionStart, focused.selectionEnd] : null;
-  const heights = new Map([...body.querySelectorAll<HTMLElement>("[data-special]")].map((el) => [el.dataset.special!, el.offsetHeight]));
+  const heights = new Map([...body.querySelectorAll<HTMLElement>("[data-special]")].map((el) => [el.parentElement?.dataset.group || el.dataset.special!, el.offsetHeight]));
   renderedView = view;
   body.style.overflowAnchor = "none";
   const shown: { g: Group; fields: Field[]; crumb?: string }[] = searching
@@ -186,7 +192,7 @@ export async function renderSettings(): Promise<void> {
     fields.forEach(bindField);
     if (g.special) {
       const host = $(`grp_${i}`);
-      if (sameView) host.style.minHeight = `${heights.get(g.special) || 0}px`;
+      if (sameView) host.style.minHeight = `${heights.get(host.parentElement?.dataset.group || g.special) || 0}px`;
       pending.push(Promise.resolve(panels[g.special]?.(g, host)).finally(() => {
         host.style.minHeight = "";
         if (revision === renderRevision) restoreView();
@@ -258,6 +264,14 @@ async function saveSettings(restart: boolean): Promise<void> {
       const leaf = key.slice(LLM.length);
       if (key.startsWith(LLM) && LIVE.has(leaf)) tunable[leaf] = v === null ? f!.def : v;
     }
+  }
+  if (submitted.has("app:speech.rate")) {
+    const mult = Number(getPath(appPatch, "speech.rate") ?? 1) || 1;
+    cfgPatch = merge(cfgPatch, patchFor("companion.voice.rate", Math.max(-10, Math.min(10, Math.round(10 * Math.log10(mult))))));
+  }
+  if (submitted.has("app:speech.volume")) {
+    const vol = Number(getPath(appPatch, "speech.volume") ?? 1);
+    cfgPatch = merge(cfgPatch, patchFor("companion.voice.volume", Math.max(0, Math.min(100, Math.round(vol * 100)))));
   }
   if (getPath(cfgPatch, "companion.voice.language") !== undefined && live.appSettings.speech?.provider === "edge") {
     const language = languageCode(getPath(cfgPatch, "companion.voice.language"));

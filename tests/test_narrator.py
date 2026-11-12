@@ -138,7 +138,7 @@ globalThis.glide = { invoke: (ch, ...a) => {
     return Promise.resolve();
   }
   if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
-  if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
+  if (ch === "tts:windowsSpeak") { nativeOpts.push({ text: a[1], rate: a[2]?.rate, volume: a[2]?.volume }); return nativeSpeak(a[0], a[1]); }
   if (ch === "tts:windowsStop") return nativeStop(a[0]);
   if (ch === "tts:playbackState") { playback.push(a[0]); return Promise.resolve(); }
   if (ch !== "tts:synth") return Promise.resolve();
@@ -158,6 +158,7 @@ onNativeStarted = (id) => speech.onTtsStatus({
 });
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
 const out = {};
+const nativeOpts = [];
 const take = (name) => { out[name] = log.splice(0); out[name + "_pb"] = playback.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
 
@@ -240,6 +241,14 @@ p = mark(speech.speakAndWait("edge-guide", "g"), "resolved:edge-guide");
 speech.say("edge-coach");
 await sleep(20); speech.cancel("g"); await p;
 await sleep(DUR * 3); take("edge_cancel");
+// Per-utterance preview overrides must not leak into subsequent coach callouts.
+speech.configure(false, { provider: "windows", voiceName: "Microsoft Zira", rate: 1.15, volume: 0.75 });
+nativeOpts.length = 0;
+speech.say("sample-draft", true, "", "", { rate: 1.85, volume: 0 });
+await sleep(DUR + 15);
+speech.say("normal-callout");
+await sleep(DUR + 15);
+out.preview_opts = nativeOpts.slice();
 console.log(JSON.stringify(out));
 """
 
@@ -311,4 +320,8 @@ assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_
 assert "Installed native voice (SAPI5), generated in 12ms," in got["win_last_line"], got["win_last_line"]
 assert "openai (online voice), generated in 2.42s," in got["online_last_line"], got["online_last_line"]
 assert "generated in " in got["edge_last_line"] and "ms," in got["edge_last_line"], got["edge_last_line"]
+assert got["preview_opts"] == [
+    {"text": "sample-draft", "rate": 1.85, "volume": 0},
+    {"text": "normal-callout", "rate": 1.15, "volume": 0.75},
+], got["preview_opts"]
 print("OK")

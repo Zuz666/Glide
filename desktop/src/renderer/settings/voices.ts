@@ -7,6 +7,7 @@ import { speech, voiceLastLine } from "../narrator.js";
 import { Group } from "../settings-schema.js";
 import { filterEdgeVoices, speechLanguage as language, voiceSample } from "../speech-language.js";
 import { live } from "../state.js";
+import { edits } from "./fields.js";
 import { keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
@@ -24,12 +25,21 @@ const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], 
 
 const field = (label: string, help: string, ctl: string) =>
   `<div class="field"><div class="lab">${label}${help ? `<small>${help}</small>` : ""}</div><div class="ctl">${ctl}</div></div>`;
-const keyNote = (env: string) => env ? `<span id="sv-key-note">${keyRequirementHtml(env, null)}</span>` : "";
+const keyNote = (env: string) => env ? `<div id="sv-key-note" class="ctl-subnote">${keyRequirementHtml(env, null)}</div>` : "";
 const options = (list: [string, string][], cur: string) =>
   list.map(([m, l]) => `<option value="${m}" ${m === cur ? "selected" : ""}>${l}</option>`).join("");
 /** A voice picker filled by Load voices; until then it shows the saved voice (or the provider's default). */
 const voiceList = (help: string, id: string, shown: string) =>
   field("Voice", help, `<select id="sv-voicelist"><option value="${esc(id)}">${esc(shown)}</option></select><button class="btn" id="sv-load">Load voices</button>`);
+const VOICE_SETUP_GUIDE = `<details class="keyhow voice-setup-guide"><summary>How to set up free voices (Windows SAPI5, SileroTTS &amp; Edge-TTS)</summary>
+  <p class="keyfree"><b>Offline speech · Windows SAPI5 &amp; SileroTTS</b></p>
+  <ol><li>Install a Windows language voice pack or a third-party SAPI5 engine. SileroTTS provides local CIS-language neural voices.</li><li>Select <b>Windows voices (SAPI5, offline)</b> above, click <b>Reload voices</b>, pick your voice and click <b>Play a sample</b>.</li></ol>
+  <div class="row"><button type="button" class="btn primary" id="sv-silero">${icon("external-link")}SileroTTS for Windows</button><button type="button" class="btn" id="sv-win-speech">${icon("external-link")}Windows speech settings</button><button type="button" class="btn" id="sv-sapi-panel">${icon("external-link")}SAPI5 voice panel</button></div>
+  <p><b>Online speech · Edge-TTS (experimental)</b></p>
+  <p>Free online neural and multilingual voices without registration or an API key. Because this unofficial Microsoft service can occasionally fail or rate-limit requests, keep a working Windows SAPI5 voice installed for automatic fallback.</p>
+  <ol><li>Select <b>Edge-TTS</b> above and click <b>Load voices</b>. Pick a voice for your language, or enable <b>Multilingual voices only</b>.</li><li>For dependable offline play, select <b>Windows voices (SAPI5, offline)</b> instead.</li></ol>
+</details>`;
+
 
 /** The controls only this provider has. */
 function providerFields(prov: string, sp: SpeechSettings): string {
@@ -71,10 +81,8 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   const prov = sp.provider || "windows";
   const save = (patch: Obj) => updateAppSettings({ speech: patch });
   host.innerHTML = field("Voice service", "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If online synthesis fails, the unspoken text uses the selected Windows voice.",
-      `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}`)
+      `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}${VOICE_SETUP_GUIDE}`)
     + providerFields(prov, sp)
-    + field("Speed", "", `<input type="range" id="sv-rate" min="0.5" max="2" step="0.05" value="${sp.rate ?? 1}"><span class="rangeval">${sp.rate ?? 1}</span>`)
-    + field("Volume", "", `<input type="range" id="sv-vol" min="0" max="1" step="0.05" value="${sp.volume ?? 1}"><span class="rangeval">${sp.volume ?? 1}</span>`)
     + field("Try it", "Uses the saved speech language; save language changes above first. The coach uses this voice when Spoken by is set to this app.", `<button class="btn" id="sv-test" disabled>${icon("volume-2")}Play a sample</button><span id="sv-sample" class="help voice-text" aria-live="polite">Preparing sample…</span>`)
     + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
@@ -87,6 +95,9 @@ export function renderVoices(g: Group, host: HTMLElement): void {
       }
     });
   }
+  host.querySelector<HTMLButtonElement>("#sv-silero")!.onclick = () => call("shell:open", "https://github.com/snakers4/silero-models/releases/tag/v5.6");
+  host.querySelector<HTMLButtonElement>("#sv-win-speech")!.onclick = () => call("shell:open", "ms-settings:speech");
+  host.querySelector<HTMLButtonElement>("#sv-sapi-panel")!.onclick = () => call("shell:speechPanel");
   $("sv-prov").onchange = async (e) => {
     const provider = (e.target as HTMLSelectElement).value;
     if (provider === "edge" && !edgeVoice(sp).startsWith(`${language()}-`)) {
@@ -98,19 +109,17 @@ export function renderVoices(g: Group, host: HTMLElement): void {
     } else await save({ provider });
     renderVoices(g, host);
   };
-  const range = (id: string, key: string) => $(id).addEventListener("change", () => {
-    ($(id).nextElementSibling as HTMLElement).textContent = $<HTMLInputElement>(id).value;
-    save({ [key]: Number($<HTMLInputElement>(id).value) });
-  });
-  range("sv-rate", "rate");
-  range("sv-vol", "volume");
   const sampleButton = host.querySelector<HTMLButtonElement>("#sv-test")!;
   const sampleText = host.querySelector<HTMLElement>("#sv-sample")!;
   void voiceSample().then((text) => {
     if (!sampleButton.isConnected) return;
     sampleText.textContent = text;
     sampleButton.disabled = false;
-    sampleButton.onclick = () => speech.say(text, true);
+    sampleButton.onclick = () => {
+      const draftRate = edits.has("app:speech.rate") ? Number(edits.get("app:speech.rate") ?? 1) : undefined;
+      const draftVol = edits.has("app:speech.volume") ? Number(edits.get("app:speech.volume") ?? 1) : undefined;
+      speech.say(text, true, "", "", { rate: draftRate, volume: draftVol });
+    };
   });
   if (prov === "windows") $("sv-voice").onchange = (e) => save({ voiceName: (e.target as HTMLSelectElement).value });
   if (prov === "openai") {
