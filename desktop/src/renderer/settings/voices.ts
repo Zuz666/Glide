@@ -3,7 +3,7 @@
 import { updateAppSettings } from "../app-settings.js";
 import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
-import { speech, voiceLastLine } from "../narrator.js";
+import { speech, voiceLastLineHtml } from "../narrator.js";
 import { Field, Group } from "../settings-schema.js";
 import { filterEdgeVoices, LANGUAGE_OPTIONS, languageCode, speechLanguage as language, voiceSample } from "../speech-language.js";
 import { live } from "../state.js";
@@ -189,7 +189,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
     + providerFields(prov, sp)
     + (showProcess ? `<section class="voice-process"><h3>Windows speech process</h3><p id="sv-process-summary" aria-live="polite"></p>${process.map(fieldHtml).join("")}${prov !== "windows" ? `<button type="button" class="btn" id="sv-process-load">Reload Windows voices</button>` : ""}</section>` : "")
     + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option><option value="custom">Custom text</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><textarea id="sv-sample" class="voice-text" aria-label="Voice test text" rows="2" placeholder="Preparing template…"></textarea></div>`)
-    + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
+    + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${voiceLastLineHtml()}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
   const activeEnv = PROVIDERS.find((p) => p[0] === prov)?.[2] || "";
   if (activeEnv) {

@@ -25,6 +25,7 @@
  },
  "ipc": {
   "events": [
+   "app:datesChanged",
    "app:notice",
    "app:settings",
    "engine:logline",
@@ -46,6 +47,7 @@
    "addon:rxpRoutes",
    "addon:status",
    "app:changelog",
+   "app:dates",
    "app:info",
    "app:logs",
    "app:mute",

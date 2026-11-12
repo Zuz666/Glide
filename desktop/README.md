@@ -176,6 +176,12 @@ If you run Glide from source with `start-glide.cmd`, without the desktop app, th
   An online engine that fails falls back to the offline one for that question.
 - **Whisper set-up:** the model isn't in the installer. The app checks Whisper at every start, downloads the picked model into `%APPDATA%\Glide to 60\models` (kept across updates and reinstalls), and restarts the coach to use it. Progress shows in the footer. Settings > Push-to-talk lists every model with its size, to download ahead of time or delete.
 
+## Dates and times
+
+Glide follows your Windows regional date and time formats, including custom formats and your current time zone. Changes apply without restarting the app. The Coach screen inside Glide uses the same formats; opened separately, it follows your browser's preferences instead. Interface and speech languages do not override these choices.
+
+Release and publication dates keep their original calendar day. Durations and countdowns are unchanged; copied diagnostic logs retain ISO timestamps.
+
 ## Zoom
 
 **Ctrl + mouse wheel** zooms the whole window, the coach screen included, like a browser. Ctrl+= and Ctrl+- also zoom, and Ctrl+0 resets. The zoom level is remembered.

@@ -28,6 +28,7 @@ import glideconfig  # noqa: E402
 from probe_dashboard import edge  # noqa: E402
 import app as companion_app  # noqa: E402
 import health as health_mod  # noqa: E402
+import dashboard as dashboard_mod  # noqa: E402
 from coach import Coach, CoachDeps  # noqa: E402
 from glidedb import GlideDB  # noqa: E402
 
@@ -66,6 +67,11 @@ app_settings = {
     "overlay": {"enabled": True, "collapsed": False, "opacity": 0.85, "fontSize": 13},
 }
 resize_heights = []
+with open(os.path.join(HERE, "golden", "fixtures", "dashboard_init.json"), encoding="utf-8") as fh:
+    date_coach_init = json.load(fh)
+date_coach_hub = dashboard_mod.Hub()
+date_coach_hub.snapshot, date_coach_hub.messages = date_coach_init["state"], date_coach_init["messages"]
+date_coach_server = dashboard_mod.serve(date_coach_hub, 0, token="date-coach-test")
 
 saved_keys = {"OPENAI_API_KEY": "sk-proj-1234", "GROQ_API_KEY": "gsk-1234"}
 
@@ -84,12 +90,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             return self.send_data(index_html, content_type="text/html; charset=utf-8")
+        if self.path == "/date-coach-url":
+            return self.send_data("http://127.0.0.1:%d" % date_coach_server.server_address[1])
         if self.path == "/overlay.html":
             return self.send_data(overlay_html, content_type="text/html; charset=utf-8")
         if self.path == "/app.css":
             return self.send_data(app_css, content_type="text/css; charset=utf-8")
         if self.path == "/glide.css":
             return self.send_data(glide_css, content_type="text/css; charset=utf-8")
+        if self.path == "/date-time-display.js":
+            with open(os.path.join(SHARED_STATIC, "date-time-display.js"), encoding="utf-8") as fh:
+                return self.send_data(fh.read(), content_type="text/javascript; charset=utf-8")
         if self.path.startswith("/fonts/"):
             font_path = os.path.join(SHARED_STATIC, self.path.lstrip("/"))
             if os.path.isfile(font_path):
@@ -292,5 +303,7 @@ try:
 finally:
     server.shutdown()
     server.server_close()
+    date_coach_server.shutdown()
+    date_coach_server.server_close()
     thread.join(timeout=2)
     shutil.rmtree(tmp, ignore_errors=True)

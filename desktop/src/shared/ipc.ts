@@ -5,6 +5,7 @@
 // TYPE-ONLY: the main process (CommonJS) and the renderer (ES modules) both compile this file into dist/shared, and
 // the sandboxed preload can't load a local module at all, so nothing here may exist at run time. Import it with
 // `import type` only.
+import type { DateTimeRequest } from "./date-time";
 
 /** Free-form JSON: config.json, the release notes. */
 export type Obj = Record<string, any>;
@@ -472,6 +473,7 @@ export interface InvokeMap {
   "app:logs": () => string;                   // open the log files' folder (userData/logs): "" or why it couldn't
   "app:changelog": () => Obj;
   "app:mute": (muted: boolean) => boolean;
+  "app:dates": (requests: DateTimeRequest[]) => string[];
   "tts:synth": (text: string, style?: string, tone?: string, requestId?: string) => { mime: string; data: Uint8Array; attribution: LogAttribution };
   "tts:voices": (provider: TtsProvider) => Voice[];
   "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">) => { voice: string };
@@ -527,6 +529,7 @@ export interface EventMap {
   "engine:logline": LogLine;
   "app:settings": AppSettings;
   "app:notice": string;
+  "app:datesChanged": void;
   "update:status": UpdateStatus;
   "speech:status": SpeechStatus;
   "res:sample": Footprint;

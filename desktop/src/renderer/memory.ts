@@ -3,6 +3,7 @@
 // /reminders); the reminders also arrive with every state on the stream. The search box narrows the notes and the
 // characters' lines to the ones with every word typed (memory-search.ts), to edit or forget them.
 import { $, esc, icon, toast } from "./dom.js";
+import { dateTimeHtml } from "./date-time.js";
 import { markWords, noteMatches, searchWords } from "./memory-search.js";
 import { currentPage } from "./nav.js";
 import { engineGet, enginePost, live } from "./state.js";
@@ -82,13 +83,12 @@ function renderMemory(): void {
 }
 
 function noteHtml(n: Obj, words: string[]): string {
-  const when = (t: number) => new Date(t * 1000).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const [ic, src] = MEM_SOURCE[n.source] || ["user", n.source];
   const body = editing === n.id
     ? `<input data-edit="${n.id}" value="${esc(drafts[`n${n.id}`] ?? n.text)}" aria-label="Edit note">`
     : markWords(n.text, words, esc);
   return `<div class="note${n.pinned ? " pinned" : ""}"><div><div class="txt">${body}</div>
-        <div class="meta"><span>${icon(ic)}${esc(src)}</span><span>${n.updated !== n.created ? "Updated" : "Added"} ${when(n.updated)}</span>${n.used ? `<span>Used ${n.used}×</span>` : ""}</div></div>
+        <div class="meta"><span>${icon(ic)}${esc(src)}</span><span>${n.updated !== n.created ? "Updated" : "Added"} ${dateTimeHtml(n.updated * 1000, "date")}</span>${n.used ? `<span>Used ${n.used}×</span>` : ""}</div></div>
         <div class="acts">
           <button class="btn ghost icon-only${n.pinned ? " on" : ""}" data-pin="${n.id}" title="${n.pinned ? "Unpin" : "Pin: always include it"}" aria-label="${n.pinned ? "Unpin" : "Pin"}">${icon(n.pinned ? "pin-off" : "pin")}</button>
           <button class="btn ghost icon-only" data-ed="${n.id}" title="${editing === n.id ? "Save" : "Edit"}" aria-label="Edit">${icon(editing === n.id ? "check" : "pencil")}</button>

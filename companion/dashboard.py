@@ -440,7 +440,8 @@ def build_page():
             return fh.read()
     page = read("dashboard.html")
     for mark, name in (("/*GLIDE_CSS*/", "glide.css"), ("/*DASHBOARD_CSS*/", "dashboard.css"),
-                       ("<!--ICONS-->", "icons.svg"), ("/*DASHBOARD_JS*/", "dashboard.js")):
+                       ("<!--ICONS-->", "icons.svg"), ("/*DATE_TIME_JS*/", "date-time-display.js"),
+                       ("/*DASHBOARD_JS*/", "dashboard.js")):
         page = page.replace(mark, read(name), 1)
     return page
 

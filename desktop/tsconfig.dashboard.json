@@ -13,5 +13,5 @@
     "strict": false,
     "skipLibCheck": true
   },
-  "files": ["../companion/static/dashboard.js"]
+  "files": ["../companion/static/date-time-display.js", "../companion/static/dashboard.js"]
 }

@@ -36,6 +36,7 @@ export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": """
+export { esc } from "./real-dom.js";
 export const toast = (..._a: unknown[]) => undefined;
 const els: Record<string, any> = {};
 (globalThis as any).els = els;
@@ -249,9 +250,12 @@ console.log(JSON.stringify(out));
 tmp = tempfile.mkdtemp(prefix="glide-barge-in-")
 try:
     files = {f"renderer/{name}": data for name, data in STUBS.items()}
+    with open(os.path.join(RENDERER, "dom.ts"), encoding="utf-8") as fh:
+        files["renderer/real-dom.ts"] = fh.read()
     for name, folder, dest in (("coach.ts", RENDERER, "renderer"), ("narrator.ts", RENDERER, "renderer"),
                                ("edge-speech.ts", RENDERER, "renderer"), ("engine.ts", SHARED, "shared"),
-                               ("ipc.ts", SHARED, "shared")):
+                               ("ipc.ts", SHARED, "shared"), ("date-time.ts", SHARED, "shared"),
+                               ("date-time.ts", RENDERER, "renderer")):
         with open(os.path.join(folder, name), encoding="utf-8") as fh:
             files[f"{dest}/{name}"] = fh.read()
     out = desktop_ts.compiled("barge-in", files, ["renderer/coach.ts", "--target", "ES2023", "--module", "ES2022",

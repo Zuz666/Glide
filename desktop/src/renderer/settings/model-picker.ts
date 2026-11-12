@@ -1,6 +1,7 @@
 // Settings > Choose models applies catalogue picks live; manual ids and effort share Save/Revert.
 import { call } from "../bridge.js";
 import { esc, icon, toast } from "../dom.js";
+import { bindDateTime, clearDateTime, dateTimeHtml } from "../date-time.js";
 import { MANIFEST } from "../settings-manifest.js";
 import { Group } from "../settings-schema.js";
 import { engineGet, enginePost, live } from "../state.js";
@@ -55,11 +56,30 @@ function effortOptions(levels: string[], effort: string): string {
     levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level === "none" ? "None (no reasoning)" : level)}</option>`).join("");
 }
 
-function reasoningHelp(info?: Obj): string {
+/** Only the backend's dedicated exclusion reason carries this canonical availability date. */
+function shutdownDate(info?: Obj): string | undefined {
+  if (info?.suitability !== "excluded" || typeof info.reason !== "string") return;
+  return /^shut down on (\d{4}-\d{2}-\d{2})$/.exec(info.reason)?.[1];
+}
+
+function reasoningHelpHtml(info?: Obj): string {
   if (!info) return `Checking reasoning choices… ${EFFORT_HELP}`;
   if (info.unavailable) return `Reasoning lookup is unavailable. Refresh the model list to retry, or use Auto. ${EFFORT_HELP}`;
-  if (info.suitability === "excluded" && info.reason) return `Excluded official OpenAI model (${info.reason}); pick a conversational coach model.`;
+  if (info.suitability === "excluded" && info.reason) {
+    const date = shutdownDate(info);
+    return `Excluded official OpenAI model (${date ? `shut down on ${dateTimeHtml(date, "date")}` : esc(info.reason)}); pick a conversational coach model.`;
+  }
   return `${EFFORT_HELP}${!info.levels.length ? " No explicit levels are available for this model." : ""}`;
+}
+
+function bindReasoningTitle(el: HTMLElement, info?: Obj): void {
+  const date = shutdownDate(info);
+  if (date && info?.note === `Excluded official OpenAI model (${info?.reason}).`) {
+    bindDateTime(el, date, "date", { attribute: "title", prefix: "Excluded official OpenAI model (shut down on ", suffix: ")." });
+  } else {
+    clearDateTime(el);
+    el.title = info?.note || "";
+  }
 }
 
 /** Manual ids and effort share Save/Revert, including unsaved ids not in the catalogue. */
@@ -102,8 +122,8 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
         select.innerHTML = effortOptions(levels, effort);
         select.disabled = !levels.length && effort === "auto";
         if (note) {
-          note.innerHTML = `${esc(reasoningHelp(info))} ${AUTO_THINKING_HELP} Save to apply.`;
-          note.title = info?.note || "";
+          note.innerHTML = `${reasoningHelpHtml(info)} ${AUTO_THINKING_HELP} Save to apply.`;
+          bindReasoningTitle(note, info);
         }
       };
       show();
@@ -131,7 +151,10 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
       // Reuse bindField's change handler, including its default and dirty-state semantics.
       select.dispatchEvent(new Event("change", { bubbles: true }));
       select.disabled = true;
-      if (note) note.innerHTML = `Reasoning resets to Auto when the model changes. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
+      if (note) {
+        note.innerHTML = `Reasoning resets to Auto when the model changes. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
+        bindReasoningTitle(note);
+      }
       timer = window.setTimeout(() => { if (!signal.aborted && row.isConnected) void load(); }, 250);
     }, { signal });
     signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
@@ -154,8 +177,9 @@ function roleHtml(
     .sort((a, b) => (MORDER[a.provider] ?? 9) - (MORDER[b.provider] ?? 9) || (costs.get(a.id) ?? 1e9) - (costs.get(b.id) ?? 1e9));
   const groups: Record<string, Obj[]> = { anthropic: [], gemini: [], endpoint: [], openrouter: [] };
   list.forEach((m) => (groups[m.provider] || groups.openrouter).push(m));
-  const missingReason = info?.suitability === "excluded" && info?.reason ? `excluded: ${info.reason}` : "not in the list";
-  const opts = (cur && !all.some((m) => m.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (${esc(missingReason)})</option>` : "") +
+  const shutdown = shutdownDate(info);
+  const missingReason = shutdown ? "excluded: shut down on " : info?.suitability === "excluded" && info?.reason ? `excluded: ${info.reason}` : "not in the list";
+  const opts = (cur && !all.some((m) => m.id === cur) ? `<option value="${esc(cur)}" selected${shutdown ? ` data-shutdown-date="${esc(shutdown)}"` : ""}>${esc(cur)} (${esc(missingReason)})</option>` : "") +
     Object.entries(groups).filter(([, v]) => v.length).map(([g, v]) => `<optgroup label="${MGROUP[g]}">${v.map((m) => {
       const c = costs.get(m.id);
       return `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(mlabel(m))}${c != null ? `, about $${per(c)} an hour` : ""}</option>`;
@@ -171,13 +195,13 @@ function roleHtml(
         <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(models.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div>
         <label class="help" for="mp-effort-${path}">Reasoning effort</label>
         <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>${effortOptions(levels, effort)}</select>
-        <div class="mcost" title="${esc(info?.note || "")}">${esc(reasoningHelp(info))} ${AUTO_THINKING_HELP} Changes save immediately.</div></div></div>`;
+        <div class="mcost" data-reasoning-note="${path}">${reasoningHelpHtml(info)} ${AUTO_THINKING_HELP} Changes save immediately.</div></div></div>`;
 }
 
 function listHtml(models: Obj, configuredKeys?: ReadonlySet<string> | null): string {
   const st = models.status || {};
   const issues = formatCatalogIssuesHtml(st, live.config, configuredKeys);
-  return `<div class="field"><div class="lab">The list<small>${esc(`${st.count || 0} models${st.updated ? `, listed ${new Date(st.updated * 1000).toLocaleString()}` : ""}.`)}${issues ? ` ${issues}` : ""}</small></div>
+  return `<div class="field"><div class="lab">The list<small>${esc(st.count || 0)} models${st.updated ? `, listed ${dateTimeHtml(st.updated * 1000, "dateTime")}` : ""}.${issues ? ` ${issues}` : ""}</small></div>
       <div class="ctl"><button class="btn" id="mp-refresh">${icon("refresh-cw")}Refresh the list</button><span class="help">Spent this session: $${per(models.spent_usd || 0)}</span></div></div>`;
 }
 
@@ -211,6 +235,13 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
     const scroll: [HTMLElement, number, number][] = [];
     for (let el = host.parentElement; el; el = el.parentElement) scroll.push([el, el.scrollTop, el.scrollLeft]);
     host.innerHTML = ROLES.map((role) => roleHtml(models!, role, filters[role[0]], models!.reasoning?.[role[0]], configuredKeys)).join("") + listHtml(models, configuredKeys);
+    host.querySelectorAll<HTMLOptionElement>("option[data-shutdown-date]").forEach((option) => {
+      bindDateTime(option, option.dataset.shutdownDate!, "date", { prefix: `${option.value} (excluded: shut down on `, suffix: ")" });
+    });
+    for (const [path] of ROLES) {
+      const note = host.querySelector<HTMLElement>(`[data-reasoning-note="${path}"]`);
+      if (note) bindReasoningTitle(note, models.reasoning?.[path]);
+    }
     host.style.minHeight = "";
     host.querySelectorAll<HTMLInputElement>("[data-filter]").forEach((input) => (input.oninput = () => {
       if (!connected()) return;

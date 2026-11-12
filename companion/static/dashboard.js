@@ -76,7 +76,32 @@ const formatNumber = (v) => typeof v === 'number' ? v.toLocaleString() : esc(v ?
 
 const formatLevel = (v) => typeof v === 'number' ? v.toFixed(2) : '–';
 
-const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+// Calendar strings are kept distinct from instants; only these leaves change when preferences change.
+const dateLabel = (value, style) => `<time data-date-value="${esc(value)}" data-date-kind="${typeof value === 'string' ? 'calendar' : 'instant'}" data-date-style="${style}">${esc(window.glideDates.text(value, style))}</time>`;
+
+if (window.parent !== window && new URLSearchParams(location.hash.slice(1)).get('dates') === 'native') {
+  let nextDateRequest = 0;
+  const dateRequests = new Map();
+  const dateParentOrigin = document.referrer ? new URL(document.referrer).origin : 'null';
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.origin !== dateParentOrigin) return;
+    if (event.data?.type === 'glide:datesChanged') window.glideDates.refresh();
+    if (event.data?.type !== 'glide:datesResult') return;
+    const pending = dateRequests.get(event.data.id);
+    if (!pending) return;
+    dateRequests.delete(event.data.id);
+    clearTimeout(pending.timer);
+    if (event.data.error) pending.reject(Error(event.data.error));
+    else pending.resolve(event.data.values);
+  });
+  window.glideDates.useFormatter((requests) => new Promise((resolve, reject) => {
+    const id = ++nextDateRequest;
+    const timer = setTimeout(() => { dateRequests.delete(id); reject(Error('Date formatting response timed out')); }, 5000);
+    dateRequests.set(id, { resolve, reject, timer });
+    // Electron's file: parent has an opaque origin. The parent validates the exact frame and engine origin.
+    window.parent.postMessage({ type: 'glide:dates', id, requests }, '*');
+  }));
+}
 
 function timeAgo(ms) {
   const m = Math.round(ms / 60000);
@@ -368,7 +393,7 @@ function initXpChartHover() {
     const vsRoute = bench > 0
       ? ` <span class="${value >= bench ? 'up' : 'down'}">${value >= bench ? '+' : '−'}${Math.abs(Math.round((value / bench - 1) * 100))}% vs route</span>`
       : '';
-    tip.innerHTML = `<b>${formatCompact(value)}</b> XP/h${vsRoute}<small>${clockTime(time)}, ${timeAgo(Date.now() - time)}</small>`;
+    tip.innerHTML = `<b>${formatCompact(value)}</b> XP/h${vsRoute}<small>${dateLabel(time, 'shortTime')}, ${timeAgo(Date.now() - time)}</small>`;
     tip.hidden = false;
     const tw = tip.offsetWidth;
     tip.style.left = Math.max(0, Math.min(r.width - tw, px - tw / 2)) + 'px';
@@ -907,7 +932,7 @@ function renderLevels(d) {
 /** @param {Community | null | undefined} c */
 function renderCommunity(c) {
   if (!c) return;
-  $('commhdr').textContent = `${c.total} notes, last scan ${c.last_scan || 'never'}`;
+  $('commhdr').innerHTML = `${c.total} notes, last scan ${c.last_scan ? dateLabel(c.last_scan, 'date') : 'never'}`;
   fillSection('comm', (c.notes || []).map(communityNote).join(''), 'No community notes yet.');
 }
 
@@ -915,7 +940,7 @@ function renderCommunity(c) {
 function communityNote(note) {
   const source = (note.sources || [])[0] || {};
   return `<div class="cn"><span class="pill ${esc(note.status)}">${esc(note.status)}</span><b>${esc(note.kind)}</b> ${esc(note.claim)}`
-    + `<small>${esc(note.published || '')}${note.levels ? ', levels ' + note.levels.join('–') : ''}${source.medium ? ', ' + esc(source.medium) : ''}`
+    + `<small>${note.published ? dateLabel(note.published, 'date') : ''}${note.levels ? ', levels ' + note.levels.join('–') : ''}${source.medium ? ', ' + esc(source.medium) : ''}`
     + `${/^https?:\/\//i.test(source.url || '') ? `, <a href="${esc(source.url)}" target="_blank" rel="noopener">source</a>` : ''}</small></div>`;
 }
 
@@ -1014,7 +1039,7 @@ function showMessage(m) {
     ? `<span class="facts">Web: ${m.web_sources.filter((w) => /^https?:\/\//.test(w.url)).map(source).join(', ')}</span>` : '';
   const speaker = SPEAKER[m.kind] || m.kind;
   el.title = m.model ? `${speaker}, ${m.model}` : '';
-  el.innerHTML = `<span class="ts">${clockTime(m.t * 1000)}</span><span class="by">${esc(speaker)}:</span>${esc(m.text)}${video}${web}${facts}`;
+  el.innerHTML = `<span class="ts">${dateLabel(m.t * 1000, 'shortTime')}</span><span class="by">${esc(speaker)}:</span>${esc(m.text)}${video}${web}${facts}`;
   const feed = $('feed');
   feed.appendChild(el);
   while (feed.children.length > FEED_MAX) feed.firstElementChild.remove();

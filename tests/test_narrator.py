@@ -32,12 +32,6 @@ export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any>;
 export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
-    "dom.ts": "export const toast = (..._a: unknown[]) => undefined;\n",
-    "types.ts": """
-export type { LogAttribution } from "../shared/ipc.js";
-export type Obj = any;
-export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
-""",
 }
 
 # the stand-ins and the scenarios; every line takes DUR ms to say
@@ -69,7 +63,8 @@ const DUR = 80;
 const log = [], playback = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 globalThis.window = globalThis;
-globalThis.document = { getElementById: () => null };
+globalThis.document = { getElementById: (id) => id === "toast" ? { appendChild() {} } : null,
+  createElement: () => ({ remove() {} }) };
 globalThis.crypto ||= (await import("node:crypto")).webcrypto;
 const native = new Map(), lateNativeRejections = [];
 let deferNativeCancellation = false;
@@ -358,9 +353,10 @@ tmp = tempfile.mkdtemp(prefix="glide-narrator-")
 try:
     with open(SRC, encoding="utf-8") as fh:
         files = {"renderer/narrator.ts": fh.read(), **{f"renderer/{name}": data for name, data in STUBS.items()}}
-    with open(os.path.join(DESK, "src", "renderer", "edge-speech.ts"), encoding="utf-8") as fh:
-        files["renderer/edge-speech.ts"] = fh.read()
-    for name in ("ipc.ts", "engine.ts"):
+    for name in ("edge-speech", "date-time", "state", "dom", "types"):
+        with open(os.path.join(DESK, "src", "renderer", name + ".ts"), encoding="utf-8") as fh:
+            files[f"renderer/{name}.ts"] = fh.read()
+    for name in ("ipc.ts", "engine.ts", "date-time.ts"):
         with open(os.path.join(DESK, "src", "shared", name), encoding="utf-8") as fh:
             files[f"shared/{name}"] = fh.read()
     # narrator.ts beside its stand-ins, compiled once per content (the tests' shared compiles, desktop_ts.py)
@@ -419,9 +415,9 @@ assert [p["state"] for p in got["coach_online_pb"]] == ["playing", "ended", "pla
 assert [p["state"] for p in got["fallback_pb"]] == ["fallback", "ended"], got["fallback_pb"]
 assert [p["state"] for p in got["rejected_online_pb"]] == ["error"], got["rejected_online_pb"]
 assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_pb"]), got["late_synthesis_pb"]
-assert "Installed native voice (SAPI5), generated in 12ms," in got["win_last_line"], got["win_last_line"]
-assert "OpenAI gpt-4o-mini-tts, coral (online voice), generated in 2.42s," in got["online_last_line"], got["online_last_line"]
-assert "generated in " in got["edge_last_line"] and "ms," in got["edge_last_line"], got["edge_last_line"]
+assert "Installed native voice (SAPI5), generated in 12ms" in got["win_last_line"], got["win_last_line"]
+assert "OpenAI gpt-4o-mini-tts, coral (online voice), generated in 2.42s" in got["online_last_line"], got["online_last_line"]
+assert "generated in " in got["edge_last_line"] and "ms" in got["edge_last_line"], got["edge_last_line"]
 assert got["preview_opts"] == [
     {"text": "sample-draft", "rate": 1.85, "volume": 0},
     {"text": "normal-callout", "rate": 1.15, "volume": 0.75},
@@ -436,19 +432,19 @@ for case in got["identities"]:
     expected = f'{provider_labels[case["provider"]]} {identity} (online voice)'
     assert case["actual"]["voice"] == expected, case
     assert case["actual"]["ms"] == 1234 and case["actual"]["at"] > 0, case
-    assert f"{expected}, generated in 1.23s," in case["label"], case
+    assert f"{expected}, generated in 1.23s" in case["label"], case
     assert [r["state"] for r in case["reports"]] == ["playing", "ended"], case
     assert all(r["requestId"] == case["requestId"] for r in case["reports"]), case
 assert got["before_pending"] == got["while_pending"], got
 assert got["pending_state"]["voice"] == "OpenAI tts-1, onyx (online voice)", got["pending_state"]
 assert got["pending_state"]["ms"] == 3210, got["pending_state"]
-assert "generated in 3.21s," in got["pending_last_line"], got["pending_last_line"]
+assert "generated in 3.21s" in got["pending_last_line"], got["pending_last_line"]
 assert got["while_queued"]["voice"] == "OpenAI tts-1-hd, alloy (online voice)", got["while_queued"]
 assert got["while_queued"]["text"] == "identity-blocker" and got["while_queued"]["ms"] == 4321, got["while_queued"]
 assert got["queued_state"]["voice"] == "Google ru-RU-Chirp3-HD-Zephyr (online voice)", got["queued_state"]
 assert got["queued_state"]["text"] == "identity-queued" and got["queued_state"]["ms"] == 654, got["queued_state"]
 assert got["queued_state"]["at"] > got["while_queued"]["at"], got
-assert "generated in 654ms," in got["queued_last_line"], got["queued_last_line"]
+assert "generated in 654ms" in got["queued_last_line"], got["queued_last_line"]
 assert got["edge_identity"]["voice"] == "Edge-TTS ru-RU-DmitryNeural (online voice)", got["edge_identity"]
 assert got["edge_identity"]["text"] == "identity-edge" and got["edge_identity"]["ms"] >= 0, got["edge_identity"]
 assert got["before_stale_native"] == got["after_stale_native"], got

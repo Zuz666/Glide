@@ -3,6 +3,7 @@ import { formatLogText, normalizeLogAttribution } from "../shared/logging.mjs";
 import type { LogAttribution, LogLine } from "../shared/ipc.js";
 import { call, glide } from "./bridge.js";
 import { $, esc, toast } from "./dom.js";
+import { dateTimeHtml } from "./date-time.js";
 import { currentPage } from "./nav.js";
 
 const KEEP = 3000;
@@ -43,7 +44,7 @@ function attributionHtml(attribution: LogAttribution, id: number): string {
 }
 
 function lineHtml(l: LogLine, details = false): string {
-  const ts = new Date(l.t).toLocaleTimeString();
+  const ts = dateTimeHtml(l.t, "longTime");
   const attribution = details ? normalizeLogAttribution(l.attribution) : undefined;
   let badge = "";
   if (attribution) {
@@ -51,7 +52,7 @@ function lineHtml(l: LogLine, details = false): string {
     if (id === undefined) { id = ++nextLineId; lineIds.set(l, id); }
     badge = attributionHtml(attribution, id);
   }
-  return `<span class="${esc(l.stream)}"><span class="ts">${esc(ts)}</span>  ${badge}${esc(l.text)}</span>\n`;
+  return `<span class="${esc(l.stream)}"><span class="ts">${ts}</span>  ${badge}${esc(l.text)}</span>\n`;
 }
 
 

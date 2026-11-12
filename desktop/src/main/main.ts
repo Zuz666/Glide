@@ -3,7 +3,8 @@
 //
 // This file puts the parts together (app/: the windows, the tray, the IPC channels) and runs the app's life:
 // start, the actions shared by the tray, the shortcuts and the windows, and quitting.
-import { app, globalShortcut, Menu, net, protocol, screen } from "electron";
+import { app, globalShortcut, Menu, net, powerMonitor, protocol, screen } from "electron";
+import type { BrowserWindow } from "electron";
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
@@ -98,6 +99,23 @@ sampler.on("sample", (s) => mainWindow.send("res:sample", s));
 function broadcast<K extends EventChannel>(channel: K, payload: EventMap[K]): void {
   mainWindow.send(channel, payload);
   overlay.send(channel, payload);
+}
+
+// Register each HWND once, including a main window recreated by MainWindow.show(). Other
+// windows receive the broadcast but must not multiply native setting-change notifications.
+const dateTimeWindows = new WeakSet<BrowserWindow>();
+function watchDateTimeChanges(win: BrowserWindow): void {
+  if (dateTimeWindows.has(win)) return;
+  dateTimeWindows.add(win);
+  const changed = () => {
+    if (win === mainWindow.win) broadcast("app:datesChanged", undefined);
+  };
+  win.on("focus", changed);
+  win.on("show", changed);
+  if (process.platform === "win32" && typeof win.hookWindowMessage === "function") {
+    win.hookWindowMessage(0x001a, changed); // WM_SETTINGCHANGE: regional preferences and time zone
+    win.hookWindowMessage(0x001e, changed); // WM_TIMECHANGE
+  }
 }
 
 function applyOverlaySettings(): void {
@@ -227,7 +245,10 @@ async function start(): Promise<void> {
   edgeTts.configure(!settings.current.muted && sp0?.provider === "edge");
   registerIpc({ engine, updater, speech: speechMgr, windowsTts, edgeTts, sampler, mainWindow, overlay, broadcast, setMuted, pushMute,
                 installUpdate, applyOverlaySettings, updateTray: () => tray.update(), ensureSpeech });
+  app.on("browser-window-created", (_event, win) => watchDateTimeChanges(win));
+  powerMonitor.on("resume", () => broadcast("app:datesChanged", undefined));
   mainWindow.create();
+  watchDateTimeChanges(mainWindow.win!);
   mainWindow.win!.webContents.on("render-process-gone", () => windowsTts.stop());
   mainWindow.win!.webContents.once("destroyed", () => windowsTts.stop());
   mainWindow.win!.webContents.on("did-start-navigation", (_event, _url, inPlace, mainFrame) => {

@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import * as addon from "../addon";
 import { Engine } from "../engine";
+import { formatDateTimes } from "../date-time";
 import type { EdgeTts } from "../edge-tts";
 import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } from "../paths";
 import { ResourceSampler } from "../resources";
@@ -150,6 +151,21 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
     python: pythonCommand(), configPath: configPath(), electron: process.versions.electron,
   }));
   handle("app:settings:get", () => settings.current);
+  let dateFailureReported = false;
+  handle("app:dates", (requests) => {
+    try {
+      const values = formatDateTimes(requests);
+      if (requests.length) dateFailureReported = false;
+      return values;
+    } catch (error) {
+      // This diagnostic itself needs a date label in Logs; never log its formatting failure again.
+      if (!dateFailureReported) {
+        dateFailureReported = true;
+        d.engine.note(`[date/time] ${error instanceof Error ? error.message : "Windows formatting failed"}`);
+      }
+      throw error;
+    }
+  });
   handle("app:settings:set", async (patch: AppSettingsPatch) => {
     if (patch && typeof patch !== "object") throw new Error("app settings take an object");
     if (patch.engineHome != null) {

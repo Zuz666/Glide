@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { runDateMetadataChecks } from './date_time_metadata_ui.mjs';
 
 const [edge, profile, baseUrl] = process.argv.slice(2);
 const child = spawn(edge, [
@@ -61,8 +62,18 @@ try {
   const mainResult = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
 (async () => {
   const listeners = new Map();
+  let regionalRevision = 0;
+  const regionalFormat = ({ value, style }) => {
+    const date = typeof value === 'string' ? value.split('-').reverse().join('.')
+      : new Date(Number(value) + 5 * 3600000).toISOString().slice(0, 10).split('-').reverse().join('.');
+    const time = typeof value === 'number' ? new Date(value + 5 * 3600000).toISOString().slice(11, 19) : '';
+    const short = time.slice(0, 5).replace(':', 'h');
+    return (regionalRevision ? 'Updated ' : '') + (style === 'date' ? date : style === 'shortTime' ? short
+      : style === 'longTime' ? time : date + ' ' + time);
+  };
   window.glide = {
     async invoke(channel, ...args) {
+      if (channel === 'app:dates') return args[0].map(regionalFormat);
       const response = await fetch('/ipc', { method: 'POST', body: JSON.stringify({ channel, args }) });
       const body = await response.json();
       if (!response.ok) throw Error(body.error);
@@ -85,6 +96,8 @@ try {
       await new Promise((r) => setTimeout(r, 10));
     }
   };
+  const dateDisplay = await import('/renderer/date-time-bridge.js');
+  dateDisplay.wireDateTimes();
 
   const nav = await import('/renderer/nav.js');
   const page = await import('/renderer/settings/page.js');
@@ -230,7 +243,7 @@ try {
         provider: 'windows', voiceLabel: 'SAPI5 · Xenia', fullVoice: 'Windows SAPI5 (Xenia (Russian))',
         phase: 'speaking', requestId: reqId, actualVoice: 'Xenia (Russian)', synthMs: 2294, updatedAt: Date.now(),
       });
-      check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s,'),
+      check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s'),
         'Expected immediate SAPI5 generation time on started, got: ' + narratorMod.voiceLastLine());
       return new Promise((r) => { resolveSapi5 = () => r({ voice: 'Xenia (Russian)' }); });
     }
@@ -241,7 +254,7 @@ try {
   resolveSapi5();
   await sampleDone;
   window.glide.invoke = origInvoke;
-  check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s,'),
+  check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s'),
     'Expected SAPI5 generation time retained after completion, got: ' + narratorMod.voiceLastLine());
 
   // Saved sessionBarOrder migration: legacy order with "models" but no "stt"/"tts" places "stt","tts" right after "models".
@@ -508,6 +521,28 @@ try {
   await until(() => document.getElementById('sv-voice')?.options.length >= 3
     && !!document.querySelector('[data-key="companion.voice.voice"] select'),
     'Expected native voice choices and nested process voice controls');
+  // Windows short-time patterns are independent of the browser locale and full-time pattern.
+  narratorMod.speech.noteVoice('Regional voice (SAPI5)', 'Regional sample', Date.UTC(2030, 10, 12, 16, 13, 27));
+  await until(() => document.getElementById('sv-last')?.textContent.includes('21h13'),
+    'Last spoken metadata must use the Windows short-time pattern, not the browser default');
+  const liveVoiceLabel = document.getElementById('sv-last');
+  const liveDraft = document.getElementById('sv-sample');
+  liveDraft.value = 'Draft survives regional changes';
+  liveDraft.dispatchEvent(new Event('input', { bubbles: true }));
+  liveDraft.focus();
+  liveDraft.setSelectionRange(3, 9);
+  const settingsScroll = document.getElementById('set-body').scrollTop;
+  regionalRevision = 1;
+  emit('app:datesChanged');
+  await until(() => liveVoiceLabel.textContent.includes('Updated 21h13'),
+    'Existing last-spoken metadata must update without a new utterance');
+  check(document.getElementById('sv-last') === liveVoiceLabel && document.activeElement === liveDraft
+    && liveDraft.value === 'Draft survives regional changes' && liveDraft.selectionStart === 3 && liveDraft.selectionEnd === 9
+    && document.getElementById('set-body').scrollTop === settingsScroll,
+    'Regional refresh must preserve nodes, drafts, caret, focus and settings scroll');
+  regionalRevision = 0;
+  emit('app:datesChanged');
+  await until(() => liveVoiceLabel.textContent.includes('21h13') && !liveVoiceLabel.textContent.includes('Updated'));
   check(!document.querySelector('[data-group="voice:Windows speech process"]'),
     'Windows speech process must no longer be a separate settings card');
   const processRow = document.querySelector('[data-key="companion.voice.voice"]');
@@ -615,12 +650,75 @@ try {
     && inSetBodyView('[data-key-row="ELEVENLABS_API_KEY"]')
     && document.activeElement?.getAttribute('data-env') === 'ELEVENLABS_API_KEY',
     'Expected No API key session-bar TTS chip click to jump directly to ELEVENLABS_API_KEY');
+  // Both views consume the same real engine page; only the embedded view uses desktop Windows formatting.
+  const coachUrl = await (await fetch('/date-coach-url')).json();
+  const liveState = (await import('/renderer/state.js')).live;
+  const previousUrl = liveState.engineUrl;
+  liveState.engineUrl = coachUrl;
+  const embedded = document.getElementById('dash');
+  embedded.src = coachUrl + '/#t=date-coach-test&dates=native';
+  embedded.classList.add('on');
+  nav.show('coach');
+  const separate = document.createElement('iframe');
+  separate.src = coachUrl + '/#t=date-coach-test';
+  document.body.append(separate);
+  // Cross-origin frame documents are observed through postMessage test probes, not direct DOM access.
+  window.__dateCoachUrl = coachUrl;
+  window.__dateEmbedded = embedded;
+  window.__dateStandalone = separate;
+  window.__refreshDates = () => { regionalRevision = 1; emit('app:datesChanged'); };
+  window.__restoreDates = () => { regionalRevision = 0; emit('app:datesChanged'); };
+  window.__dateLog = (line) => emit('engine:logline', line);
+  window.__datePreviousUrl = previousUrl;
   return 'main-ok';
 })()`,
   });
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
   }
+  const dateFrameContexts = new Map();
+  for (let retry = 0; retry < 100 && dateFrameContexts.size < 2; retry++) {
+    const tree = await send('Page.getFrameTree');
+    for (const entry of tree.frameTree.childFrames || []) {
+      const frameUrl = entry.frame.url + (entry.frame.urlFragment || '');
+      if (!frameUrl.includes('t=date-coach-test')) continue;
+      const key = frameUrl.includes('dates=native') ? 'embedded' : 'standalone';
+      if (!dateFrameContexts.has(key)) {
+        const world = await send('Page.createIsolatedWorld', { frameId: entry.frame.id, worldName: 'date-proof' });
+        dateFrameContexts.set(key, world.executionContextId);
+      }
+    }
+    if (dateFrameContexts.size < 2) await sleep(50);
+  }
+  if (dateFrameContexts.size !== 2) throw Error('Both real Coach views must load');
+  const coachDates = async (key) => {
+    const result = await send('Runtime.evaluate', { contextId: dateFrameContexts.get(key), returnByValue: true,
+      expression: `(() => {
+        const date = document.querySelector('#commhdr time');
+        return { date: date?.textContent, time: document.querySelector('#feed .ts')?.textContent,
+          expectedDate: new Date(Date.UTC(2026, 9, 18)).toLocaleDateString(undefined, { timeZone: 'UTC' }),
+          expectedTime: new Date(Number(document.querySelector('#feed .ts time')?.dataset.dateValue)).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) };
+      })()` });
+    return result.result.value;
+  };
+  let embeddedDates, standaloneDates;
+  for (let retry = 0; retry < 100; retry++) {
+    embeddedDates = await coachDates('embedded');
+    standaloneDates = await coachDates('standalone');
+    if (embeddedDates.date && embeddedDates.time && standaloneDates.date && standaloneDates.time) break;
+    await sleep(50);
+  }
+  if (embeddedDates.date !== '18.10.2026' || !embeddedDates.time?.includes('h'))
+    throw Error('Embedded Coach must use Windows output: ' + JSON.stringify(embeddedDates));
+  if (standaloneDates.date !== standaloneDates.expectedDate || standaloneDates.time !== standaloneDates.expectedTime)
+    throw Error('Standalone Coach must use browser preferences: ' + JSON.stringify(standaloneDates));
+  await send('Runtime.evaluate', { expression: 'window.__refreshDates()' });
+  for (let retry = 0; retry < 100 && !(await coachDates('embedded')).date?.startsWith('Updated '); retry++) await sleep(25);
+  if ((await coachDates('embedded')).date !== 'Updated 18.10.2026'
+    || (await coachDates('standalone')).date !== standaloneDates.expectedDate)
+    throw Error('Desktop preference changes must update embedded labels without leaking into standalone Coach');
+  await send('Runtime.evaluate', { expression: 'window.__restoreDates(); window.__dateStandalone.remove();' });
+  await runDateMetadataChecks(send);
   for (const width of [2560, 1280]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height: 1440, deviceScaleFactor: 1, mobile: false });
     const jumps = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `

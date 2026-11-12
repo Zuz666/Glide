@@ -331,12 +331,19 @@ async function windowsProcessVoiceChecks() {
   assert.strictEqual(usesAppWindowsVoice({ windowsProcessUseAppVoice: true }, "Legacy"), true);
   assert.strictEqual(usesAppWindowsVoice({ windowsProcessUseAppVoice: false }, undefined), false);
   const h = home("windows-process-voice"), p = path.join(h, "config.json");
-  const engine = Object.assign(new EventEmitter(), { state: "stopped", url: null, token: "test-link", note() {} });
+  const deliveredDateLogs = [], dateErrors = [];
+  const engine = Object.assign(new EventEmitter(), { state: "stopped", url: null, token: "test-link",
+    note(text) {
+      if (text.startsWith("[date/time]")) dateErrors.push(text);
+      this.emit("log", { t: Date.now(), stream: "app", text });
+    } });
   const { registerIpc } = require(path.join(dist, "app", "ipc.js"));
   const { OWN_PAGES } = require(path.join(dist, "app", "assets.js"));
   let configuredVoice;
   registerIpc({
-    engine, updater: {}, sampler: {}, speech: {}, mainWindow: {}, overlay: { readDragKey() {} },
+    engine, updater: {}, sampler: {}, speech: {},
+    mainWindow: { send(channel, line) { if (channel === "engine:logline" && line.text.startsWith("[date/time]")) deliveredDateLogs.push(line); } },
+    overlay: { readDragKey() {} },
     windowsTts: { configure(_enabled, voice) { configuredVoice = voice; }, stop() {} },
     edgeTts: { configure() {} }, broadcast() {}, setMuted() {}, pushMute() {}, installUpdate() {},
     applyOverlaySettings() {}, updateTray() {}, ensureSpeech: async () => {},
@@ -349,6 +356,48 @@ async function windowsProcessVoiceChecks() {
     settings.current = { engineHome: h, speech: { provider: "windows", voiceName: "App A", ...speech } };
     write(p, JSON.stringify(voice === undefined ? {} : { companion: { voice: { voice } } }));
   };
+
+  // Follow actual emitted log lines with date-format IPC requests, as the Logs renderer does.
+  const originalLoad = Module._load, originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+  let failDates = true, nativeAttempts = 0;
+  const textResult = (text, buffer) => {
+    if (buffer) Buffer.from(text + "\0", "utf16le").copy(buffer);
+    return text.length + 1;
+  };
+  Module._load = function (name, ...args) {
+    if (name !== "koffi") return originalLoad.call(this, name, ...args);
+    return { load() { return { func(declaration) {
+      if (declaration.includes("GetLocaleInfoEx")) return (_locale, _type, buffer) => {
+        nativeAttempts++;
+        return failDates ? 0 : textResult("HH:mm", buffer);
+      };
+      if (declaration.includes("GetDateFormatEx")) return (_locale, _flags, _date, _pattern, buffer) => textResult("12.11.2030", buffer);
+      if (declaration.includes("GetLastError")) return () => 1;
+      return () => 0;
+    } }; } };
+  };
+  Object.defineProperty(process, "platform", { configurable: true, value: "win32" });
+  try {
+    const requests = [{ value: "2030-11-12", style: "date" }];
+    const rejectedDate = () => assert.throws(() => invoke("app:dates", requests), /GetLocaleInfoEx failed/);
+    rejectedDate();
+    for (let turn = 0; turn < 8 && deliveredDateLogs.length; turn++) {
+      deliveredDateLogs.shift();
+      rejectedDate();
+    }
+    assert.equal(dateErrors.length, 1, "One persistent native failure must emit only one diagnostic, not a self-generating log loop");
+    assert.equal(deliveredDateLogs.length, 0, "Log delivery must settle while native formatting is unavailable");
+    assert.ok(nativeAttempts >= 2, "The regression must include repeated failing IPC driven by delivered logs");
+    failDates = false;
+    assert.deepStrictEqual(invoke("app:dates", requests), ["12.11.2030"]);
+    failDates = true;
+    rejectedDate();
+    assert.equal(dateErrors.length, 2, "Successful formatting must rearm diagnostics for a new failure episode");
+  } finally {
+    Module._load = originalLoad;
+    Object.defineProperty(process, "platform", originalPlatform);
+    deliveredDateLogs.length = 0;
+  }
 
   reset(undefined);
   await appVoice({ voiceName: "App B" });

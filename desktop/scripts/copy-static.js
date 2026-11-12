@@ -16,5 +16,6 @@ for (const f of fs.readdirSync(src)) {
   else if (/\.(css|svg|png)$/.test(f)) fs.copyFileSync(path.join(src, f), path.join(out, f));
 }
 fs.copyFileSync(path.join(shared, "glide.css"), path.join(out, "glide.css"));
+fs.copyFileSync(path.join(shared, "date-time-display.js"), path.join(out, "date-time-display.js"));
 for (const f of fs.readdirSync(path.join(shared, "fonts"))) fs.copyFileSync(path.join(shared, "fonts", f), path.join(out, "fonts", f));
 fs.copyFileSync(path.join(desk, "assets", "icon.png"), path.join(out, "icon.png"));
