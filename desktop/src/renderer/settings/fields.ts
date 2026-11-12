@@ -80,6 +80,10 @@ export function updateDirty(): void {
   });
 }
 
+function rangeLabel(f: Field, value: unknown): string {
+  return f.format === "percent" ? `${Math.round(Number(value) * 100)}%` : String(value);
+}
+
 function controlHtml(f: Field, id: string, v: unknown): string {
   switch (f.type) {
     case "bool":
@@ -87,7 +91,7 @@ function controlHtml(f: Field, id: string, v: unknown): string {
     case "number":
       return `<input type="number" id="${id}" value="${esc(v)}" ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""} step="${f.step ?? 1}">`;
     case "range":
-      return `<input type="range" id="${id}" value="${esc(v)}" min="${f.min}" max="${f.max}" step="${f.step ?? 1}"><span class="rangeval">${esc(v)}</span>`;
+      return `<input type="range" id="${id}" value="${esc(v)}" min="${f.min}" max="${f.max}" step="${f.step ?? 1}"><span class="rangeval">${esc(rangeLabel(f, v))}</span>`;
     case "select": {
       let options = f.options || [];
       if (f.key === "companion.voice.language" && typeof v === "string" && !options.some(([code]) => code === v))
@@ -154,7 +158,7 @@ export function bindField(f: Field): void {
     };
   }
   if (f.type === "range") el.addEventListener("input", () => {
-    (el.nextElementSibling as HTMLElement).textContent = el.value;
+    (el.nextElementSibling as HTMLElement).textContent = rangeLabel(f, el.value);
     setEdit(f, read());
   });
 }

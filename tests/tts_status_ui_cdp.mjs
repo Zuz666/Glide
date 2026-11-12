@@ -386,6 +386,30 @@ try {
     && !document.querySelector('[data-key="companion.voice.rate"]')
     && !document.querySelector('[data-key="companion.voice.volume"]'),
     'Expected Speed and Volume unified inside Voice output without duplicates in Coach voice or Windows speech process');
+  const fieldsMod = await import('/renderer/settings/fields.js');
+  const volumeRow = () => document.querySelector('[data-key="app:speech.volume"]');
+  check(volumeRow().querySelector('.rangeval').textContent === '80%',
+    'Expected stored narrator volume 0.8 to display as 80%');
+  for (const [value, label] of [[0, '0%'], [0.35, '35%'], [0.5, '50%'], [1, '100%']]) {
+    const input = volumeRow().querySelector('input');
+    input.value = String(value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    check(volumeRow().querySelector('.rangeval').textContent === label,
+      'Expected volume label ' + label);
+    check(fieldsMod.edits.get('app:speech.volume') === value,
+      'Volume edits must retain the fractional storage scale');
+  }
+  page.openSettingsTab('voice');
+  check(volumeRow().querySelector('.rangeval').textContent === '100%',
+    'Expected percentage volume label after settings rerender');
+  const volumeInput = volumeRow().querySelector('input');
+  volumeInput.value = '0.8';
+  volumeInput.dispatchEvent(new Event('input', { bubbles: true }));
+  check(volumeRow().querySelector('.rangeval').textContent === '80%'
+    && !fieldsMod.edits.has('app:speech.volume'),
+    'Returning to stored volume must restore 80% and clear the volume edit');
+  check(document.querySelector('[data-key="app:speech.rate"] .rangeval').textContent === '1',
+    'Speed must remain a multiplier, not a percentage');
   await until(() => document.querySelectorAll('#sp-models .rem-row').length === 3,
     'Expected 3 Whisper model rows rendered');
   const spRows = [...document.querySelectorAll('#sp-models .rem-row')];
