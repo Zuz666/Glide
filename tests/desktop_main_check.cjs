@@ -10,10 +10,11 @@ const path = require("path");
 const root = path.resolve(process.argv[2]);
 const dist = path.join(root, "desktop", "dist", "main");
 const userData = fs.mkdtempSync(path.join(root, "userdata-"));
+const handlers = new Map();
 const electron = new Proxy({
   app: { getPath: () => userData, getVersion: () => "1.0.0", isPackaged: false, getAppPath: () => path.dirname(dist),
          on() {}, whenReady: () => new Promise(() => {}), requestSingleInstanceLock: () => true },
-  ipcMain: { handle() {}, on() {} }, safeStorage: { isEncryptionAvailable: () => false },
+  ipcMain: { handle(name, fn) { handlers.set(name, fn); }, on() {} }, safeStorage: { isEncryptionAvailable: () => false },
 }, { get: (t, k) => (k in t ? t[k] : new Proxy(function () {}, { get: () => () => {} })) });
 const resolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...a) { return req === "electron" ? "electron" : resolve.call(this, req, ...a); };
@@ -321,10 +322,162 @@ function overlayFocusChecks() {
   }
 }
 
+async function windowsProcessVoiceChecks() {
+  const { EventEmitter } = require("events");
+  const { usesAppWindowsVoice } = require(path.join(dist, "..", "shared", "windows-process-voice.mjs"));
+  assert.strictEqual(usesAppWindowsVoice(undefined, undefined), true);
+  assert.strictEqual(usesAppWindowsVoice(undefined, ""), false);
+  assert.strictEqual(usesAppWindowsVoice(undefined, "Legacy"), false);
+  assert.strictEqual(usesAppWindowsVoice({ windowsProcessUseAppVoice: true }, "Legacy"), true);
+  assert.strictEqual(usesAppWindowsVoice({ windowsProcessUseAppVoice: false }, undefined), false);
+  const h = home("windows-process-voice"), p = path.join(h, "config.json");
+  const engine = Object.assign(new EventEmitter(), { state: "stopped", url: null, token: "test-link", note() {} });
+  const { registerIpc } = require(path.join(dist, "app", "ipc.js"));
+  const { OWN_PAGES } = require(path.join(dist, "app", "assets.js"));
+  let configuredVoice;
+  registerIpc({
+    engine, updater: {}, sampler: {}, speech: {}, mainWindow: {}, overlay: { readDragKey() {} },
+    windowsTts: { configure(_enabled, voice) { configuredVoice = voice; }, stop() {} },
+    edgeTts: { configure() {} }, broadcast() {}, setMuted() {}, pushMute() {}, installUpdate() {},
+    applyOverlaySettings() {}, updateTray() {}, ensureSpeech: async () => {},
+  });
+  const sender = { mainFrame: { url: OWN_PAGES[0] } };
+  const invoke = (channel, ...args) => handlers.get(channel)({ sender, senderFrame: sender.mainFrame }, ...args);
+  const appVoice = (speech) => invoke("app:settings:set", { speech });
+  const processVoice = () => config.readConfig().companion?.voice?.voice;
+  const reset = (voice, speech = {}) => {
+    settings.current = { engineHome: h, speech: { provider: "windows", voiceName: "App A", ...speech } };
+    write(p, JSON.stringify(voice === undefined ? {} : { companion: { voice: { voice } } }));
+  };
+
+  reset(undefined);
+  await appVoice({ voiceName: "App B" });
+  assert.strictEqual(processVoice(), "App B", "missing engine voice inherits the app voice");
+  assert.strictEqual(settings.current.speech.windowsProcessUseAppVoice, true);
+  await appVoice({ voiceName: "App C" });
+  assert.strictEqual(processVoice(), "App C", "materialized inheritance remains linked");
+  await appVoice({ voiceName: "" });
+  assert.strictEqual(processVoice(), "", "linked Windows default is a literal standalone name");
+
+  // Settings saves engine edits first. Do not overwrite the selected custom name before the unlink patch arrives.
+  await invoke("config:set", { companion: { voice: { voice: "Separate" } } });
+  await appVoice({ windowsProcessUseAppVoice: false, voiceName: "App D" });
+  assert.strictEqual(processVoice(), "Separate");
+  await appVoice({ voiceName: "App E" });
+  assert.strictEqual(processVoice(), "Separate", "unlinked app changes preserve the custom engine name");
+  await appVoice({ windowsProcessUseAppVoice: true });
+  assert.strictEqual(processVoice(), "App E", "linking replaces the engine name with the current app name");
+
+  for (const legacy of ["Legacy", "", "App A"]) {
+    reset(legacy);
+    await appVoice({ voiceName: "New app voice" });
+    assert.strictEqual(processVoice(), legacy, "explicit legacy names, including Windows default, stay custom");
+    assert.strictEqual(settings.current.speech.windowsProcessUseAppVoice, false);
+  }
+  reset(undefined, { windowsProcessUseAppVoice: false });
+  await appVoice({ voiceName: "New app voice" });
+  assert.strictEqual(processVoice(), undefined, "explicit custom mode does not invent an engine voice");
+
+  reset(undefined);
+  await config.engineOptions().prepare();
+  assert.strictEqual(processVoice(), "App A", "startup materializes the inherited standalone name");
+  assert.strictEqual(settings.current.speech.windowsProcessUseAppVoice, true);
+  write(p, JSON.stringify({ companion: { voice: { voice: "Outdated" } } }));
+  await config.engineOptions().prepare();
+  assert.strictEqual(processVoice(), "App A", "every engine start refreshes an explicit link");
+  reset("", {});
+  await config.engineOptions().prepare();
+  assert.strictEqual(processVoice(), "");
+  assert.strictEqual(settings.current.speech.windowsProcessUseAppVoice, false);
+  const staleOptions = config.engineOptions();
+  const otherHome = home("windows-process-voice-other");
+  const otherConfig = path.join(otherHome, "config.json");
+  write(otherConfig, JSON.stringify({ companion: { voice: { voice: "Other home voice" } } }));
+  settings.current = { ...settings.current, engineHome: otherHome };
+  await assert.rejects(staleOptions.prepare(), /engine home changed/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(otherConfig, "utf8")).companion.voice.voice, "Other home voice",
+    "a stale start must not synchronize the voice in a different engine home");
+  settings.current = { ...settings.current, engineHome: h };
+
+  const http = require("http");
+  let mode = "save", requests = [], release, received;
+  const server = http.createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    assert.strictEqual(req.headers["x-glide-token"], "test-link");
+    const body = JSON.parse(raw);
+    requests.push(body);
+    if (mode === "disconnect") return req.socket.destroy();
+    if (mode === "hold") {
+      received();
+      await new Promise((resolve) => { release = resolve; });
+    }
+    if (mode === "refuse") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: false, error: "engine voice refused" }));
+    }
+    if (mode === "unconfirmed") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    write(p, JSON.stringify(store.deepMerge(JSON.parse(read(p)), body.save)));
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, applied: { saved: true } }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  engine.state = "running";
+  engine.url = `http://127.0.0.1:${server.address().port}`;
+  try {
+    reset("Legacy");
+    await appVoice({ windowsProcessUseAppVoice: true });
+    assert.strictEqual(requests.length, 1);
+    assert.deepStrictEqual(requests[0].save, { companion: { voice: { voice: "App A" } } });
+    assert.strictEqual(processVoice(), "App A", "running engine owns the linked config write");
+    await appVoice({ voiceName: "Running B" });
+    assert.strictEqual(processVoice(), "Running B");
+    for (mode of ["refuse", "unconfirmed", "disconnect"]) {
+      const before = read(p), beforeSpeech = { ...settings.current.speech };
+      await assert.rejects(appVoice({ voiceName: "Must not apply" }));
+      assert.strictEqual(read(p), before, mode + " must not fall back to writing behind the running engine");
+      assert.deepStrictEqual(settings.current.speech, beforeSpeech, mode + " must not report app changes as saved");
+      assert.strictEqual(configuredVoice, "Running B", "failed persistence must not configure a different app voice");
+    }
+    mode = "hold";
+    const firstReceived = new Promise((resolve) => { received = resolve; });
+    const first = appVoice({ voiceName: "Older" });
+    await firstReceived;
+    const second = appVoice({ voiceName: "Newest" });
+    const custom = invoke("config:set", { companion: { voice: { voice: "Newest custom" } } });
+    const unlink = appVoice({ windowsProcessUseAppVoice: false });
+    mode = "save";
+    release();
+    await Promise.all([first, second, custom, unlink]);
+    assert.strictEqual(settings.current.speech.voiceName, "Newest");
+    assert.strictEqual(settings.current.speech.windowsProcessUseAppVoice, false);
+    assert.strictEqual(processVoice(), "Newest custom", "overlapping app/config saves keep the newest selection");
+
+    const before = { ...settings.current.speech }, save = store.saveAppSettings;
+    try {
+      store.saveAppSettings = () => false;
+      await assert.rejects(appVoice({ voiceName: "Unsaved" }), /could not be saved/);
+      assert.deepStrictEqual(settings.current.speech, before, "failed app persistence does not mutate the current choice");
+    } finally {
+      store.saveAppSettings = save;
+    }
+    mode = "save";
+    await appVoice({ windowsProcessUseAppVoice: true, voiceName: "Recovered" });
+    assert.strictEqual(processVoice(), "Recovered", "failed writes do not poison later queued saves");
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 (async () => {
   syncChecks();
   await engineChecks();
   await configChecks();
   overlayFocusChecks();
+  await windowsProcessVoiceChecks();
   console.log("ok");
 })().catch((e) => { console.error(e); process.exit(1); });

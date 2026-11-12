@@ -410,6 +410,101 @@ try {
     'Returning to stored volume must restore 80% and clear the volume edit');
   check(document.querySelector('[data-key="app:speech.rate"] .rangeval').textContent === '1',
     'Speed must remain a multiplier, not a percentage');
+  // Test text selection uses the currently displayed source, without sending real speech requests.
+  const speech = narratorMod.speech;
+  const originalSay = speech.say;
+  const samples = [];
+  speech.say = (...args) => samples.push(args);
+  try {
+    const source = document.getElementById('sv-sample-source');
+    const play = document.getElementById('sv-test');
+    await until(() => !play.disabled, 'Expected prepared template to be playable');
+    const template = document.getElementById('sv-sample').textContent;
+    check(play.closest('.field').querySelector('.lab small').textContent.includes('Russian')
+      && play.closest('.field').querySelector('.lab small').textContent.includes('(ru)'),
+      'Voice test must identify the saved Russian speech language');
+    check(play.getBoundingClientRect().width < 190,
+      'Voice preview button must remain compact');
+    play.click();
+    check(samples.at(-1)[0] === template, 'Template playback must use the displayed template');
+    speech.noteVoice('Windows SAPI5', '', Date.now());
+    source.value = 'last';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    check(play.disabled, 'Last-line playback must wait when no line has been spoken');
+    speech.noteVoice('Google en-US-Chirp3-HD-Charon', 'Последняя произнесённая фраза.', Date.now(), 1730);
+    await until(() => !play.disabled, 'An arriving last-spoken line must enable replay');
+    play.click();
+    check(samples.at(-1)[0] === 'Последняя произнесённая фраза.',
+      'Replay must use the actual last-spoken text rather than the template');
+    speech.noteVoice('OpenAI gpt-4o-mini-tts, coral', 'Новая последняя фраза.', Date.now(), 2700);
+    await until(() => document.getElementById('sv-sample').textContent === 'Новая последняя фраза.',
+      'Replay preview must follow a newly spoken line');
+    play.click();
+    check(samples.at(-1)[0] === 'Новая последняя фраза.', 'Replay must snapshot the latest text at click time');
+    source.value = 'template';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    play.click();
+    check(samples.at(-1)[0] === template, 'Switching back must restore template playback');
+  } finally {
+    speech.say = originalSay;
+  }
+  page.openSettingsTab('language');
+  await until(() => !!document.querySelector('[data-key="companion.voice.language"] select'),
+    'Expected the editable coach language control');
+  const draftLanguage = document.querySelector('[data-key="companion.voice.language"] select');
+  draftLanguage.value = 'de';
+  draftLanguage.dispatchEvent(new Event('change', { bubbles: true }));
+  page.openSettingsTab('voice', 'tts');
+  await until(() => !!document.getElementById('sv-sample-source'),
+    'Expected the voice preview after changing the language draft');
+  const languageHelp = document.getElementById('sv-sample-source').closest('.field').querySelector('.lab').textContent;
+  check(languageHelp.includes('(de)') && languageHelp.includes('(ru)'),
+    'An unsaved German selection must be distinguished from the saved Russian sample language');
+  fieldsMod.edits.delete('companion.voice.language');
+  const beforeProcessSettings = await window.glide.invoke('app:settings:get');
+  const beforeProcessConfig = await window.glide.invoke('config:get');
+  await window.glide.invoke('config:set', { companion: { voice: { voice: 'Xenia (Russian)', output: 'app' } } });
+  await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: 'Xenia (Russian)', windowsProcessUseAppVoice: true } });
+  page.openSettingsTab('voice');
+  await until(() => document.getElementById('sv-voice')?.options.length >= 3
+    && !!document.querySelector('[data-key="companion.voice.voice"] select'),
+    'Expected native voice choices and nested process voice controls');
+  check(!document.querySelector('[data-group="voice:Windows speech process"]'),
+    'Windows speech process must no longer be a separate settings card');
+  const processRow = document.querySelector('[data-key="companion.voice.voice"]');
+  const customToggle = document.querySelector('[data-key="app:speech.windowsProcessUseAppVoice"] input');
+  check(processRow.closest('[data-group]').dataset.group === 'voice:Coach voice',
+    'Process voice controls must live inside Coach voice');
+  check(!customToggle.checked && getComputedStyle(processRow).display === 'none',
+    'Linked process voice must hide the redundant independent selector');
+  customToggle.checked = true;
+  customToggle.dispatchEvent(new Event('change', { bubbles: true }));
+  check(!processRow.hidden && !processRow.querySelector('select').disabled,
+    'Separate voice mode must expose an editable installed-voice selector');
+  const processSelect = processRow.querySelector('select');
+  processSelect.value = 'Microsoft Zira';
+  processSelect.dispatchEvent(new Event('change', { bubbles: true }));
+  check(fieldsMod.edits.get('companion.voice.voice') === 'Microsoft Zira',
+    'A custom process voice must be staged for the engine settings save');
+  customToggle.checked = false;
+  customToggle.dispatchEvent(new Event('change', { bubbles: true }));
+  check(!fieldsMod.edits.has('companion.voice.voice'),
+    'Returning to shared mode must discard an unsaved independent voice');
+  await window.glide.invoke('config:set', { companion: { voice: { output: 'windows' } } });
+  await window.glide.invoke('app:settings:set', { speech: { provider: 'google' } });
+  page.openSettingsTab('voice');
+  await until(() => !!document.getElementById('sv-process-load'), 'Active Windows process voice must remain configurable with an online provider selected');
+  await window.glide.invoke('config:set', { companion: { voice: {
+    voice: beforeProcessConfig.companion?.voice?.voice ?? null,
+    output: beforeProcessConfig.companion?.voice?.output ?? null,
+  } } });
+  await window.glide.invoke('app:settings:set', { speech: {
+    ...beforeProcessSettings.speech,
+    voiceName: beforeProcessSettings.speech?.voiceName ?? '',
+    windowsProcessUseAppVoice: beforeProcessSettings.speech?.windowsProcessUseAppVoice ?? null,
+  } });
+  fieldsMod.edits.delete('app:speech.windowsProcessUseAppVoice');
+  page.openSettingsTab('voice');
   await until(() => document.querySelectorAll('#sp-models .rem-row').length === 3,
     'Expected 3 Whisper model rows rendered');
   const spRows = [...document.querySelectorAll('#sp-models .rem-row')];

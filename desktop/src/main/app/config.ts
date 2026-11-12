@@ -2,12 +2,13 @@
 // and the parts of its config the app itself acts on (push-to-talk, the overlay's drag key, custom endpoints).
 import path from "path";
 import { EngineOptions } from "../engine";
-import type { LogAttribution } from "../../shared/ipc";
+import type { AppSettings, AppSettingsPatch, LogAttribution } from "../../shared/ipc";
+import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
 import { OPENAI_EXCLUSION_RULES } from "../openai-exclusions";
 import { defaultHome } from "../paths";
 import { secretEnv } from "../secrets";
 import { effectiveWhisperModel, languageCode } from "../speech-language";
-import { deepMerge, keepBadCopy, Obj, readJson, readJsonFile, unreadableMessage, writeJson } from "../store";
+import { appSettingsProblem, deepMerge, keepBadCopy, Obj, readJson, readJsonFile, unreadableMessage, writeJson } from "../store";
 import { settings } from "./settings";
 
 export const engineHome = () => settings.current.engineHome || defaultHome;
@@ -154,13 +155,62 @@ export interface RunningEngine {
   note(text: string, attribution?: LogAttribution): void;
 }
 
+// App voice changes and engine config edits share one order, including across awaited engine saves.
+let settingsWrite: Promise<unknown> = Promise.resolve();
+function serializeSettingsWrite<T>(write: () => Promise<T>): Promise<T> {
+  const result = settingsWrite.then(write);
+  settingsWrite = result.catch(() => undefined);
+  return result;
+}
+
+/** Resolve legacy mode before materializing an inherited name, so the literal never changes its meaning. */
+async function persistWindowsProcessVoice(next: AppSettings, engine: RunningEngine): Promise<void> {
+  const currentVoice = ((readConfig().companion as Obj | undefined)?.voice as Obj | undefined)?.voice;
+  const linked = usesAppWindowsVoice(next.speech, currentVoice);
+  if (linked) {
+    const voice = next.speech?.voiceName || "";
+    if (currentVoice !== voice) await saveConfigNow({ companion: { voice: { voice } } }, engine, {}, true);
+  }
+  next.speech = { ...next.speech, windowsProcessUseAppVoice: linked };
+}
+
+/** Persist app changes only after a linked engine voice is confirmed saved by its owner. */
+export function saveAppSettingsPatch(patch: AppSettingsPatch, engine: RunningEngine): Promise<AppSettings> {
+  return serializeSettingsWrite(async () => {
+    const problem = appSettingsProblem();
+    if (problem) throw new Error(problem);
+    const next = deepMerge(settings.current as Obj, patch as Obj) as AppSettings;
+    if (patch.speech !== undefined) await persistWindowsProcessVoice(next, engine);
+    // Re-merge the patch, not the awaited snapshot: tray/mute changes may have happened meanwhile.
+    return settings.merge({ ...patch, ...(patch.speech !== undefined ? { speech: next.speech } : {}) });
+  });
+}
+
+/** Before starting Python, refresh the standalone literal from the persisted app link. */
+function prepareWindowsProcessVoice(home: string): Promise<void> {
+  return serializeSettingsWrite(async () => {
+    if (engineHome() !== home) throw new Error("The engine home changed; start the coach again with the current settings.");
+    if (appSettingsProblem()) return; // retain the engine's defaults when app settings could not be loaded
+    const next = { ...settings.current };
+    await persistWindowsProcessVoice(next, { state: "stopped", url: null, token: "", note() {} });
+    if (settings.current.speech?.windowsProcessUseAppVoice !== next.speech?.windowsProcessUseAppVoice) {
+      settings.merge({ speech: { windowsProcessUseAppVoice: next.speech?.windowsProcessUseAppVoice } });
+    }
+  });
+}
+
 /** Save a patch of config.json. The engine owns the file (docs/REFACTOR-CONTRACTS.md, contract 5): while it runs,
  * it saves the patch (POST /settings {"save": patch}), so its own writes and the app's never cross.
  * Explicit live changes require an engine-confirmed combined save: rejection/disconnection must not become a
  * local save for restart. Ordinary save-only callers retain the existing local fallback. */
 export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}): Promise<Obj> {
+  return serializeSettingsWrite(() => saveConfigNow(patch, engine, liveChanges));
+}
+
+async function saveConfigNow(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}, requireEngineSave = false): Promise<Obj> {
   const applying = Object.keys(liveChanges).length > 0;
   if (applying && (engine.state !== "running" || !engine.url)) throw new Error("The coach is not connected; your edits are kept.");
+  if (requireEngineSave && engine.state === "running" && !engine.url) throw new Error("The coach is not connected; your edits are kept.");
   if (engine.state === "running" && engine.url) {
     const speechPatch = speechModelPatch(deepMerge(readConfig(), patch));
     if (speechPatch) patch = deepMerge(patch, speechPatch);
@@ -174,11 +224,11 @@ export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges:
       if (r.ok && body.applied?.saved === true && (!applying || body.ok === true)) return readConfig();
       if (r.status === 400 || body.ok === false) {
         validationError = new Error(body.error || "The coach refused this settings change; your edits are kept.");
-      } else if (applying) {
-        validationError = new Error(body.error || "The coach did not confirm the combined settings save; your edits are kept.");
+      } else if (applying || requireEngineSave) {
+        validationError = new Error(body.error || "The coach did not confirm the settings save; your edits are kept.");
       }
     } catch (error) {
-      if (applying) throw error;
+      if (applying || requireEngineSave) throw error;
       // Save-only caller: the coach is going away, so save it here.
     }
     if (validationError) throw validationError;
@@ -194,8 +244,9 @@ export function companionSection(name: string): Obj {
 
 export function engineOptions(): EngineOptions {
   const a = settings.current.engineArgs || {};
-  return { home: engineHome(), env: secretEnv(), sim: !!a.sim || process.argv.includes("--sim"), noPtt: !!a.noPtt,
-           noArchive: !!a.noArchive, noKb: !!a.noKb };
+  const home = engineHome();
+  return { home, env: secretEnv(), sim: !!a.sim || process.argv.includes("--sim"), noPtt: !!a.noPtt,
+           noArchive: !!a.noArchive, noKb: !!a.noKb, prepare: () => prepareWindowsProcessVoice(home) };
 }
 
 const ENDPOINT_VENDOR_HOSTS: Record<string, readonly string[]> = {

@@ -4,16 +4,17 @@ import { updateAppSettings } from "../app-settings.js";
 import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
 import { speech, voiceLastLine } from "../narrator.js";
-import { Group } from "../settings-schema.js";
-import { filterEdgeVoices, speechLanguage as language, voiceSample } from "../speech-language.js";
+import { Field, Group } from "../settings-schema.js";
+import { filterEdgeVoices, LANGUAGE_OPTIONS, languageCode, speechLanguage as language, voiceSample } from "../speech-language.js";
 import { live } from "../state.js";
-import { edits } from "./fields.js";
+import { bindField, edits, fieldHtml, getPath, updateDirty } from "./fields.js";
+import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
 import { keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
   ["windows", "Windows voices (SAPI5, offline)", ""],
-  ["edge", "Edge-TTS (experimental, free online)", ""],
+  ["edge", "Edge-TTS (experimental, online)", ""],
   ["openai", "OpenAI (gpt-4o-mini-tts)", "OPENAI_API_KEY"],
   ["elevenlabs", "ElevenLabs", "ELEVENLABS_API_KEY"],
   ["azure", "Azure Speech (neural voices)", "AZURE_SPEECH_KEY"],
@@ -22,6 +23,87 @@ const PROVIDERS: [string, string, string][] = [   // id, label, key
 const edgeVoice = (sp: SpeechSettings) => sp.edge?.voice || "";
 // The providers with a voice list: where the pick is stored in their settings.
 const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], elevenlabs: ["elevenlabs", "voiceId"], azure: ["azure", "voice"], google: ["google", "voice"] };
+let sampleSource: "template" | "last" = "template";
+let sampleObserver: MutationObserver | null = null;
+
+function sampleLanguageHelp(): string {
+  const saved = language();
+  const selected = edits.has("companion.voice.language") ? languageCode(edits.get("companion.voice.language")) : saved;
+  const label = (code: string) => `${LANGUAGE_OPTIONS.find(([value]) => value === code)?.[1] || code} (${code})`;
+  return selected !== saved
+    ? `Selected language: ${label(selected)} (not saved). Save to update the template; currently saved: ${label(saved)}. Replay keeps the original text.`
+    : `Saved speech language: ${label(saved)}. Template translation requires the coach; replay keeps the original text.`;
+}
+
+function bindSample(host: HTMLElement): void {
+  const source = host.querySelector<HTMLSelectElement>("#sv-sample-source")!;
+  const button = host.querySelector<HTMLButtonElement>("#sv-test")!;
+  const preview = host.querySelector<HTMLElement>("#sv-sample")!;
+  const lastText = host.querySelector<HTMLElement>("#sv-last-text")!;
+  let template: string | undefined;
+  let preparing = false;
+  source.value = sampleSource;
+  const draw = () => {
+    const text = sampleSource === "last" ? speech.lastText : template;
+    preview.textContent = text || (sampleSource === "last" ? "No line has been spoken in this session." : "Preparing template…");
+    button.disabled = !text?.trim();
+    button.querySelector("span")!.textContent = sampleSource === "last" ? "Play last line" : "Play sample";
+    lastText.hidden = !speech.lastText || sampleSource === "last";
+  };
+  const prepare = () => {
+    if (sampleSource !== "template" || preparing || template !== undefined) return;
+    preparing = true;
+    void voiceSample().then((text) => {
+      if (!button.isConnected) return;
+      template = text;
+      preparing = false;
+      draw();
+    });
+  };
+  source.onchange = () => {
+    sampleSource = source.value === "last" ? "last" : "template";
+    prepare();
+    draw();
+  };
+  button.onclick = () => {
+    const text = sampleSource === "last" ? speech.lastText : template;
+    if (!text?.trim()) return;
+    const rate = edits.has("app:speech.rate") ? Number(edits.get("app:speech.rate") ?? 1) : undefined;
+    const volume = edits.has("app:speech.volume") ? Number(edits.get("app:speech.volume") ?? 1) : undefined;
+    speech.say(text, true, "", "", { rate, volume });
+  };
+  sampleObserver = new MutationObserver(draw);
+  sampleObserver.observe(lastText, { childList: true, characterData: true, subtree: true });
+  prepare();
+  draw();
+}
+
+function processFields(g: Group, sp: SpeechSettings): Field[] {
+  return (g.fields || []).map((f) => {
+    if (f.key === "app:speech.windowsProcessUseAppVoice")
+      return { ...f, def: !usesAppWindowsVoice(sp, getPath(live.config, "companion.voice.voice")) };
+    const voice = String((edits.has(f.key) ? edits.get(f.key) : getPath(live.config, f.key)) ?? "");
+    return { ...f, options: [["", "Windows default"], ...(voice ? [[voice, voice] as [string, string]] : [])] };
+  });
+}
+
+function bindProcessVoice(fields: Field[], host: HTMLElement): void {
+  fields.forEach(bindField);
+  const toggle = host.querySelector<HTMLInputElement>('[data-key="app:speech.windowsProcessUseAppVoice"] input');
+  const row = host.querySelector<HTMLElement>('[data-key="companion.voice.voice"]');
+  const select = row?.querySelector<HTMLSelectElement>("select");
+  if (!toggle || !row || !select) return;
+  const sync = () => {
+    row.hidden = !toggle.checked;
+    select.disabled = !toggle.checked || select.dataset.loading === "true";
+    if (!toggle.checked) {
+      edits.delete("companion.voice.voice");
+      updateDirty();
+    }
+  };
+  toggle.addEventListener("change", sync);
+  sync();
+}
 
 const field = (label: string, help: string, ctl: string) =>
   `<div class="field"><div class="lab">${label}${help ? `<small>${help}</small>` : ""}</div><div class="ctl">${ctl}</div></div>`;
@@ -79,11 +161,18 @@ function providerFields(prov: string, sp: SpeechSettings): string {
 export function renderVoices(g: Group, host: HTMLElement): void {
   const sp: SpeechSettings = live.appSettings.speech || {};
   const prov = sp.provider || "windows";
+  sampleObserver?.disconnect();
+  const process = processFields(g, sp);
+  const output = edits.get("companion.voice.output") ?? getPath(live.config, "companion.voice.output");
+  const showProcess = prov === "windows" || output === "windows";
   const save = (patch: Obj) => updateAppSettings({ speech: patch });
-  host.innerHTML = field("Voice service", "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If online synthesis fails, the unspoken text uses the selected Windows voice.",
+  host.innerHTML = field("Voice service", output === "windows"
+    ? "Coach callouts currently use the Windows speech process. This selection is used for this app's voice test; online failures fall back to the app's Windows voice."
+    : "Online services sound more natural: Edge-TTS is free, while other services may charge per line. If online synthesis fails, the unspoken text uses the selected Windows voice.",
       `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}${VOICE_SETUP_GUIDE}`)
     + providerFields(prov, sp)
-    + field("Try it", "Uses the saved speech language; save language changes above first. The coach uses this voice when Spoken by is set to this app.", `<button class="btn" id="sv-test" disabled>${icon("volume-2")}Play a sample</button><span id="sv-sample" class="help voice-text" aria-live="polite">Preparing sample…</span>`)
+    + (showProcess ? `<section class="voice-process"><h3>Windows speech process</h3><p>Shared Windows voice: ${esc(sp.voiceName || "Windows default")}. Used when Spoken by is Windows speech process; an online Voice service is not used for those callouts.</p>${process.map(fieldHtml).join("")}${prov !== "windows" ? `<button type="button" class="btn" id="sv-process-load">Reload Windows voices</button>` : ""}</section>` : "")
+    + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><p id="sv-sample" class="help voice-text" aria-live="polite">Preparing template…</p></div>`)
     + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${esc(voiceLastLine())}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
   const activeEnv = PROVIDERS.find((p) => p[0] === prov)?.[2] || "";
@@ -109,22 +198,19 @@ export function renderVoices(g: Group, host: HTMLElement): void {
     } else await save({ provider });
     renderVoices(g, host);
   };
-  const sampleButton = host.querySelector<HTMLButtonElement>("#sv-test")!;
-  const sampleText = host.querySelector<HTMLElement>("#sv-sample")!;
-  void voiceSample().then((text) => {
-    if (!sampleButton.isConnected) return;
-    sampleText.textContent = text;
-    sampleButton.disabled = false;
-    sampleButton.onclick = () => {
-      const draftRate = edits.has("app:speech.rate") ? Number(edits.get("app:speech.rate") ?? 1) : undefined;
-      const draftVol = edits.has("app:speech.volume") ? Number(edits.get("app:speech.volume") ?? 1) : undefined;
-      speech.say(text, true, "", "", { rate: draftRate, volume: draftVol });
-    };
-  });
-  if (prov === "windows") $("sv-voice").onchange = (e) => save({ voiceName: (e.target as HTMLSelectElement).value });
+  bindSample(host);
+  if (showProcess) bindProcessVoice(process, host);
+  if (prov === "windows") $("sv-voice").onchange = async (e) => {
+    await save({ voiceName: (e.target as HTMLSelectElement).value });
+    if (!host.isConnected) return;
+    live.config = (await call("config:get")) || live.config;
+    renderVoices(g, host);
+  };
   if (prov === "openai") {
+    const select = $<HTMLSelectElement>("sv-o-voice");
     call("tts:voices", "openai").then((vs) => {
-      $("sv-o-voice").innerHTML = (vs || []).map((v) => `<option ${v.id === (sp.openai?.voice || "coral") ? "selected" : ""}>${esc(v.id)}</option>`).join("");
+      if (!select.isConnected) return;
+      select.innerHTML = (vs || []).map((v) => `<option ${v.id === (sp.openai?.voice || "coral") ? "selected" : ""}>${esc(v.id)}</option>`).join("");
     });
     const o = () => save({ openai: { model: $<HTMLSelectElement>("sv-o-model").value, voice: $<HTMLSelectElement>("sv-o-voice").value, instructions: $<HTMLInputElement>("sv-o-instr").value } });
     ["sv-o-model", "sv-o-voice", "sv-o-instr"].forEach((id) => $(id).addEventListener("change", o));
@@ -132,7 +218,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   if (VOICE_LIST[prov]) bindVoiceList(prov, sp as Obj, save);
   if (prov === "elevenlabs") $("sv-e-model").onchange = (e) => save({ elevenlabs: { ...(sp.elevenlabs || {}), model: (e.target as HTMLSelectElement).value } });
   if (prov === "azure") $("sv-a-region").onchange = (e) => save({ azure: { ...(sp.azure || {}), region: (e.target as HTMLInputElement).value.trim() } });
-  if (prov === "windows") bindWindowsVoices();
+  if (prov === "windows" || showProcess) bindWindowsVoices();
 }
 
 /** The provider's voice list: Load voices fills it, a pick saves it in the provider's own settings. */
@@ -144,7 +230,7 @@ function bindVoiceList(prov: string, sp: Obj, save: (patch: Obj) => Promise<void
   const multilingualOnly = document.getElementById("sv-multilingual-only") as HTMLInputElement | null;
   let catalogue: Voice[] = [];
   const draw = () => {
-    const cur = prov === "edge" ? edgeVoice(live.appSettings.speech || {}) : (sp[section] || {})[k] || "";
+    const cur = String(getPath(live.appSettings, `speech.${section}.${k}`) ?? "");
     const voices = prov === "edge"
       ? filterEdgeVoices(catalogue, language(), !!allLanguages?.checked, !!multilingualOnly?.checked) : catalogue;
     const saved = cur && !voices.some((v) => v.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (saved)</option>` : "";
@@ -173,20 +259,36 @@ function bindVoiceList(prov: string, sp: Obj, save: (patch: Obj) => Promise<void
 
 /** Native enumeration includes third-party SAPI5 engines that the browser's voice list omits. */
 function bindWindowsVoices(): void {
-  const select = $("sv-voice") as HTMLSelectElement;
-  const button = $("sv-windows-load") as HTMLButtonElement;
+  const main = document.getElementById("sv-voice") as HTMLSelectElement | null;
+  const process = document.querySelector<HTMLSelectElement>('[data-key="companion.voice.voice"] select');
+  const toggle = document.querySelector<HTMLInputElement>('[data-key="app:speech.windowsProcessUseAppVoice"] input');
+  const button = (document.getElementById("sv-windows-load") || document.getElementById("sv-process-load")) as HTMLButtonElement;
+  const selects = [main, process].filter((select): select is HTMLSelectElement => !!select);
   const load = async () => {
-    const selected = select.value;
-    select.disabled = button.disabled = true;
+    const selected = selects.map((select) => select.value);
+    button.disabled = true;
+    for (const select of selects) {
+      select.disabled = true;
+      select.dataset.loading = "true";
+    }
     try {
       const voices = await call("tts:voices", "windows");
-      if (!voices || !select.isConnected) return;
-      select.innerHTML = `<option value="">Windows default</option>`
-        + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
-        + (selected && !voices.some((v) => v.id === selected) ? `<option value="${esc(selected)}">${esc(selected)} (not installed)</option>` : "");
-      select.value = selected;
+      if (!voices || !button.isConnected) return;
+      for (const [index, select] of selects.entries()) {
+        const value = selected[index];
+        select.innerHTML = `<option value="">Windows default</option>`
+          + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
+          + (value && !voices.some((v) => v.id === value) ? `<option value="${esc(value)}">${esc(value)} (not installed)</option>` : "");
+        select.value = value;
+      }
     } finally {
-      if (select.isConnected) select.disabled = button.disabled = false;
+      if (button.isConnected) {
+        button.disabled = false;
+        for (const select of selects) {
+          delete select.dataset.loading;
+          select.disabled = select === process && !toggle?.checked;
+        }
+      }
     }
   };
   button.onclick = load;

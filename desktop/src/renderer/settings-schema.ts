@@ -214,16 +214,19 @@ export const SCHEMA: Tab[] = [
       { title: "Voice output", fields: [
         { key: "companion.voice.enabled", label: "Speak callouts and answers", type: "bool" },
         { key: "companion.voice.output", label: "Spoken by", type: "select",
-          options: [["app", "this app (Windows or online voices, below)"], ["windows", "the coach's own Windows speech process"]] },
+          options: [["app", "this app (Windows or online voices, below)"], ["windows", "Windows speech process (Windows voices only)"]],
+          help: "This app uses the Voice service below. The coach's separate Windows speech process uses Windows voices only, not the selected online service. Its voice can follow or override the app's Windows voice in Coach voice." },
         { key: "companion.voice.announce", label: "Announce readiness at startup", type: "bool" },
         { key: "app:speech.rate", label: "Speed", type: "range", def: 1, min: 0.5, max: 2, step: 0.05,
           help: "Playback speed multiplier (1 = normal). Applies to online voices, Windows SAPI5 and the Windows speech process." },
         { key: "app:speech.volume", label: "Volume", type: "range", def: 1, min: 0, max: 1, step: 0.05, format: "percent",
           help: "Narrator volume (also adjustable from the speaker icon in the session bar)." },
       ] },
-      { title: "Coach voice", special: "voices" },
-      { title: "Windows speech process", intro: "Only used when \"Spoken by\" is the coach's own process.", fields: [
-        { key: "companion.voice.voice", label: "Voice name", type: "text", help: "e.g. Microsoft Zira Desktop. Empty: the Windows default." },
+      { title: "Coach voice", special: "voices", fields: [
+        { key: "app:speech.windowsProcessUseAppVoice", label: "Use a separate voice for the Windows speech process", type: "bool", def: false, invert: true,
+          help: "Off: follow the app's Windows voice, including later changes. On: use an independent Windows voice. Save to apply." },
+        { key: "companion.voice.voice", label: "Windows speech process voice", type: "select", options: [["", "Windows default"]],
+          help: "Only used by Spoken by > Windows speech process. Empty selects the Windows default voice." },
       ] },
       { title: "Push-to-talk", fields: [
         { key: "companion.ptt.enabled", label: "Push-to-talk", type: "bool" },

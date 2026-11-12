@@ -75,6 +75,7 @@ const native = new Map(), lateNativeRejections = [];
 let deferNativeCancellation = false;
 let onNativeStarted;
 function nativeSpeak(id, text) {
+  if (text === "native-failure") return Promise.reject(new Error("Native speech failed before start"));
   return new Promise((resolve, reject) => {
     log.push("start:" + text);
     const startTimer = setTimeout(() => {
@@ -112,6 +113,8 @@ globalThis.Audio = class {
   pause() { if (this.paused) return; this.paused = true; log.push("pause:" + this.text); if (this.onpause) this.onpause(); }
 };
 let releaseSlowSynthesis;
+const synthesisAttributions = new Map(), synthesisRequests = new Map(), deferredSyntheses = new Map();
+const edgeAttributions = new Map();
 const edgeListeners = new Set();
 const edgeEvent = (event) => { for (const fn of [...edgeListeners]) fn(event); };
 const edgeCandidates = new Map();
@@ -120,13 +123,14 @@ globalThis.OfflineAudioContext = class {
 };
 globalThis.glide = { invoke: (ch, ...a) => {
   if (ch === "tts:edgeStart") {
-    const [id, text] = a;
+    const [id, text] = a, attribution = { category: "TTS", provider: "edge", request_id: a[0],
+      voice: "en-US-AriaNeural", ...edgeAttributions.get(a[1]) };
     log.push("edge:" + text);
     edgeCandidates.set(id, text);
     return sleep(10).then(() => {
       edgeEvent({ type: "plan", id, fragments: [{ index: 0, start: 0, end: text.length }] });
       edgeEvent({ type: "candidate", id, index: 0, attempt: id, start: 0, end: text.length,
-        mime: "audio/mpeg", data: new TextEncoder().encode(text) });
+        mime: "audio/mpeg", data: new TextEncoder().encode(text), attribution });
     });
   }
   if (ch === "tts:edgeDecoded") {
@@ -138,15 +142,24 @@ globalThis.glide = { invoke: (ch, ...a) => {
     return Promise.resolve();
   }
   if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
-  if (ch === "tts:windowsSpeak") { nativeOpts.push({ text: a[1], rate: a[2]?.rate, volume: a[2]?.volume }); return nativeSpeak(a[0], a[1]); }
+  if (ch === "tts:windowsSpeak") {
+    nativeOpts.push({ text: a[1], rate: a[2]?.rate, volume: a[2]?.volume });
+    nativeVoices.set(a[1], a[2]?.voiceName);
+    return nativeSpeak(a[0], a[1]);
+  }
   if (ch === "tts:windowsStop") return nativeStop(a[0]);
   if (ch === "tts:playbackState") { playback.push(a[0]); return Promise.resolve(); }
   if (ch !== "tts:synth") return Promise.resolve();
-  const text = a[0];
+  const text = a[0], requestId = a[3];
+  synthesisRequests.set(text, requestId);
   log.push("synth:" + text);
-  const audio = () => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg",
-    ...(text === "o2" ? { attribution: { category: "TTS", elapsed_ms: 2424 } } : {}) });
+  const attribution = { category: "TTS", elapsed_ms: text === "o2" ? 2424 : 10,
+    ...(synthesisAttributions.get(text) ?? { provider: "openai", model: "gpt-4o-mini-tts", voice: "coral" }),
+    request_id: requestId };
+  const audio = () => ({ data: new TextEncoder().encode(text), mime: "audio/mpeg", attribution });
+  if (text === "identity-pending") return new Promise(resolve => { deferredSyntheses.set(text, () => resolve(audio())); });
   if (text === "slow-guide") return new Promise(resolve => { releaseSlowSynthesis = () => resolve(audio()); });
+  if (text === "identity-fallback") return sleep(10).then(() => { throw new Error("Online synthesis failed"); });
   if (text === "cloud-failure") return Promise.reject(new Error("TTS #77: service unavailable"));
   return sleep(10).then(audio);
 }, on: (_ch, fn) => { edgeListeners.add(fn); return () => edgeListeners.delete(fn); } };
@@ -159,8 +172,10 @@ onNativeStarted = (id) => speech.onTtsStatus({
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
 const out = {};
 const nativeOpts = [];
+const nativeVoices = new Map();
 const take = (name) => { out[name] = log.splice(0); out[name + "_pb"] = playback.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
+const lastState = () => ({ voice: speech.lastVoice, at: speech.lastVoiceAt, text: speech.lastText, ms: speech.lastSynthMs });
 
 // the coach, Windows voice: in order; an interrupting line cancels; muted says nothing
 speech.configure(false, WIN);
@@ -208,17 +223,23 @@ speech.configure(false, ONLINE);
 speech.say("o1"); speech.say("o2");
 await sleep(DUR * 3); take("coach_online");
 out.online_last_line = voiceLastLine();
+out.online_state = lastState();
 // Cancelling while synthesis is pending must let another line play before the stale response arrives.
 p = mark(speech.speakAndWait("slow-guide", "g"), "resolved:slow-guide");
 speech.say("fast-coach1"); speech.say("fast-coach2");
 await sleep(2); t = Date.now(); speech.cancel("g"); await p; out.slow_cancel_ms = Date.now() - t;
-await sleep(20); releaseSlowSynthesis();
+await sleep(20);
+out.before_stale_synthesis = lastState();
+releaseSlowSynthesis();
+await sleep(1);
+out.after_stale_synthesis = lastState();
 await sleep(DUR * 3); take("late_synthesis");
 await speech.speakAndWait("cloud-failure", "g"); take("fallback");
+out.fallback_state = lastState();
 // A rejected audio player must not replace the last voice/text that really played.
-out.before_rejected = [speech.lastVoice, speech.lastVoiceAt, speech.lastText];
+out.before_rejected = lastState();
 await speech.speakAndWait("blocked-audio", "g"); take("rejected_online");
-out.after_rejected = [speech.lastVoice, speech.lastVoiceAt, speech.lastText];
+out.after_rejected = lastState();
 // tagged online lines: cancel stops the one playing, drops the queued one, the coach's next line plays
 speech.say("o3");
 p = mark(speech.speakAndWait("og1", "g"), "resolved:og1");
@@ -249,6 +270,87 @@ await sleep(DUR + 15);
 speech.say("normal-callout");
 await sleep(DUR + 15);
 out.preview_opts = nativeOpts.slice();
+
+// Full identities come from each actual request, not compact status labels or current selection.
+out.identities = [];
+for (const [provider, model, voice] of [
+  ["openai", "gpt-4o-mini-tts", "coral"],
+  ["openai", "tts-1-hd", "nova"],
+  ["google", undefined, "en-US-Chirp3-HD-Charon"],
+  ["google", undefined, "ru-RU-Chirp3-HD-Achernar"],
+  ["elevenlabs", "eleven_flash_v2_5", "JBFqnCBsd6RMkjVDRZzb"],
+  ["elevenlabs", "eleven_v3", "custom-eleven-voice"],
+  ["azure", undefined, "en-US-AndrewMultilingualNeural"],
+  ["azure", undefined, "ru-RU-SvetlanaNeural"],
+]) {
+  const text = `identity-${provider}-${out.identities.length}`;
+  synthesisAttributions.set(text, { provider, model, voice, elapsed_ms: 1234 });
+  speech.configure(false, { provider, openai: { model: "not-used", voice: "not-used" },
+    google: { voice: "not-used" }, elevenlabs: { model: "not-used", voiceId: "not-used" },
+    azure: { voice: "not-used" } });
+  await speech.speakAndWait(text, "identity");
+  const reports = playback.splice(0);
+  out.identities.push({ provider, model, voice, actual: lastState(), label: voiceLastLine(),
+    requestId: synthesisRequests.get(text), reports });
+  log.length = 0;
+}
+
+// A settings change while synthesis is outstanding cannot relabel the eventual audio.
+synthesisAttributions.set("identity-pending", { provider: "openai", model: "tts-1", voice: "onyx", elapsed_ms: 3210 });
+speech.configure(false, { provider: "openai", openai: { model: "tts-1", voice: "onyx" } });
+out.before_pending = lastState();
+p = speech.speakAndWait("identity-pending", "identity");
+await sleep(2);
+speech.configure(false, { provider: "google", google: { voice: "ru-RU-Chirp3-HD-Fenrir" } });
+out.while_pending = lastState();
+deferredSyntheses.get("identity-pending")();
+await p;
+out.pending_state = lastState();
+out.pending_last_line = voiceLastLine();
+take("identity_pending");
+
+// Prefetch can finish behind another line; only playback may publish its captured identity.
+synthesisAttributions.set("identity-blocker", { provider: "openai", model: "tts-1-hd", voice: "alloy", elapsed_ms: 4321 });
+synthesisAttributions.set("identity-queued", { provider: "google", voice: "ru-RU-Chirp3-HD-Zephyr", elapsed_ms: 654 });
+speech.configure(false, { provider: "openai" });
+speech.say("identity-blocker");
+speech.configure(false, { provider: "google" });
+p = speech.speakAndWait("identity-queued", "identity");
+speech.configure(false, { provider: "elevenlabs", elevenlabs: { voiceId: "new-selection" } });
+await sleep(20);
+out.while_queued = lastState();
+await p;
+out.queued_state = lastState();
+out.queued_last_line = voiceLastLine();
+take("identity_queued");
+
+// Edge fragment metadata likewise wins over the full queued settings snapshot.
+edgeAttributions.set("identity-edge", { provider: "edge", voice: "ru-RU-DmitryNeural" });
+speech.configure(false, { provider: "edge", edge: { voice: "en-US-AriaNeural" } });
+p = speech.speakAndWait("identity-edge", "identity");
+speech.configure(false, { provider: "edge", edge: { voice: "en-US-JennyNeural" } });
+await p;
+out.edge_identity = lastState();
+out.edge_identity_label = voiceLastLine();
+take("identity_edge");
+
+// A late native status from an unrelated/cancelled request must not replace online attribution.
+out.before_stale_native = lastState();
+speech.onTtsStatus({ provider: "windows", voiceLabel: "stale", fullVoice: "stale", phase: "speaking",
+  requestId: "cancelled-native-request", actualVoice: "Stale Windows voice", synthMs: 9999, updatedAt: Date.now() });
+out.after_stale_native = lastState();
+
+// Native fallback uses the per-line Windows choice, but reports the worker's actual selected voice.
+speech.configure(false, { provider: "openai", voiceName: "Fallback requested before settings changed" });
+p = speech.speakAndWait("identity-fallback", "identity");
+await sleep(2);
+speech.configure(false, { provider: "windows", voiceName: "New Windows selection" });
+await p;
+out.fallback_snapshot = { ...lastState(), requested: nativeVoices.get("identity-fallback") };
+take("identity_fallback");
+out.before_native_failure = lastState();
+await speech.speakAndWait("native-failure", "identity");
+out.after_native_failure = lastState();
 console.log(JSON.stringify(out));
 """
 
@@ -318,10 +420,40 @@ assert [p["state"] for p in got["fallback_pb"]] == ["fallback", "ended"], got["f
 assert [p["state"] for p in got["rejected_online_pb"]] == ["error"], got["rejected_online_pb"]
 assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_pb"]), got["late_synthesis_pb"]
 assert "Installed native voice (SAPI5), generated in 12ms," in got["win_last_line"], got["win_last_line"]
-assert "openai (online voice), generated in 2.42s," in got["online_last_line"], got["online_last_line"]
+assert "OpenAI gpt-4o-mini-tts, coral (online voice), generated in 2.42s," in got["online_last_line"], got["online_last_line"]
 assert "generated in " in got["edge_last_line"] and "ms," in got["edge_last_line"], got["edge_last_line"]
 assert got["preview_opts"] == [
     {"text": "sample-draft", "rate": 1.85, "volume": 0},
     {"text": "normal-callout", "rate": 1.15, "volume": 0.75},
 ], got["preview_opts"]
+assert got["online_state"]["ms"] == 2424, got["online_state"]
+assert got["before_stale_synthesis"] == got["after_stale_synthesis"], got
+assert got["fallback_state"]["voice"] == "Installed native voice (SAPI5)", got["fallback_state"]
+assert got["fallback_state"]["text"] == "cloud-failure" and got["fallback_state"]["ms"] == 12, got["fallback_state"]
+provider_labels = {"openai": "OpenAI", "google": "Google", "elevenlabs": "ElevenLabs", "azure": "Azure"}
+for case in got["identities"]:
+    identity = ", ".join(filter(None, (case.get("model"), case["voice"])))
+    expected = f'{provider_labels[case["provider"]]} {identity} (online voice)'
+    assert case["actual"]["voice"] == expected, case
+    assert case["actual"]["ms"] == 1234 and case["actual"]["at"] > 0, case
+    assert f"{expected}, generated in 1.23s," in case["label"], case
+    assert [r["state"] for r in case["reports"]] == ["playing", "ended"], case
+    assert all(r["requestId"] == case["requestId"] for r in case["reports"]), case
+assert got["before_pending"] == got["while_pending"], got
+assert got["pending_state"]["voice"] == "OpenAI tts-1, onyx (online voice)", got["pending_state"]
+assert got["pending_state"]["ms"] == 3210, got["pending_state"]
+assert "generated in 3.21s," in got["pending_last_line"], got["pending_last_line"]
+assert got["while_queued"]["voice"] == "OpenAI tts-1-hd, alloy (online voice)", got["while_queued"]
+assert got["while_queued"]["text"] == "identity-blocker" and got["while_queued"]["ms"] == 4321, got["while_queued"]
+assert got["queued_state"]["voice"] == "Google ru-RU-Chirp3-HD-Zephyr (online voice)", got["queued_state"]
+assert got["queued_state"]["text"] == "identity-queued" and got["queued_state"]["ms"] == 654, got["queued_state"]
+assert got["queued_state"]["at"] > got["while_queued"]["at"], got
+assert "generated in 654ms," in got["queued_last_line"], got["queued_last_line"]
+assert got["edge_identity"]["voice"] == "Edge-TTS ru-RU-DmitryNeural (online voice)", got["edge_identity"]
+assert got["edge_identity"]["text"] == "identity-edge" and got["edge_identity"]["ms"] >= 0, got["edge_identity"]
+assert got["before_stale_native"] == got["after_stale_native"], got
+assert got["fallback_snapshot"]["voice"] == "Installed native voice (SAPI5)", got["fallback_snapshot"]
+assert got["fallback_snapshot"]["text"] == "identity-fallback" and got["fallback_snapshot"]["ms"] == 12, got["fallback_snapshot"]
+assert got["fallback_snapshot"]["requested"] == "Fallback requested before settings changed", got["fallback_snapshot"]
+assert got["before_native_failure"] == got["after_native_failure"], got
 print("OK")

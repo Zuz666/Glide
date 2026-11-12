@@ -112,6 +112,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         channel, args = request["channel"], request["args"]
         if channel == "config:get":
             return self.send_data(glideconfig.read(tmp)[0])
+        if channel == "config:set":
+            glideconfig.patch((), args[0], tmp)
+            return self.send_data(glideconfig.read(tmp)[0])
         if channel == "app:settings:get":
             return self.send_data(app_settings)
         if channel == "app:settings:set":
@@ -139,6 +142,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             resize_heights.append(args[0])
             return self.send_data(None)
         if channel == "tts:voices":
+            if args[0] == "windows":
+                return self.send_data([
+                    {"id": "Xenia (Russian)", "name": "Xenia (Russian)"},
+                    {"id": "Microsoft Zira", "name": "Microsoft Zira"},
+                ])
+            if args[0] == "openai":
+                return self.send_data([{"id": "coral", "name": "coral"}, {"id": "alloy", "name": "alloy"}])
             return self.send_data([{"id": "ru-RU-DmitryNeural", "name": "ru-RU-DmitryNeural · Male"}])
         if channel == "speech:models":
             return self.send_data([

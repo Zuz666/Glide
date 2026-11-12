@@ -26,6 +26,7 @@ export interface EngineOptions {
   noPtt?: boolean;
   noArchive?: boolean;
   noKb?: boolean;
+  prepare?: () => Promise<void>;        // app-owned config synchronization, before Python can own the file
 }
 
 const MAX_LOG = 3000;
@@ -187,12 +188,14 @@ export class Engine extends EventEmitter {
     // the engine home may have changed since the app started (Settings > Data): put the engine code there first
     try {
       syncEngine(o.home, app.getVersion()).forEach((d) => this.note(d));
+      await o.prepare?.();
     } catch (e) {
       this.wantRunning = false;
       this.note((e as Error).message);
       this.setState("crashed", (e as Error).message);
       return;
     }
+    if (!this.wantRunning) return this.setState("stopped");
     if (!fs.existsSync(path.join(o.home, "companion", "app.py"))) {
       this.setState("crashed", `no engine in ${o.home}`);
       return;

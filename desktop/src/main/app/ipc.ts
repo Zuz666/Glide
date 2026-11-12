@@ -18,7 +18,7 @@ import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import { TtsStatusCoordinator } from "../tts-status";
 import type { WindowsTts } from "../windows-tts";
 import { Updater } from "../updater";
-import { configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveConfig } from "./config";
+import { configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveAppSettingsPatch, saveConfig } from "./config";
 import { isOwnPage } from "./assets";
 import { MainWindow } from "./main-window";
 import { Overlay } from "./overlay";
@@ -150,7 +150,7 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
     python: pythonCommand(), configPath: configPath(), electron: process.versions.electron,
   }));
   handle("app:settings:get", () => settings.current);
-  handle("app:settings:set", (patch: AppSettingsPatch) => {
+  handle("app:settings:set", async (patch: AppSettingsPatch) => {
     if (patch && typeof patch !== "object") throw new Error("app settings take an object");
     if (patch.engineHome != null) {
       const home = String(patch.engineHome);
@@ -159,7 +159,7 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
       }
     }
     const prevHome = engineHome();
-    settings.merge(patch);
+    await saveAppSettingsPatch(patch, engine);
     if (settings.current.muted) d.windowsTts.stop();
     const sp = settings.current.speech;
     d.windowsTts.configure?.(!settings.current.muted && (sp?.provider || "windows") === "windows", sp?.voiceName);
