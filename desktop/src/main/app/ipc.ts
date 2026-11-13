@@ -350,7 +350,7 @@ function edgeChannels({ edgeTts }: IpcDeps, ttsStatus: TtsStatusCoordinator): vo
     };
     ttsStatus.beginSynthesis(id, undefined, sender);
     try {
-      edgeTts.start(id, String(text || "").slice(0, 4000), settings.current.speech?.edge?.voice || "", receive);
+      edgeTts.start(id, String(text || ""), settings.current.speech?.edge?.voice || "", receive);
     } catch (error) { remove(id); ttsStatus.cancelSynthesis(id); throw error; }
   }, true);
   handle("tts:edgeDecoded", (sender, id, attempt, ok) => {

@@ -13,7 +13,6 @@ export interface EdgeFragment {
 }
 
 type Terminal = Extract<EdgeTtsEvent, { type: "end" }>;
-type Range = { index: number; start: number; end: number };
 type Candidate = EdgeFragment & { decoded: boolean };
 
 export interface EdgeStream {
@@ -25,7 +24,7 @@ export interface EdgeStream {
 }
 
 class Request implements EdgeStream {
-  private plan: Range[] | undefined;
+  private fragmentCount: number | undefined;
   private candidates = new Map<string, Candidate>();
   private ready = new Map<number, EdgeFragment>();
   private accepted = new Set<number>();
@@ -36,7 +35,7 @@ class Request implements EdgeStream {
   terminal: Terminal | undefined;
   synthMs: number | undefined;
   readonly finished = new Promise<Terminal>((resolve) => { this.finish = resolve; });
-  constructor(readonly id: string, private text: string, private release: () => void,
+  constructor(readonly id: string, private release: () => void,
     private decode: (data: Uint8Array) => Promise<void>) {}
 
   async next(): Promise<EdgeFragment | null> {
@@ -59,7 +58,7 @@ class Request implements EdgeStream {
 
   end(event: Terminal): void {
     if (this.terminal) return;
-    if (event.reason === "complete" && (!this.plan || this.accepted.size !== this.plan.length)) {
+    if (event.reason === "complete" && (!this.fragmentCount || this.accepted.size !== this.fragmentCount)) {
       event = { type: "end", id: this.id, reason: "failed", error: "Incomplete Edge speech" };
     }
     this.terminal = event;
@@ -81,25 +80,7 @@ class Request implements EdgeStream {
     if (this.terminal) return;
     if (event.type === "end") { this.end(event); return; }
     if (event.type === "plan") {
-      if (this.plan) return;
-      let offset = 0;
-      for (const [index, range] of event.fragments.entries()) {
-        if (range.index !== index) {
-          this.end({ type: "end", id: this.id, reason: "failed", error: "Invalid Edge speech plan" });
-          return;
-        }
-        if (!Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start !== offset
-          || range.end <= range.start || range.end > this.text.length) {
-          this.end({ type: "end", id: this.id, reason: "failed", error: "Invalid Edge speech plan" });
-          return;
-        }
-        offset = range.end;
-      }
-      if (offset !== this.text.length) {
-        this.end({ type: "end", id: this.id, reason: "failed", error: "Invalid Edge speech plan" });
-        return;
-      }
-      this.plan = event.fragments;
+      this.fragmentCount ??= event.fragments.length;
       return;
     }
     if (this.accepted.has(event.index)) return;
@@ -117,8 +98,7 @@ class Request implements EdgeStream {
       this.notify();
       return;
     }
-    const range = this.plan?.[event.index];
-    if (!range || range.start !== event.start || range.end !== event.end || this.candidates.has(event.attempt)) return;
+    if (this.candidates.has(event.attempt)) return;
     const candidate: Candidate = { index: event.index, start: event.start, end: event.end,
       blob: new Blob([event.data as BlobPart], { type: event.mime }), attribution: event.attribution, decoded: false };
     this.candidates.set(event.attempt, candidate);
@@ -143,7 +123,7 @@ class EdgeSpeech {
 
   start(text: string, id: string): EdgeStream {
     if (!this.unlisten) this.unlisten = glide.on("tts:edgeEvent", (event) => this.requests.get(event.id)?.event(event));
-    const request = new Request(id, text, () => {
+    const request = new Request(id, () => {
       this.requests.delete(id);
       if (!this.requests.size) { this.unlisten?.(); this.unlisten = undefined; }
     }, (data) => this.decode(data));
