@@ -15,6 +15,7 @@ from typing import IO, Callable
 import settings
 import log as console
 from localization import TEXT_RESOURCES
+import speech_markup
 
 
 
@@ -45,6 +46,7 @@ class HubVoice:
         self.cfg, self.hub = cfg, hub
         self.enabled = self.opt.get("enabled")
         self.muted = False
+        self._cancel_generation = 0
         if announce:
             self.announce()
 
@@ -56,24 +58,49 @@ class HubVoice:
     def set_muted(self, muted):
         """Muted, nothing goes out (the app's narrator also drops what it gets while the app is muted)."""
         self.muted = bool(muted)
+        if self.muted:
+            self._cancel_generation += 1
         return self.muted
 
     def hush(self):
         """The player started talking (push-to-talk): the app's narrator stops on the "ptt" event itself."""
+        self._cancel_generation += 1
         return None
 
-    def say(self, text, interrupt=False, tone="", first=True):
+    def cancellation_token(self):
+        """Capture cancellation identity before potentially blocking line preparation."""
+        return self._cancel_generation
+
+    def markup_destination(self):
+        if not self.enabled:
+            return {"provider": "", "identity": "", "features": []}
+        destination = self.opt.get("markup_destination")
+        return dict(destination) if isinstance(destination, dict) else {"provider": "", "identity": "", "features": []}
+
+
+    def say(self, text, interrupt=False, tone="", first=True, markup=None, features=None, cancellation_token=None):
         """tone: how to deliver this one line (the coach's TONE: in character), added to the character's voice; it
         goes as its own field on a reply's first sentence only (first=False: a later one: ElevenLabs v3 acts it as a
         tag, once a line), and folded into the style on every sentence (OpenAI performs the whole line with it)."""
         if not self.enabled or not text or self.muted:
             return
+        generation = self._cancel_generation if cancellation_token is None else cancellation_token
+        if generation != self._cancel_generation:
+            return
         style = self.style_fn() if self.style_fn else ""      # the character the coach plays: how to perform it
         tone = " ".join(str(tone or "").split())
+        line = speech_markup.canonical(text)
+        destination = self.markup_destination()
+        if features is not None:
+            destination["features"] = [f for f in destination.get("features", []) if f in features]
+        prepared = speech_markup.prepare(text, destination, markup, mode=self.opt.get("markup_mode"))
         if tone:
             style = ("%s. This line: %s." % (style.rstrip(" ."), tone)) if style else "Deliver this line %s." % tone
         # a tone always comes with a style (folded in above): {style, tone}, {style} or neither
-        self.hub.publish("speak", {"text": text.replace("\n", " ").replace("\r", " ").strip(),
+        if generation != self._cancel_generation or self.muted:
+            return
+        self.hub.publish("speak", {"text": line,
+                                   **({"markup": prepared} if prepared else {}),
                                    "interrupt": bool(interrupt),
                                    **({"style": style, "tone": tone} if tone and first else
                                       {"style": style} if style else {})})
@@ -95,7 +122,11 @@ class Voice:
         self.muted = False
         self.lock = threading.Lock()          # serialize commands, including blocking pipe writes
         self._state_lock = threading.Lock()   # pending turns/worker identity only; never held across I/O
+        self._enqueue_lock = threading.Lock()  # serialize snapshots without blocking cancellation during discovery
+        self._cancel_generation = 0
         self.log_path = os.path.join(log_dir or tempfile.gettempdir(), "voice.log")
+        self._catalogue = []
+        self._catalogue_request = None
         self.enabled = self.opt.get("enabled") and sys.platform == "win32"
         if self.enabled:
             self._start()
@@ -127,6 +158,7 @@ class Voice:
         self._fail_pending("Speech worker replaced before completion")
         with self._state_lock:
             self.proc = None
+            self._catalogue = []
         try:
             script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sapi5.ps1")
             with open(self.log_path, "a", encoding="utf-8") as log:
@@ -155,6 +187,21 @@ class Voice:
                         event = json.loads(line)
                     except ValueError:
                         continue
+                    if isinstance(event, dict) and event.get("event") in ("ready", "voices"):
+                        with self._state_lock:
+                            if self.proc is proc and isinstance(event.get("voices"), list):
+                                self._catalogue = event["voices"]
+                                request = self._catalogue_request
+                                if request is not None and event.get("id") == request[0]:
+                                    request[1].set()
+                        continue
+                    if isinstance(event, dict) and event.get("event") == "error":
+                        with self._state_lock:
+                            request = self._catalogue_request
+                            if self.proc is proc and request is not None and event.get("id") == request[0]:
+                                self._catalogue = []
+                                request[1].set()
+                                continue
                     if not isinstance(event, dict) or event.get("event") not in ("started", "done", "error", "cancelled"):
                         continue
                     ident = event.get("id")
@@ -190,6 +237,9 @@ class Voice:
                 pending = self._pending if self.proc is proc else {}
                 if self.proc is proc:
                     self._pending = {}
+                    self._catalogue = []
+                    if self._catalogue_request is not None:
+                        self._catalogue_request[1].set()
             for turn in pending.values():
                 self._log_turn(turn, "error", "Speech worker closed before completion")
 
@@ -213,6 +263,8 @@ class Voice:
         """Mute or unmute; muting cancels the active native turn and all queued lines."""
         with self.lock:
             self.muted = bool(muted)
+            if self.muted:
+                self._cancel_generation += 1
             stdin = self.proc.stdin if self.proc is not None else None
             if self.muted and stdin is not None:
                 try:
@@ -224,6 +276,7 @@ class Voice:
     def hush(self):
         """The player started talking: cancel active and queued speech. Never wait long for the lock
         (say() may be restarting the speech process): the push-to-talk thread calls it."""
+        self._cancel_generation += 1
         if not self.lock.acquire(timeout=0.05):
             return
         try:
@@ -236,12 +289,59 @@ class Voice:
         finally:
             self.lock.release()
 
-    def say(self, text, interrupt=False, tone="", first=True):
+    def cancellation_token(self):
+        """Capture cancellation identity before potentially blocking line preparation."""
+        return self._cancel_generation
+
+    def _markup_destination_locked(self):
+        permissions = self.opt.get("markup_voices")
+        # Resolve again when permissions could matter. A stale default/name never
+        # transfers another token's effects; an unavailable catalogue is neutral.
+        if (permissions or self._catalogue) and self.proc is not None and self.proc.stdin is not None:
+            ready = threading.Event()
+            request = (self._sequence + 1, ready)
+            with self._state_lock:
+                self._catalogue_request = request
+            self._send(self.proc.stdin, "voices")
+            # Discovery never synthesizes. Let PTT/mute write while it waits,
+            # but retain line ordering with the separate enqueue lock.
+            self.lock.release()
+            try:
+                received = ready.wait(15)
+            finally:
+                self.lock.acquire()
+            if not received:
+                return {"provider": "windows", "identity": "", "features": []}
+        with self._state_lock:
+            catalogue = list(self._catalogue)
+        selection = self.opt.get("voice") or ""
+        resolved = next((v for v in catalogue if isinstance(v, dict) and
+                         (v.get("identity") == selection or v.get("id") == selection
+                          if selection else v.get("isDefault") is True)), None)
+        identity = resolved.get("identity", "") if resolved else ""
+        allowed = permissions.get(identity, []) if isinstance(permissions, dict) and identity else []
+        allowed = allowed if isinstance(allowed, list) else []
+        return {"provider": "windows", "identity": identity,
+                "features": [f for f in ("rate", "pitch", "boundaries", "pauses") if f in allowed]}
+
+    def markup_destination(self):
+        if not self.enabled:
+            return {"provider": "", "identity": "", "features": []}
+        with self._enqueue_lock, self.lock:
+            try:
+                return self._markup_destination_locked()
+            except Exception as e:
+                console.log_once("voice.catalogue", e)
+                return {"provider": "windows", "identity": "", "features": []}
+
+
+    def say(self, text, interrupt=False, tone="", first=True, markup=None, features=None, cancellation_token=None):
         if not self.enabled or not text or self.muted:     # (tone, first: Windows speech can't perform a tone)
             return
-        line = text.replace("\n", " ").replace("\r", " ").strip()
-        with self.lock:
-            if self.muted:                  # muted while this line waited for the lock
+        line = speech_markup.canonical(text)
+        generation = self._cancel_generation if cancellation_token is None else cancellation_token
+        with self._enqueue_lock, self.lock:
+            if self.muted or generation != self._cancel_generation:
                 return
             if self.proc is None or self.proc.poll() is not None:
                 console.log("voice", "speech process stopped; restarting (see %s)" % self.log_path)
@@ -252,8 +352,17 @@ class Voice:
             if stdin is None:
                 return
             try:
-                self._send(stdin, "speak", text=line, voice=self.opt.get("voice") or "",
-                           rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt))
+                destination = self._markup_destination_locked()
+                if generation != self._cancel_generation or self.muted:
+                    return
+                if features is not None:
+                    destination["features"] = [f for f in destination["features"] if f in features]
+                prepared = speech_markup.prepare(text, destination, markup, mode=self.opt.get("markup_mode"))
+                if generation != self._cancel_generation or self.muted:
+                    return
+                self._send(stdin, "speak", text=line, voice=destination["identity"] or self.opt.get("voice") or "",
+                           rate=int(self.opt.get("rate")), volume=int(self.opt.get("volume")), interrupt=bool(interrupt),
+                           features=list(destination["features"]), **({"markup": prepared} if prepared else {}))
             except Exception as e:
                 console.log("voice", "write failed: %s" % e)
                 self._fail_pending("Could not send speech to worker")

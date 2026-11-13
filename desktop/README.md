@@ -154,6 +154,18 @@ If you run Glide from source with `start-glide.cmd`, without the desktop app, th
 
 **Test voice:** choose **Template phrase** or **Last spoken line**, or edit the text beneath the play button. Editing selects **Custom text** automatically; the test speaks that text as written, without translation. Your custom text is kept while switching sources or revisiting settings in the current app session, but is not saved for the next launch. Click the language name to open **Language > Coach and speech language**.
 
+### Native speech markup
+
+Windows SAPI5 speech can carry optional delivery controls for rate, pitch, sentence/paragraph boundaries and native pauses. Feature choices belong to the actual native voice, including when Windows default is selected. Unknown voices start with no enabled effects: opt in to experiment. Permission is not evidence of support; a successful synthesis does not establish that the engine honored a pitch change or requested pause. In particular, an installed Silero wrapper need not implement the controls of the newest direct Python model.
+
+Automatic markup has three modes: **AI with local fallback**, **Local rules only**, and **Off**. Local rules use known event/instruction context rather than guessing emotion from arbitrary text. Translation precedes span binding; uncertain source-language controls are discarded. Online services continue receiving ordinary text, not native markup.
+
+For eligible native AI replies, **Light**, **Standard** and **Expanded** add 64, 128 or 256 output tokens per request and permit at most 1, 3 or 6 hints. Standard is the default. This increases the total output ceiling, not a reserved markup pool; reasoning can consume that allowance too. Existing word limits, request timeouts and model-call counts do not increase. The choice is retained but inactive in local/off mode or without an eligible native destination.
+
+In **Test voice**, explicitly choose **Plain text** or **SSML**, or insert a built-in editable example. Selecting or editing never plays audio. Template phrase and Last spoken line restore Plain text; editing an SSML sample keeps SSML mode. Only **Play** submits the current draft to the app-selected voice, independently of the coach's Windows-process voice. Invalid or disallowed markup is rejected before interrupting speech. Switching to an online provider preserves the draft but disables SSML playback rather than rerouting it.
+
+Internally, canonical words remain separate from bounded native controls. A leading AI `SPEECH:` header proposes exact quoted spans; the shared native worker constructs escaped SSML only after validation. Queued lines retain their voice and effects when settings change. Early reply text already accepted for handling is never replayed merely to apply late hints or recover from a native failure. Native pauses are not emulated with timers or additional playback jobs.
+
 ### Voice services and recognition
 
 - **Coach voice:** Settings > Voice > Coach voice. The services:

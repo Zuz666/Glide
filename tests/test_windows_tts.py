@@ -4,12 +4,171 @@
 No SAPI installation, audio device, application settings or network access is used. The worker's
 playback history catches late speaking; bounded promise checks catch startup/process-loss hangs.
 """
+import argparse
+import json
 import os
+import queue
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import wave
 
-import desktop_ts
+
+def native_file_output():
+    """Opt-in real compiler/COM proof; all synthesis targets a fresh scratch directory."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--native-output", required=True)
+    parser.add_argument("--voice", default="")
+    parser.add_argument("--positive-control", default="")
+    args = parser.parse_args()
+    powershell = shutil.which("powershell.exe")
+    if not powershell or sys.platform != "win32":
+        print("SKIP: native file-output proof requires 64-bit Windows PowerShell and installed SAPI voices")
+        return 77
+    os.makedirs(args.native_output, exist_ok=True)
+    directory = tempfile.mkdtemp(prefix="sapi5-", dir=os.path.abspath(args.native_output))
+    script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "companion", "sapi5.ps1")
+    env = dict(os.environ)
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+        env[key] = ""
+    events, observed = queue.Queue(), []
+    sequence = 0
+    with open(os.path.join(directory, "worker.log"), "w", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+             "-OutputDirectory", directory], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+            text=True, encoding="utf-8", env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+        def read_events():
+            for line in proc.stdout:
+                try:
+                    events.put(json.loads(line.lstrip("\ufeff")))
+                except ValueError:
+                    events.put({"event": "invalid", "line": line})
+            events.put({"event": "eof"})
+
+        reader = threading.Thread(target=read_events, daemon=True)
+        reader.start()
+
+        def command(op, **fields):
+            nonlocal sequence
+            sequence += 1
+            proc.stdin.write(json.dumps({"id": sequence, "op": op, **fields}, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            return sequence
+
+        def response(ident, expected):
+            while True:
+                event = events.get(timeout=45)
+                observed.append(event)
+                assert event["event"] not in ("fatal", "invalid", "eof"), event
+                if event.get("id") == ident and event["event"] != "started":
+                    assert event["event"] == expected, event
+                    return event
+
+        envelope = '<speak xmlns="http://www.w3.org/2001/10/synthesis" version="1.0" xml:lang="en-US">%s</speak>'
+        features = ["rate", "pitch", "boundaries", "pauses"]
+        try:
+            ready = response(None, "ready")
+            voices = ready["voices"]
+            assert all(v.get("identity") for v in voices), voices
+            assert sum(v.get("isDefault") is True for v in voices) == 1, voices
+
+            def selection(value):
+                if not value:
+                    return next(v["identity"] for v in voices if v.get("isDefault"))
+                return next(v["identity"] for v in voices if value in (v["id"], v["identity"]))
+
+            selected = selection(args.voice)
+            valid = envelope % '<p><s>A 😀 &amp; B <prosody rate="slow" pitch="high">repeat</prosody> repeat.</s></p>'
+            parsed = response(command("prepare", ssml=valid, features=features), "prepared")["markup"]
+            assert parsed["text"] == "A 😀 & B repeat repeat.", parsed
+            marked = [s for s in parsed["spans"] if s.get("rate")]
+            assert len(marked) == 1 and marked[0]["start"] == 8 and marked[0]["end"] == 14, parsed
+            assert sum("boundary" in s for s in parsed["spans"]) == 1, parsed
+            assert parsed["spans"][-1]["boundary"] == "p", parsed
+            invalid = [
+                "<speak>unqualified</speak>", envelope % '<voice name="other">words</voice>',
+                envelope % '<audio src="file:///secret.wav"/>', envelope % '<phoneme ph="x">word</phoneme>',
+                envelope % '<prosody volume="loud">word</prosody>', envelope % '<prosody rate="x">word</prosody>',
+                envelope % '<prosody pitch="x"><prosody pitch="high">word</prosody></prosody>',
+                envelope % 'words<break time="1501ms"/>', envelope % '<break time="100ms"/>',
+                envelope % ('<s>' * 9 + "words" + '</s>' * 9),
+                envelope % ('x' * 4001), envelope % 'words<?control x?>',
+                '<!DOCTYPE speak [<!ENTITY x SYSTEM "file:///secret">]>' + envelope % '&x;',
+                envelope % '<foo xmlns="https://external.invalid">word</foo>',
+                envelope % '<prosody rate="slow">unfinished',
+            ]
+            for sample in invalid:
+                response(command("prepare", ssml=sample, features=features), "error")
+            response(command("prepare", ssml=envelope % '<prosody pitch="high">words</prosody>', features=["rate"]), "error")
+            assert not any(name.endswith(".wav") for name in os.listdir(directory)), "preparation synthesized audio"
+
+            # Invalid controls with interrupt=true must not cancel an accepted turn or its follower.
+            first = command("speak", text="Keep this line.", voice=selected, rate=0, volume=70)
+            bad = command("speak", text="Invalid line.", voice=selected, rate=0, volume=70, interrupt=True,
+                          markup={"text": "Invalid line.", "spans": [{"start": 0, "end": 7, "pitch": "high"}]},
+                          features=[])
+            follower = command("speak", text="Keep the follower.", voice=selected, rate=0, volume=70)
+            # Commands are processed in order, but started/done for first may precede the validation result.
+            completed = set()
+            while not {first, bad, follower} <= completed:
+                event = events.get(timeout=45)
+                observed.append(event)
+                assert event["event"] not in ("fatal", "invalid", "eof", "cancelled"), event
+                if event.get("id") in (first, bad, follower) and event["event"] != "started":
+                    assert event["event"] == ("error" if event["id"] == bad else "done"), event
+                    completed.add(event["id"])
+
+            measurements = []
+            text = "Keep moving toward the road. Stay on the path."
+
+            def synth(label, data=None, *, voice=selected, rate=0, volume=70):
+                ident = command("speak", text=text, voice=voice, rate=rate, volume=volume,
+                                features=features, **({"markup": data} if data else {}))
+                done = response(ident, "done")
+                path = os.path.join(directory, "%d.wav" % ident)
+                with wave.open(path, "rb") as wav:
+                    assert wav.getnframes() > 0, label
+                    measurements.append({"sample": label, "voice": done["voice"], "identity": voice,
+                                         "seconds": wav.getnframes() / wav.getframerate(),
+                                         "rate": rate, "volume": volume, "wav": path})
+
+            synth("plain")
+            for effect, value in (("rate", "slow"), ("rate", "fast"), ("pitch", "low"), ("pitch", "high")):
+                synth(effect + "-" + value, {"text": text, "spans": [{"start": 0, "end": len(text), effect: value}]})
+            synth("scoped-rate-pitch", {"text": text, "spans": [{"start": 5, "end": 11, "rate": "slow", "pitch": "high"}]})
+            synth("native-pause", {"text": text, "spans": [{"start": 0, "end": 28, "after_ms": 700}]})
+            synth("plain-after")
+            synth("configured-rate-volume", rate=3, volume=35)
+            if args.positive_control:
+                positive = selection(args.positive_control)
+                synth("positive-plain", voice=positive)
+                synth("positive-pause", {"text": text, "spans": [{"start": 0, "end": 28, "after_ms": 700}]}, voice=positive)
+                assert measurements[-1]["seconds"] - measurements[-2]["seconds"] >= 0.4, measurements[-2:]
+            with open(os.path.join(directory, "measurements.json"), "w", encoding="utf-8") as output:
+                json.dump({"measurements": measurements, "events": observed,
+                           "claim": "WAV synthesis and duration only; no listening-quality or capability promotion."},
+                          output, ensure_ascii=False, indent=2)
+            print("Native file-output artifacts:", directory)
+        finally:
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+            reader.join(5)
+            proc.stdout.close()
+    return 0
+
+
+if "--native-output" in sys.argv:
+    sys.exit(native_file_output())
+
+import desktop_ts  # noqa: E402 - the optional native proof does not need the TypeScript test harness
 
 if not desktop_ts.node or not desktop_ts.available():
     print("SKIP: needs node and desktop/node_modules")
@@ -68,10 +227,11 @@ class Worker extends EventEmitter {
     this.spoken = [];
     this.queue = [];
     this.active = null;
-    this.catalogue = [{ id: 'Installed voice', name: 'Installed voice' }];
+    this.catalogue = [{ id: 'Installed voice', name: 'Installed voice', identity: 'token:installed', isDefault: true }];
     this.listing = [];
     this.killed = false;
     this.warmups = [];
+    this.preparations = [];
     let input = '';
     this.stdin = new Writable({ write: (chunk, encoding, callback) => {
       input += chunk.toString();
@@ -87,6 +247,7 @@ class Worker extends EventEmitter {
   emitMessage(message) { this.stdout.write(JSON.stringify(message) + '\r\n'); }
   ready() { this.emitMessage({ event: 'ready' }); }
   accept(command) {
+    if (command.op === 'prepare') { this.preparations.push(command); return; }
     if (command.op === 'voices') { this.listing.push(command); return; }
     if (command.op === 'speak') { this.queue.push(command); this.play(); return; }
     if (command.op === 'warmup') { this.warmups.push(command); this.queue.push(command); this.play(); return; }
@@ -162,7 +323,7 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   ], 'onStatusChange must emit started synthesis latency distinct from done playback duration');
   offStatus();
   const refreshed = watched(host.voices());
-  worker.catalogue = [{ id: 'Newly installed', name: 'Newly installed' }];
+  worker.catalogue = [{ id: 'Newly installed', name: 'Newly installed', identity: 'token:new', isDefault: true }];
   worker.list();
   await settled(refreshed);
   assert.deepEqual(refreshed.value, worker.catalogue, 'voice catalogues must be refreshed');
@@ -200,6 +361,44 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   await settled(afterStop);
   host.dispose();
   assert(worker.killed, 'dispose must terminate its own worker');
+
+  // The enqueue boundary freezes controls, features and the actual token together, even before ready.
+  const frozen = new WindowsTts('silent-worker.ps1');
+  const selected = { voiceName: 'token:installed', rate: 1, volume: 0.7 };
+  const permitted = ['rate', 'pitch'];
+  const markup = { text: 'A 😀 & <B>.', spans: [{ start: 2, end: 3, rate: 'slow', pitch: 'high' }] };
+  const frozenLine = watched(frozen.speak('frozen', markup.text, selected, markup, permitted));
+  const frozenWorker = workers.at(-1);
+  selected.voiceName = 'token:changed';
+  markup.spans[0].start = 0;
+  permitted.splice(0);
+  frozenWorker.ready();
+  assert.equal(frozenWorker.active.voice, 'token:installed');
+  assert.equal(frozenWorker.active.text, 'A 😀 & <B>.', 'literal content stays separate from controls');
+  assert.deepEqual(frozenWorker.active.features, ['rate', 'pitch']);
+  assert.deepEqual(frozenWorker.active.markup.spans, [{ start: 2, end: 3, rate: 'slow', pitch: 'high' }]);
+
+  // Manual preparation is a silent request, not speech or cancellation. Failures leave active work intact.
+  const beforePrepare = frozenWorker.active;
+  const rejectedSample = watched(frozen.prepare('invalid manual sample', ['pitch']));
+  const rejection = frozenWorker.preparations.at(-1);
+  frozenWorker.emitMessage({ id: rejection.id, event: 'error', error: 'Disallowed pitch' });
+  await failed(rejectedSample, /Disallowed pitch/);
+  assert.equal(frozenWorker.active, beforePrepare);
+  assert.deepEqual(frozenWorker.spoken, ['A 😀 & <B>.']);
+  const preparedSample = watched(frozen.prepare('validated sample', ['rate']));
+  const preparation = frozenWorker.preparations.at(-1);
+  frozenWorker.emitMessage({ id: preparation.id, event: 'prepared',
+    markup: { text: 'Words & more.', spans: [{ start: 0, end: 5, rate: 'slow' }] } });
+  await settled(preparedSample);
+  assert.equal(preparedSample.value.text, 'Words & more.');
+  assert.equal(frozenWorker.active, beforePrepare);
+  frozenWorker.finish();
+  await settled(frozenLine);
+  const abandonedPreparation = watched(frozen.prepare('never returned', ['rate']));
+  advance(60000);
+  await failed(abandonedPreparation, /timed out/);
+  frozen.dispose();
 
   // Losing a running process rejects all outstanding work; only a later call starts a replacement.
   const recovering = new WindowsTts('silent-worker.ps1');

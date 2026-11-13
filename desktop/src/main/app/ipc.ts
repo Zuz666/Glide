@@ -18,8 +18,9 @@ import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import { TtsStatusCoordinator } from "../tts-status";
 import type { WindowsTts } from "../windows-tts";
+import { speechFeatures } from "../speech-markup";
 import { Updater } from "../updater";
-import { configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveAppSettingsPatch, saveConfig } from "./config";
+import { companionSection, configPath, endpointKeyEnvs, engineHome, engineOptions, keyValue, readConfig, saveAppSettingsPatch, saveConfig, setSpeechDestinationCatalogue, refreshSpeechDestination } from "./config";
 import { isOwnPage } from "./assets";
 import { MainWindow } from "./main-window";
 import { Overlay } from "./overlay";
@@ -74,6 +75,7 @@ const handle = <K extends InvokeChannel, Sender extends boolean = false>(ch: K,
 const isUnc = (p: string) => /^[\\/]{2}/.test(String(p || ""));
 
 export function registerIpc(d: IpcDeps): void {
+  setSpeechDestinationCatalogue(() => d.windowsTts.voices());
   const ttsKey = (provider: unknown) => {
     const env = TTS_KEYS[provider as keyof typeof TTS_KEYS];
     return env ? keyValue(env) : "";
@@ -250,17 +252,36 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
       ttsActive--;
     }
   }, true);
-  handle("tts:windowsSpeak", async (id, text, options) => {
+  handle("tts:windowsSpeak", async (id, text, options, markup, features) => {
     if (settings.current.muted) {
       engine.note(`[voice] SAPI5 rejected request=${JSON.stringify(id)}: speech is muted`,
         { category: "TTS", operation: "native speech", provider: "SAPI5", request_id: id, status: "error" });
       throw new Error("Windows SAPI5 speech is muted");
     }
-    return d.windowsTts.speak(id, String(text || "").slice(0, 4000), options);
+    return d.windowsTts.speak(id, String(text || ""), options, markup, features);
+  });
+  handle("tts:windowsPrepare", async (ssml, options, snapshot) => {
+    if (settings.current.speech?.provider !== "windows") {
+      throw new Error("SSML testing is available only for Windows SAPI5 voices");
+    }
+    const catalogue = await d.windowsTts.voices();
+    const selection = options.voiceName || "";
+    const voice = selection ? catalogue.find((item) => item.identity === selection || item.id === selection)
+      : catalogue.find((item) => item.isDefault);
+    if (!voice?.identity) throw new Error("The selected native voice identity could not be resolved");
+    const permissions = companionSection("voice").markup_voices;
+    const permitted = speechFeatures(permissions && typeof permissions === "object" && !Array.isArray(permissions)
+      ? permissions[voice.identity] : undefined);
+    const features = speechFeatures(snapshot).filter((feature) => permitted.includes(feature));
+    return d.windowsTts.prepare(ssml, features);
   });
   handle("tts:windowsStop", (id) => d.windowsTts.stop(id));
-  handle("tts:voices", (provider) => provider === "windows" ? d.windowsTts.voices()
-    : ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region));
+  handle("tts:voices", async (provider) => {
+    if (provider !== "windows") return ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region);
+    const catalogue = await d.windowsTts.voices();
+    await refreshSpeechDestination(engine, catalogue);
+    return catalogue;
+  });
   const validPlaybackStates: Readonly<Record<TtsPlaybackState, true>> = {
     playing: true, fallback: true, ended: true, error: true,
   };
@@ -370,7 +391,10 @@ function edgeChannels({ edgeTts }: IpcDeps, ttsStatus: TtsStatusCoordinator): vo
 }
 
 function configChannels({ engine, overlay, ensureSpeech }: IpcDeps): void {
-  handle("config:get", () => readConfig());
+  handle("config:get", async () => {
+    await refreshSpeechDestination(engine);
+    return readConfig();
+  });
   handle("config:set", async (patch: Obj, liveChanges?: Obj) => {
     const next = await saveConfig(patch, engine, liveChanges); // validation + persistence before app side effects
     overlay.readDragKey();
@@ -586,6 +610,10 @@ function forwardEngineEvents(d: IpcDeps): void {
   d.engine.on("state", (s) => {
     d.broadcast("engine:state", s);
     if (s.state === "running" && settings.current.muted) d.pushMute();     // a (re)started coach starts unmuted
+    if (s.state === "running") void refreshSpeechDestination(d.engine).catch((error) => {
+      d.engine.note(`[voice] Native destination refresh failed: ${error instanceof Error ? error.message : "settings unavailable"}`,
+        { category: "TTS", operation: "native destination", provider: "SAPI5", status: "error" });
+    });
     d.updateTray();
   });
   d.engine.on("log", (l) => d.mainWindow.send("engine:logline", l));

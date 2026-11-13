@@ -59,7 +59,6 @@ whenShown("memory", refreshMemory);
 
 wireActivity();
 wireSessionBar();
-wireCoach();
 wireAppSettings();
 wireLogs();
 wireSettings();
@@ -67,21 +66,22 @@ wireSpeechStatus();
 wireAddon();
 wireMemory();
 wireStatus();
-wireUpdates();
 wireSetup();
 
 // ---- start ------------------------------------------------------------------------------------------------
 (async () => {
   const info = await call("app:info");
   if (info) $("app-ver").textContent = `v${info.version}${info.dev ? " dev" : ""}`;
+  live.config = (await call("config:get")) || {};
   applyAppSettings((await call("app:settings:get")) || {});
+  wireCoach();
+  wireUpdates();
   await catchUpNotes(String(info?.version || ""));
   loadLog((await call("engine:log")) || []);
   onEngine((await call("engine:get"))!);
   onUpdate((await call("update:get")) || ({} as UpdateStatus));
-  const cfg0 = (await call("config:get")) || {};
   live.speech = (await call("speech:status")) || {};
   // a new install walks through setup first; one that skipped it starts on the Addon page until the game is set
   if (!live.appSettings.setupDone) openSetup();
-  else if (!cfg0.wow_dir) { show("addon"); toast("Start by choosing your World of Warcraft folder, then install the addon.", false, 10000); }
+  else if (!live.config.wow_dir) { show("addon"); toast("Start by choosing your World of Warcraft folder, then install the addon.", false, 10000); }
 })();

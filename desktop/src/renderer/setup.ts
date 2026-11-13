@@ -282,10 +282,12 @@ function drawVoice(host: HTMLElement): void {
     call("tts:voices", "windows").then((voices) => {
       if (!voices || !wv.isConnected) return;
       const selected = wv.value;
+      const matched = selected ? voices.find((v) => v.identity === selected || v.id === selected) : undefined;
       wv.innerHTML = `<option value="">Windows default</option>`
-        + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
-        + (selected && !voices.some((v) => v.id === selected) ? `<option value="${esc(selected)}">${esc(selected)} (not installed)</option>` : "");
-      wv.value = selected;
+        + voices.map((v) => `<option value="${esc(v.identity || v.id)}">${esc(v.name)}${voices.some((other) => other !== v && other.name === v.name) ? ` — ${esc(v.identity || v.id)}` : ""}</option>`).join("")
+        + (selected && !matched ? `<option value="${esc(selected)}">${esc(selected)} (not installed)</option>` : "");
+      wv.value = matched?.identity || selected;
+      pick.voiceName = wv.value;
     }).finally(() => { if (wv.isConnected) wv.disabled = false; });
   }
   const tts = document.getElementById("su-tts") as HTMLSelectElement | null;

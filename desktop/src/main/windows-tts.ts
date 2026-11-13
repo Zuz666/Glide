@@ -4,6 +4,7 @@ import type { ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import type { Interface } from "readline";
 import type { LogAttribution, SpeechSettings, Voice } from "../shared/ipc";
+import type { SpeechFeature, SpeechMarkup } from "../shared/speech-markup";
 
 const READY_TIMEOUT_MS = 15000;
 const VOICES_TIMEOUT_MS = 15000;
@@ -11,13 +12,16 @@ const VOICES_TIMEOUT_MS = 15000;
 type SpeechOptions = Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
 type Command = { id: number; op: "voices" }
   | { id: number; op: "warmup"; voice: string }
-  | { id: number; op: "speak"; text: string; voice: string; rate: number; volume: number };
+  | { id: number; op: "prepare"; ssml: string; features: SpeechFeature[] }
+  | { id: number; op: "speak"; text: string; voice: string; rate: number; volume: number;
+      markup?: SpeechMarkup; features?: SpeechFeature[] };
 type Pending = {
   command: Command;
   sent: boolean;
   timer?: NodeJS.Timeout;
   reject: (error: Error) => void;
 } & ({ kind: "voices"; resolve: (voices: Voice[]) => void }
+  | { kind: "prepare"; resolve: (markup: SpeechMarkup) => void }
   | { kind: "warmup"; submittedAt: number; voice: string; resolve: () => void }
   | { kind: "speak"; callerId: string; submittedAt: number; actualVoice?: string;
     resolve: (result: { voice: string }) => void });
@@ -96,13 +100,28 @@ export class WindowsTts {
     });
   }
 
-  speak(id: string, text: string, settings: SpeechOptions): Promise<{ voice: string }> {
+  prepare(ssml: string, features: SpeechFeature[]): Promise<SpeechMarkup> {
+    return new Promise((resolve, reject) => {
+      const worker = this.start();
+      const command: Command = { id: this.nextId++, op: "prepare", ssml, features: [...features] };
+      this.enqueue(worker, { kind: "prepare", command, sent: false, resolve, reject });
+    });
+  }
+
+  speak(id: string, text: string, settings: SpeechOptions, markup?: SpeechMarkup,
+    features?: SpeechFeature[]): Promise<{ voice: string }> {
     return new Promise((resolve, reject) => {
       const submittedAt = performance.now();
       const multiplier = typeof settings.rate === "number" && Number.isFinite(settings.rate) && settings.rate > 0
         ? settings.rate : 1;
       const volume = typeof settings.volume === "number" && Number.isFinite(settings.volume) ? settings.volume : 1;
+      const frozenFeatures = features ? [...features] : undefined;
+      // Preparation belongs to the renderer; retain its exact bound controls.
+      // The native worker validates the snapshot again before queue side effects.
+      const prepared = markup ? structuredClone(markup) : undefined;
       const command: Command = { id: this.nextId++, op: "speak", text, voice: settings.voiceName || "",
+        ...(prepared ? { markup: prepared } : {}),
+        ...(frozenFeatures ? { features: frozenFeatures } : {}),
         rate: Math.max(-10, Math.min(10, Math.round(10 * Math.log10(multiplier)))),
         volume: Math.max(0, Math.min(100, Math.round(volume * 100))) };
       const pending: Pending = { kind: "speak", callerId: id, command, submittedAt, sent: false, resolve, reject };
@@ -210,11 +229,11 @@ export class WindowsTts {
   private send(worker: Worker, pending: Pending): void {
     if (worker.closed || !worker.pending.has(pending.command.id)) return;
     pending.sent = true;
-    if (pending.kind === "voices") {
+    if (pending.kind === "voices" || pending.kind === "prepare") {
       pending.timer = setTimeout(() => {
         if (worker.pending.get(pending.command.id) !== pending) return;
         this.remove(worker, pending.command.id);
-        pending.reject(new Error("Windows TTS: loading voices timed out"));
+        pending.reject(new Error(`Windows TTS: ${pending.kind === "prepare" ? "preparing SSML" : "loading voices"} timed out`));
       }, VOICES_TIMEOUT_MS);
     }
     this.write(worker, pending.command);
@@ -233,7 +252,7 @@ export class WindowsTts {
 
   private receive(worker: Worker, line: string): void {
     if (worker.closed || this.worker !== worker || !line.trim()) return;
-    let message: { event?: string; id?: number; voice?: string; voices?: Voice[]; error?: string };
+    let message: { event?: string; id?: number; voice?: string; voices?: Voice[]; markup?: SpeechMarkup; error?: string };
     try {
       message = JSON.parse(line.replace(/^\uFEFF/, ""));
       if (!message || typeof message !== "object") throw new Error("Invalid response");
@@ -298,10 +317,18 @@ export class WindowsTts {
       pending.reject(error);
       return;
     }
+    if (message.event === "prepared" && pending.kind === "prepare") {
+      this.remove(worker, message.id);
+      if (!message.markup || typeof message.markup.text !== "string" || !Array.isArray(message.markup.spans)) {
+        pending.reject(new Error("Windows TTS: invalid prepared markup"));
+      } else pending.resolve(message.markup);
+      return;
+    }
     if (message.event === "voices" && pending.kind === "voices") {
       this.remove(worker, message.id);
       if (!Array.isArray(message.voices) || !message.voices.every(voice => voice
-        && typeof voice.id === "string" && typeof voice.name === "string")) {
+        && typeof voice.id === "string" && typeof voice.name === "string"
+        && typeof voice.identity === "string" && !!voice.identity && typeof voice.isDefault === "boolean")) {
         pending.reject(new Error("Windows TTS: invalid voice catalogue"));
       } else {
         pending.resolve(message.voices);

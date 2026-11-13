@@ -45,6 +45,7 @@ from knowledge_layer import KB_PATH, handle_view  # noqa: E402
 import rules as rules_mod  # noqa: E402
 from rules import Rules  # noqa: E402
 import settings  # noqa: E402
+import speech_markup  # noqa: E402
 from state import GameState  # noqa: E402
 from voice import Voice  # noqa: E402
 
@@ -239,6 +240,7 @@ class App:
             gear_fn=lambda: (self.rules.upgrades, self.rules.rewards, self.state.gear["W"], self.rules.bag_items),
             system_fn=lambda: self.rules.addon_status,
             speak_fn=self.speak_early,
+            speech_policy_fn=lambda: App._speech_policy(self),
             watched_fn=lambda: self.rules.watched,
             on_thinking=lambda role: self.hub.publish("thinking", {"role": role}))
 
@@ -252,12 +254,13 @@ class App:
 
     def _deliver_message(self, m):
         m.setdefault("t", time.time())
+        public = {key: value for key, value in m.items() if key not in ("markup", "speech_context")}
         if m.get("kind") in msg_kinds.HISTORY:
             with self._hist_lock:
-                self.msg_history.append(m)
+                self.msg_history.append(public)
                 del self.msg_history[:-MSG_HISTORY]
-        self.hub.publish("message", m)
-        self.write_log({"msg": m})
+        self.hub.publish("message", public)
+        self.write_log({"msg": public})
         log(m.get("kind"), m.get("text"), m.get("attribution"))
         if m.get("speak") and m.get("kind") != "answer" and self._flags and not self._flags.get("voice", True):
             m = dict(m, speak=False)                 # /coach voice off: text only (answers to questions still speak)
@@ -271,17 +274,63 @@ class App:
         if self.overlay and m.get("kind") in msg_kinds.COACH_SAID:
             self.overlay.set_message(m["text"], "#ff8a95" if m.get("urgent") else "#e6e9ef")
 
+    def _speech_policy(self):
+        cfg = self.cfg.get("voice", {})
+        destination_fn = getattr(self.voice, "markup_destination", None)
+        if not cfg.get("enabled", True) or not getattr(self.voice, "enabled", True):
+            return speech_markup.Policy()
+        return speech_markup.policy(cfg, destination_fn() if destination_fn else {})
+
+    def _speech_data(self, text, message):
+        destination_fn = getattr(self.voice, "markup_destination", None)
+        destination = destination_fn() if destination_fn else {}
+        cfg = getattr(self, "cfg", {}).get("voice", {})
+        mode = cfg.get("markup_mode", "ai")
+        incoming = message.get("markup")
+        if mode == "local" and incoming:
+            incoming = {"text": incoming["text"], "spans": [
+                {"start": span["start"], "end": span["end"], "boundary": span["boundary"]}
+                for span in incoming["spans"] if "boundary" in span]}
+        prepared = speech_markup.prepare(text, destination, incoming if mode != "off" else None,
+                                         mode=mode, context=message.get("speech_context"))
+        return {"markup": prepared, "features": list(destination.get("features") or ())} if prepared else {}
+
+    def _speech_token(self):
+        token_fn = getattr(self.voice, "cancellation_token", None)
+        return token_fn() if token_fn else None
+
     def _say(self, m):
-        """Say a message: all of it, or only the rest when its start was said while it streamed (speak_early). The
-        tone goes as its own field with the first sentence only (ElevenLabs v3 acts it as a tag: once a line)."""
+        """Schedule only the uncommitted suffix; a mismatched final prefix is never a replay license."""
+        token = App._speech_token(self)
         tone = str(m.get("tone") or "")
         if m.get("spoken"):
-            said, full = " ".join(m["spoken"].split()), " ".join(m["text"].split())
-            rest = full[len(said):].strip() if full.startswith(said) else full
+            said, full = speech_markup.canonical(m["spoken"]), speech_markup.canonical(m["text"])
+            if not full.startswith(said):
+                return
+            start = len(said)
+            while start < len(full) and full[start].isspace():
+                start += 1
+            rest = full[start:]
             if rest:
-                self.voice.say(rest, interrupt=False, tone=tone, first=False)
+                prepared = App._speech_data(self, m["text"], m)
+                markup = speech_markup.slice_markup(prepared.get("markup"), start, len(full), rest)
+                extra = {**prepared, "markup": markup} if markup else {}
+                text, interrupt, first = rest, False, False
+            else:
+                return
         else:
-            self.voice.say(m["text"], interrupt=m.get("urgent", False), tone=tone)
+            text, interrupt, first = m["text"], m.get("urgent", False), True
+            extra = App._speech_data(self, text, m)
+        if token != App._speech_token(self):
+            return                         # cancellation during destination discovery settles this line
+        if ptt_talking(self):
+            if m.get("kind") == "answer":
+                with self._hist_lock:
+                    self._held.append(m)
+            return
+        if token is not None:
+            extra["cancellation_token"] = token
+        self.voice.say(text, interrupt=interrupt, tone=tone, first=first, **extra)
 
     def on_ptt_state(self, st):
         """Push-to-talk as it happens ("listening" | "transcribing" | "idle"): the "ptt" event, and talking over the
@@ -319,14 +368,22 @@ class App:
         if coach is not None:
             coach.barge()
 
-    def speak_early(self, text, kind, urgent=False, tone="", first=True):
+    def speak_early(self, text, kind, urgent=False, tone="", first=True, markup=None, features=None, speech_context=None):
         """The coach's streamed replies: say one finished sentence now (same voice switch rule as on_message).
         -> False when it isn't said (push-to-talk held: the reply then keeps it for on_message)."""
+        token = App._speech_token(self)
         if ptt_talking(self):
             return False
         if kind != "answer" and self._flags and not self._flags.get("voice", True):
             return None
-        self.voice.say(text, interrupt=urgent, tone=tone or "", first=first)
+        data = App._speech_data(self, text, {"markup": markup, "speech_context": speech_context})
+        if token != App._speech_token(self):
+            return None                    # cancelled, not PTT-refused: never eligible for later replay
+        if ptt_talking(self):
+            return False
+        if token is not None:
+            data["cancellation_token"] = token
+        self.voice.say(text, interrupt=urgent, tone=tone or "", first=first, **data)
         return True
 
     def set_watch(self, name, on=True):
@@ -586,13 +643,17 @@ class App:
             self.coach.cfg.update(applied)
             v_patch = (patch.get("companion") or {}).get("voice")
             if isinstance(v_patch, dict):
-                v_live = {k: v_patch[k] for k in ("rate", "volume") if k in v_patch and v_patch[k] is not None}
+                saved_companion = saved.get("companion") or {}
+                saved_voice = saved_companion.get("voice") or {}
+                voice_settings = settings.Settings("voice", saved_voice)
+                live_keys = ("rate", "volume", "markup_mode", "markup_profile", "markup_voices", "markup_destination")
+                v_live = {key: voice_settings.get(key) for key in live_keys if key in v_patch}
                 if v_live:
                     if hasattr(self, "cfg") and isinstance(self.cfg, dict):
                         self.cfg.setdefault("voice", {}).update(v_live)
                     voice_inst = getattr(self, "voice", None)
                     if voice_inst is not None and hasattr(voice_inst, "cfg") and isinstance(voice_inst.cfg, dict):
-                        voice_inst.cfg.update(v_live)
+                        voice_inst.cfg = {**voice_inst.cfg, **v_live}
             log_settings(saved_before, saved_after, "pending restart", self.catalog)
         else:
             applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)

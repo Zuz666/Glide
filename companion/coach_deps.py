@@ -18,3 +18,4 @@ class CoachDeps:
     watched_fn: Optional[Callable] = None     # -> set of watched buff names
     on_thinking: Optional[Callable] = None    # callback(role | None): active LLM turn ("question"|"callout"|"review")
     language: str = "en"                      # canonical companion.voice.language, fixed for this coach session
+    speech_policy_fn: Optional[Callable] = None  # -> immutable Speech Markup request policy for the active destination

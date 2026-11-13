@@ -37,6 +37,7 @@ import offline_coach
 import persona as persona_mod
 import prompt_context
 import reminders as reminders_mod
+import speech_markup
 from coach_briefings import Briefings
 from coach_deps import CoachDeps
 import websearch
@@ -322,6 +323,10 @@ class Coach:
 
     def localize_text(self, text):
         return self.localize(text)["text"]
+
+    def speech_policy(self):
+        """One generation's immutable destination/profile limits; an unknown route is ineligible."""
+        return self.deps.speech_policy_fn() if self.deps.speech_policy_fn else speech_markup.Policy()
 
     # ------------------------------------------------------------------------------------------
     def _loop(self):
@@ -678,32 +683,39 @@ class Coach:
             self.last_call = time.time()
             return self._emit_offline(question, self.offline(batch, ctx, question),
                                       bool(batch) and min(t.priority for t in batch) <= 2 or bool(question),
-                                      "offline" + (" (%s)" % held if held else ""))
+                                      "offline" + (" (%s)" % held if held else ""), batch=batch)
         if not llm.keys.get(prov):
             text = self.offline(batch, ctx, question)
             if question:
                 text = "No %s for %s; pick another model in the dashboard. %s" % (
                     {"openrouter": "OPENROUTER_API_KEY", "gemini": "GEMINI_API_KEY"}.get(prov, "ANTHROPIC_API_KEY"),
                     model, text or "")
-            return self._emit_offline(question, text, bool(question), "offline (no %s key)" % prov)
+            return self._emit_offline(question, text, bool(question), "offline (no %s key)" % prov, batch=batch)
         user = self._user_message(ctx, trigger, question=bool(question), triggers=triggers if batch else None,
                                   cc=llm.ref_marker(model))
         limit = self._word_limit(question, voice, deep, batch, chat)
         urgent = (bool(batch) and min(t.priority for t in batch) == 1) or voice
         msg_kind = "answer" if question else ("review" if deep else "callout")
         speaks = bool(question) or not deep or self.opt.get("speak_reviews")
+        limits = self.speech_policy() if speaks else speech_markup.Policy()
+        warning_context = len(batch) == 1 and batch[0].kind == "low_health_in_combat"
         speak_fn = self.deps.speak_fn
-        def say_early(t, u):
-            tone, fn = getattr(speech, "tone", None), speak_fn      # tone in character: the reply's TONE line
+        def say_early(t, u, markup=None):
+            tone, fn = getattr(speech, "tone", None), speak_fn
             if fn is None:
                 return None
-            return fn(t, msg_kind, u, tone, not getattr(speech, "words", 0)) if tone else fn(t, msg_kind, u)
-        speech = EarlySpeech(say_early, limit, urgent) if speak_fn and speaks else None
+            context = {"kind": "low_health_in_combat", "text": t} if warning_context else None
+            prepared = speech_markup.prepare_with_policy(t, limits, markup, context=context)
+            extra = {"markup": prepared, "speech_context": context} if prepared else {}
+            if tone:
+                return fn(t, msg_kind, u, tone, not getattr(speech, "words", 0), **extra)
+            return fn(t, msg_kind, u, **extra)
+        speech = EarlySpeech(say_early, limit, urgent, policy=limits) if speak_fn and speaks else None
         barges, self._speech = self._barges, speech
         self._set_thinking("question" if question else msg_kind)
         try:
             try:
-                text, meta = self._ask_model(model, user, kctx, question, voice, deep, speech)
+                text, meta = self._ask_model(model, user, kctx, question, voice, deep, speech, limits)
             finally:
                 self._speech = None
             barged = self._barges != barges        # the player talked over it (push-to-talk): it isn't said
@@ -715,25 +727,42 @@ class Coach:
                 return msg
             if question and text:
                 self._count_rounds("voice" if voice else "typed", meta)
-            facts, had_facts = [], False
+            facts, had_facts, hints = [], False, []
             ended = False
+            received = bool(text)
             if text:
+                text, _tone, hints = speech_markup.split_headers(text, limits)
                 text, ended = banter_mod.split_chat(text)
                 text, facts, had_facts = self._directives(text, with_facts=True)
+                if _tone:
+                    self.tone = _tone
             if text and not question and is_skip(text):
                 return None
             tone = self.tone or (speech.tone if speech is not None else None)
             chatting = chat and not ended          # still chatting: the player's next reply carries it on
             if chatting:
                 self.banter.chatted(text)
+            uncut = text
             if text:     # (the limit again: a reply that just took on a character may stretch already)
                 text = trim_words(text, max(limit, self._word_limit(question, voice, deep, batch, chat)))
             if not text:
+                if received:
+                    self.emit({"kind": "error", "text": "The model returned no answer text.", "speak": False})
                 return None
             self.history.append(text)
             self.history = self.history[-10:]
             msg = {"kind": msg_kind, "text": self.localization.generated(text), "speak": speaks and not barged,
                    "urgent": urgent, "model": self._model_note(model, meta), "t": time.time()}
+            markup = speech_markup.resolve(uncut, hints, limits, clipped=text,
+                                          committed=speech.used if speech is not None else 0)
+            if markup:
+                msg["markup"] = markup
+            if warning_context:
+                full = speech_markup.canonical(text)
+                scopes = speech_markup.units(text)
+                if scopes:
+                    a, b = scopes[0]
+                    msg["speech_context"] = {"kind": "low_health_in_combat", "text": full[a:b]}
             if meta.get("attribution"):
                 msg["attribution"] = meta["attribution"]
             if tone:
@@ -778,11 +807,15 @@ class Coach:
                      "the direct answer first.)")
         return text
 
-    def _emit_offline(self, question, text, speak, model_note):
+    def _emit_offline(self, question, text, speak, model_note, batch=()):
         """Send an offline answer or callout (when there is one). -> the message, or None."""
         if not text:
             return None
         msg = {"kind": "answer" if question else "callout", "text": text, "speak": speak, "model": model_note}
+        if not question and any(t.kind == "low_health_in_combat" for t in batch):
+            warning = re.search(r"Health [^.]+\.", text)
+            if warning:
+                msg["speech_context"] = {"kind": "low_health_in_combat", "text": warning.group()}
         self.emit(msg)
         return msg
 
@@ -807,6 +840,8 @@ class Coach:
         llm = self.llm
         text = None
         _meta = {}
+        limits = self.speech_policy()
+        hints, uncut = [], ""
         if notes and llm.enabled and llm.keys.get(models_mod.provider(model)) and \
                 not llm.suspension_for(models_mod.provider(model)) and time.time() >= llm.backoff_until:
             request = ANNOUNCE_REQUEST % (version, "is out" if what == "available" else "is downloaded and ready",
@@ -815,8 +850,15 @@ class Coach:
             if self.persona():
                 request += "\n" + self.banter.reminder()
             try:
-                got, _meta = llm.call_once(model, request, 500, role="update announcement")
-                text = self._directives(got or "")
+                got, _meta = llm.call_once(model, request, 500, role="update announcement", speech_policy=limits)
+                body, tone, hints = speech_markup.split_headers(got or "", limits)
+                text = self._directives(body)
+                if got and not text:
+                    self.emit({"kind": "error", "text": "The model returned no answer text.", "speak": False})
+                    return None
+                if tone:
+                    self.tone = tone
+                uncut = text
             except Exception as e:  # noqa: BLE001 - the plain line instead
                 log_once("coach.announce", e)
                 text = None
@@ -826,6 +868,10 @@ class Coach:
             text = trim_words(text, self._stretch(int(self.opt.get("announce_words"))))
         msg = {"kind": "callout", "text": self.localization.generated(text) if text else plain, "speak": True, "urgent": False,
                "model": "update notice" if not text else self._model_note(model, _meta), "t": time.time()}
+        if text:
+            markup = speech_markup.resolve(uncut, hints, limits, clipped=text)
+            if markup:
+                msg["markup"] = markup
         if text and _meta.get("attribution"):
             msg["attribution"] = _meta["attribution"]
         if text and self.tone:
@@ -981,7 +1027,7 @@ class Coach:
                        "text": "Coach persona: %s" % persona_mod.short_name(brief, 14) if brief else
                        "Coach persona off"})
 
-    def _ask_model(self, model, user, kctx, question, voice, deep, speech):
+    def _ask_model(self, model, user, kctx, question, voice, deep, speech, limits=None):
         """Questions and reviews with the knowledge layer go through the tool-use loop; callouts (and models
         without tools) are one call. -> (text, meta)."""
         max_tokens = 3000 if deep else 600
@@ -990,9 +1036,10 @@ class Coach:
             calls, secs = self._tool_caps(voice)
             web = bool(question) and self.web_for(voice)
             return self.llm.call_tools(model, [{"role": "user", "content": user}], self._tools(web, model),
-                                       calls, secs, ctx=kctx, max_tokens=max_tokens, deep=deep, on_text=speech, role=role)
+                                       calls, secs, ctx=kctx, max_tokens=max_tokens, deep=deep, on_text=speech,
+                                       role=role, speech_policy=limits)
         return self.llm.call_once(model, user, max_tokens, deep=deep, tools=self._shared_tools(model),
-                                  on_text=speech, role=role)
+                                  on_text=speech, role=role, speech_policy=limits)
 
     def _tools_ok(self, model):
         """Whether the model can use tools (the catalog says; unknown models are assumed to)."""
@@ -1150,12 +1197,14 @@ class Coach:
         """Strip WATCH:/UNWATCH:, the persona lines (PERSONA, NAME, VOICE, LORE, TONE) and BANTER: (applied) and the
         FACTS: line (machine-only) from a reply. The line's TONE: is left in self.tone for the caller. -> text, or
         (text, fact ids, had_facts_line) with with_facts=True."""
+        text, header_tone, _hints = speech_markup.split_headers(text)
         text, facts, had = split_facts(text)
         if self.persona() or persona_mod.STARTS.search(text or ""):
             text, found = persona_mod.split(text)
         else:
             found = persona_mod.split("")[1]
         self.tone = found["tone"] if self.persona() or found["persona"] else None
+        self.tone = header_tone or self.tone
         text, chatter = banter_mod.split(text)
         if chatter:
             self.banter.adjust(chatter)

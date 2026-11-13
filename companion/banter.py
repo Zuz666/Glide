@@ -27,6 +27,7 @@ from typing import Callable, Optional
 import models as models_mod
 import persona as persona_mod
 import recall as recall_mod
+import speech_markup
 from replies import is_skip, trim_words
 from log import log, log_once
 
@@ -675,25 +676,36 @@ class Banter:
         self.since = self.wait_s = None
         model = c.cfg.get("fast_model")
         limit = c._stretch(int(c.opt.get("banter_words")) * BIG.get(moment["kind"] if moment else "", 1))
+        limits = c.speech_policy()
         act = activity(c._summary())
         try:
             ctx = c.context(triggers=["banter"])
             trigger = self.request(limit, moment, act) + "\n" + self.reminder()
             user = c._user_message(ctx, trigger, triggers=["banter"], cc=c.llm.ref_marker(model))
-            text, meta = c.llm.call_once(model, user, 400, role="banter")
+            text, meta = c.llm.call_once(model, user, 400, role="banter", speech_policy=limits)
         except Exception as e:  # noqa: BLE001 - an aside is an extra; never breaks the coach
             log_once("banter.speak", e)
             return None
         c.last_call = time.time()
-        text = c._directives(text or "")
+        received = bool(text)
+        text, header_tone, hints = speech_markup.split_headers(text or "", limits)
+        text = c._directives(text)
+        if header_tone:
+            c.tone = header_tone
         tone = c.tone
+        if received and not text:
+            c.emit({"kind": "error", "text": "The model returned no answer text.", "speak": False})
         if not text or is_skip(text):
             return None
+        uncut = text
         text = trim_words(text, limit)
         self.said = (self.said + [text])[-8:]
         c.history = (c.history + [text])[-10:]
         msg = {"kind": "banter", "text": c.localization.generated(text), "speak": True, "urgent": False,
                "model": c._model_note(model, meta), "t": time.time()}
+        markup = speech_markup.resolve(uncut, hints, limits, clipped=text)
+        if markup:
+            msg["markup"] = markup
         if meta.get("attribution"):
             msg["attribution"] = meta["attribution"]
         if tone:

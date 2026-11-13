@@ -160,12 +160,15 @@ export interface PttEvent { state: "listening" | "transcribing" | "idle" }
 /** event: thinking: active LLM generation turn ("question" | "callout" | "review"), or null when idle. */
 export interface ThinkingEvent { role: string | null }
 
+import type { SpeechMarkup } from "./speech-markup.js";
+
 /** event: speak: a line for the desktop app's narrator. */
 export interface SpeakEvent {
   text: string;
   interrupt: boolean;             // stop what is being said first
   style?: string;                 // the character the coach plays: how to perform the line (the OpenAI voice)
   tone?: string;                  // in character, how to deliver this one line (also folded into style); ElevenLabs v3 acts it
+  markup?: SpeechMarkup;          // native delivery data; text remains authoritative
 }
 
 /** event: voice_spoken: a completed standalone SAPI5 turn, never a command to play it again.

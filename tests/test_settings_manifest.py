@@ -38,6 +38,17 @@ assert S("llm", {"lookahead_steps": None}).get("lookahead_steps") == 40
 assert S("llm", {"lookahead_steps": float("nan")}).get("lookahead_steps") == 40
 assert S("rules.buffs", {"ignore": "Thorns"}).get("ignore") == []
 assert S("llm", {}).get("briefing_delay_s") == 6
+assert S("voice", {}).get("markup_mode") == "ai"
+assert S("voice", {}).get("markup_profile") == "standard"
+assert S("voice", {"markup_voices": []}).get("markup_voices") == {}
+permissions = {"token:one": ["rate"], "token:two": ["pitch", "pauses"]}
+assert S("voice", {"markup_voices": permissions}).get("markup_voices") == permissions
+fresh = settings.defaults()
+fresh["voice"]["markup_voices"]["token:one"] = ["rate"]
+assert settings.defaults()["voice"]["markup_voices"] == {}
+fresh_permissions = S("voice", {}).get("markup_voices")
+fresh_permissions["token:one"] = ["rate"]
+assert S("voice", {}).get("markup_voices") == {}
 # in range: the value as it is
 assert S("llm", {"conversation_turns": 3}).get("conversation_turns") == 3
 assert S("ptt", {"min_seconds": 0.2}).get("min_seconds") == 0.2

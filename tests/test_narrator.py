@@ -116,7 +116,17 @@ const edgeCandidates = new Map();
 globalThis.OfflineAudioContext = class {
   decodeAudioData() { return Promise.resolve({ duration: 1, length: 44100, numberOfChannels: 1 }); }
 };
+let nativeDefault = "token:zira";
+let holdCatalogue = false;
+const catalogueResolvers = [];
 globalThis.glide = { invoke: (ch, ...a) => {
+  if (ch === "tts:voices") {
+    const catalogue = [
+      { id: "Microsoft Zira", name: "Microsoft Zira", identity: "token:zira", isDefault: nativeDefault === "token:zira" },
+      { id: "Snapshot B", name: "Snapshot B", identity: "token:b", isDefault: nativeDefault === "token:b" },
+    ];
+    return holdCatalogue ? new Promise(resolve => catalogueResolvers.push(() => resolve(catalogue))) : Promise.resolve(catalogue);
+  }
   if (ch === "tts:edgeStart") {
     const [id, text] = a, attribution = { category: "TTS", provider: "edge", request_id: a[0],
       voice: "en-US-AriaNeural", ...edgeAttributions.get(a[1]) };
@@ -138,7 +148,7 @@ globalThis.glide = { invoke: (ch, ...a) => {
   }
   if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
   if (ch === "tts:windowsSpeak") {
-    nativeOpts.push({ text: a[1], rate: a[2]?.rate, volume: a[2]?.volume });
+    nativeOpts.push({ text: a[1], rate: a[2]?.rate, volume: a[2]?.volume, voice: a[2]?.voiceName, markup: a[3], features: a[4] });
     nativeVoices.set(a[1], a[2]?.voiceName);
     return nativeSpeak(a[0], a[1]);
   }
@@ -193,6 +203,16 @@ speech.say("coach1");
 t = Date.now();
 await mark(speech.speakAndWait("guide1", "g"), "resolved:guide1"); out.tagged_ms = Date.now() - t;
 take("tagged_win");
+// Cancellation also releases a line while silent native catalogue discovery is unresolved.
+holdCatalogue = true;
+const cancelledDiscovery = mark(speech.speakAndWait("discovery-guide", "discovery"), "resolved:discovery");
+const discoveryFollower = speech.speakAndWait("discovery-coach", "coach");
+await sleep(1);
+t = Date.now(); speech.cancel("discovery"); await cancelledDiscovery;
+out.discovery_cancel_ms = Date.now() - t;
+holdCatalogue = false;
+catalogueResolvers.splice(0).forEach(resolve => resolve());
+await discoveryFollower; take("cancel_discovery");
 
 // cancel(tag) while it speaks, with a coach line queued behind it: the coach line is still said
 let p = mark(speech.speakAndWait("guide2", "g"), "resolved:guide2");
@@ -346,6 +366,40 @@ take("identity_fallback");
 out.before_native_failure = lastState();
 await speech.speakAndWait("native-failure", "identity");
 out.after_native_failure = lastState();
+// A queued native line owns Unicode-scalar controls, actual identity and permissions from enqueue.
+const { live } = await import(new URL("./state.js", process.argv[2]));
+live.config = { companion: { voice: { markup_mode: "ai", markup_voices: { "token:zira": ["rate"], "token:b": ["pitch"] } } } };
+speech.configure(false, { provider: "windows", voiceName: "" });
+speech.say("snapshot-blocker");
+speech.say("😀 left & <right>", false, "", "", { markup: { text: "😀 left & <right>", spans: [
+  { start: 2, end: 6, rate: "slow", pitch: "high" },
+] } });
+live.config.companion.voice.markup_voices["token:zira"] = [];
+live.config.companion.voice.markup_mode = "off";
+nativeDefault = "token:b";
+speech.configure(false, { provider: "windows", voiceName: "" });
+speech.say("new snapshot", false, "", "", { markup: { text: "new snapshot", spans: [{ start: 0, end: 3, pitch: "high" }] } });
+await sleep(DUR * 4);
+live.config.companion.voice.markup_mode = "ai";
+const longText = "😀".repeat(3999) + "A tail";
+speech.say(longText, false, "", "", { markup: { text: longText, spans: [
+  { start: 0, end: 1, pitch: "high" }, { start: 4001, end: 4005, pitch: "low" },
+] } });
+await sleep(DUR * 2);
+out.clipped_text = speech.lastText;
+out.clipped_markup = nativeOpts.at(-1).markup;
+live.config.companion.voice.markup_voices["token:b"] = ["rate", "pitch", "pauses"];
+speech.say("Keep every word.", false, "", "", { markup: { text: "Keep every word.", spans: [
+  { start: 0, end: 4, rate: "slow", pitch: "LOUD", after_ms: 9000 },
+] } });
+await sleep(DUR * 2);
+out.degraded_request = nativeOpts.at(-1);
+live.config.companion.voice.markup_voices["token:b"] = ["boundaries"];
+const denseText = "Go. ".repeat(199) + "Stay.";
+speech.say(denseText);
+await sleep(DUR * 2);
+out.dense_request = nativeOpts.at(-1);
+out.markup_snapshot = nativeOpts.filter((line) => ["😀 left & <right>", "new snapshot"].includes(line.text));
 console.log(JSON.stringify(out));
 """
 
@@ -353,10 +407,10 @@ tmp = tempfile.mkdtemp(prefix="glide-narrator-")
 try:
     with open(SRC, encoding="utf-8") as fh:
         files = {"renderer/narrator.ts": fh.read(), **{f"renderer/{name}": data for name, data in STUBS.items()}}
-    for name in ("edge-speech", "date-time", "state", "dom", "types"):
+    for name in ("edge-speech", "date-time", "state", "dom", "types", "speech-markup"):
         with open(os.path.join(DESK, "src", "renderer", name + ".ts"), encoding="utf-8") as fh:
             files[f"renderer/{name}.ts"] = fh.read()
-    for name in ("ipc.ts", "engine.ts", "date-time.ts"):
+    for name in ("ipc.ts", "engine.ts", "date-time.ts", "speech-markup.ts"):
         with open(os.path.join(DESK, "src", "shared", name), encoding="utf-8") as fh:
             files[f"shared/{name}"] = fh.read()
     # narrator.ts beside its stand-ins, compiled once per content (the tests' shared compiles, desktop_ts.py)
@@ -373,6 +427,13 @@ try:
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
+assert got["markup_snapshot"][0] == {
+    "text": "😀 left & <right>", "rate": 1, "volume": 1, "voice": "token:zira", "features": ["rate"],
+    "markup": {"text": "😀 left & <right>", "spans": [{"start": 2, "end": 6, "rate": "slow"}]},
+}, got["markup_snapshot"]
+assert got["markup_snapshot"][1]["voice"] == "token:b" and "markup" not in got["markup_snapshot"][1], got["markup_snapshot"]
+assert len(got["clipped_text"]) == 4000 and got["clipped_text"] == "😀" * 3999 + "A"
+assert got["clipped_markup"]["spans"] == [{"start": 0, "end": 1, "pitch": "high"}]
 # the coach's lines, as before
 assert got["coach_win"] == ["start:a", "end:a", "start:b", "end:b"], got["coach_win"]
 assert got["coach_interrupt"] == ["start:a", "cancel:a", "start:c", "end:c"], got["coach_interrupt"]
@@ -383,6 +444,12 @@ assert got["coach_online"] == ["synth:o1", "synth:o2", "play:o1", "ended:o1", "p
 # a tagged line waits its turn and resolves at its end
 assert got["tagged_win"] == ["start:coach1", "end:coach1", "start:guide1", "end:guide1", "resolved:guide1"], got["tagged_win"]
 assert got["tagged_ms"] >= 2 * 80 - 5, got["tagged_ms"]
+assert got["cancel_discovery"] == ["resolved:discovery", "start:discovery-coach", "end:discovery-coach"], got["cancel_discovery"]
+assert got["discovery_cancel_ms"] < 20, got["discovery_cancel_ms"]
+assert got["degraded_request"]["text"] == "Keep every word."
+assert got["degraded_request"]["markup"]["spans"] == [{"start": 0, "end": 4, "rate": "slow"}]
+assert got["dense_request"]["text"] == "Go. " * 199 + "Stay."
+assert 0 < len(got["dense_request"]["markup"]["spans"]) <= 128
 
 # cancel: at once, the tagged lines dropped, the coach line said in full
 c = got["cancel_win"]
@@ -419,8 +486,8 @@ assert "Installed native voice (SAPI5), generated in 12ms" in got["win_last_line
 assert "OpenAI gpt-4o-mini-tts, coral (online voice), generated in 2.42s" in got["online_last_line"], got["online_last_line"]
 assert "generated in " in got["edge_last_line"] and "ms" in got["edge_last_line"], got["edge_last_line"]
 assert got["preview_opts"] == [
-    {"text": "sample-draft", "rate": 1.85, "volume": 0},
-    {"text": "normal-callout", "rate": 1.15, "volume": 0.75},
+    {"text": "sample-draft", "rate": 1.85, "volume": 0, "voice": "token:zira", "features": []},
+    {"text": "normal-callout", "rate": 1.15, "volume": 0.75, "voice": "token:zira", "features": []},
 ], got["preview_opts"]
 assert got["online_state"]["ms"] == 2424, got["online_state"]
 assert got["before_stale_synthesis"] == got["after_stale_synthesis"], got

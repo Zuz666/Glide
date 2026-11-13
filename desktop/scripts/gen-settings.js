@@ -22,7 +22,7 @@ export interface ManifestEntry {
   default: unknown;
   min?: number;
   max?: number;
-  kind: "int" | "number" | "bool" | "text" | "list";
+  kind: "int" | "number" | "bool" | "text" | "list" | "object";
   live?: boolean;
   app?: boolean;
 }

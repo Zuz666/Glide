@@ -2,7 +2,8 @@
 // and the parts of its config the app itself acts on (push-to-talk, the overlay's drag key, custom endpoints).
 import path from "path";
 import { EngineOptions } from "../engine";
-import type { AppSettings, AppSettingsPatch, LogAttribution } from "../../shared/ipc";
+import type { AppSettings, AppSettingsPatch, LogAttribution, Voice } from "../../shared/ipc";
+import { speechFeatures } from "../speech-markup";
 import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
 import { OPENAI_EXCLUSION_RULES } from "../openai-exclusions";
 import { defaultHome } from "../paths";
@@ -14,6 +15,40 @@ import { settings } from "./settings";
 export const engineHome = () => settings.current.engineHome || defaultHome;
 export const configPath = () => path.join(engineHome(), "config.json");
 export const readConfig = () => readJson(configPath());
+
+let speechCatalogue: (() => Promise<Voice[]>) | undefined;
+/** Registration supplies the existing native owner, never another worker or permission store. */
+export function setSpeechDestinationCatalogue(catalogue: () => Promise<Voice[]>): void {
+  speechCatalogue = catalogue;
+}
+
+async function destinationPatch(config: Obj, appSettings: AppSettings, catalogue?: Voice[]): Promise<Obj> {
+  const provider = appSettings.speech?.provider || "windows";
+  let identity = "";
+  if (provider === "windows" && (catalogue || speechCatalogue)) {
+    try {
+      const voices = catalogue ?? (speechCatalogue ? await speechCatalogue() : []);
+      const selected = appSettings.speech?.voiceName || "";
+      const voice = selected ? voices.find((v) => v.identity === selected || v.id === selected)
+        : voices.find((v) => v.isDefault);
+      identity = voice?.identity || "";
+    } catch { /* Unknown identity grants nothing; voice failures keep their existing reporting owner. */ }
+  }
+  const permissions = ((config.companion as Obj | undefined)?.voice as Obj | undefined)?.markup_voices as Obj | undefined;
+  const features = identity ? speechFeatures(permissions?.[identity]) : [];
+  return { companion: { voice: { markup_destination: { provider, identity, features } } } };
+}
+
+/** Refresh the active projection at existing session/catalogue entry points, never by a polling timer. */
+export function refreshSpeechDestination(engine: RunningEngine, catalogue?: Voice[]): Promise<Obj> {
+  return serializeSettingsWrite(async () => {
+    const current = readConfig();
+    const patch = await destinationPatch(current, settings.current, catalogue);
+    const before = ((current.companion as Obj | undefined)?.voice as Obj | undefined)?.markup_destination;
+    const after = ((patch.companion as Obj).voice as Obj).markup_destination;
+    return JSON.stringify(before) === JSON.stringify(after) ? current : saveConfigNow(patch, engine, {}, true);
+  });
+}
 
 /** A non-English speech selection saves a multilingual fallback, even when only language changed. */
 function speechModelPatch(config: Obj): Obj | undefined {
@@ -165,12 +200,18 @@ function serializeSettingsWrite<T>(write: () => Promise<T>): Promise<T> {
 
 /** Resolve legacy mode before materializing an inherited name, so the literal never changes its meaning. */
 async function persistWindowsProcessVoice(next: AppSettings, engine: RunningEngine): Promise<void> {
-  const currentVoice = ((readConfig().companion as Obj | undefined)?.voice as Obj | undefined)?.voice;
+  const config = readConfig();
+  const currentVoice = ((config.companion as Obj | undefined)?.voice as Obj | undefined)?.voice;
   const linked = usesAppWindowsVoice(next.speech, currentVoice);
+  let patch = await destinationPatch(config, next);
   if (linked) {
     const voice = next.speech?.voiceName || "";
-    if (currentVoice !== voice) await saveConfigNow({ companion: { voice: { voice } } }, engine, {}, true);
+    if (currentVoice !== voice) patch = deepMerge(patch, { companion: { voice: { voice } } });
   }
+  const projected = (patch.companion as Obj).voice as Obj;
+  const current = (config.companion as Obj | undefined)?.voice as Obj | undefined;
+  if (JSON.stringify(current?.markup_destination) !== JSON.stringify(projected.markup_destination) || projected.voice !== undefined)
+    await saveConfigNow(patch, engine, {}, true);
   next.speech = { ...next.speech, windowsProcessUseAppVoice: linked };
 }
 
@@ -204,7 +245,10 @@ function prepareWindowsProcessVoice(home: string): Promise<void> {
  * Explicit live changes require an engine-confirmed combined save: rejection/disconnection must not become a
  * local save for restart. Ordinary save-only callers retain the existing local fallback. */
 export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}): Promise<Obj> {
-  return serializeSettingsWrite(() => saveConfigNow(patch, engine, liveChanges));
+  return serializeSettingsWrite(async () => {
+    const projection = await destinationPatch(deepMerge(readConfig(), patch), settings.current);
+    return saveConfigNow(deepMerge(patch, projection), engine, liveChanges);
+  });
 }
 
 async function saveConfigNow(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}, requireEngineSave = false): Promise<Obj> {

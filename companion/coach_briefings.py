@@ -5,6 +5,7 @@ import math
 import time
 
 import briefing
+import speech_markup
 from log import log_once
 from prompt_context import short_json
 from replies import EarlySpeech, is_skip, trim_words
@@ -110,18 +111,33 @@ class Briefings:
         words = min(int(c.opt.get("briefing_words")) + 20 * (min(len(infos), 4) - 1), 100)
         head = c.localize_text(head)
         speech = None
+        limits = c.speech_policy()
+        first = speech_markup.canonical(head)
+        scopes = speech_markup.units(first)
+        head_context = {"kind": "instruction", "text": first[scopes[0][0]:scopes[0][1]]} if scopes else None
+        head_markup = speech_markup.prepare_with_policy(head, limits, context=head_context)
         speak_fn = c.deps.speak_fn
         if speak_fn and head:
             # Prepare the objective before speech; the model produces the explanation natively in the same language.
-            if speak_fn(head, "briefing", False) is not False:
-                speech = EarlySpeech(lambda t, u: speak_fn(t, "briefing", u), words, prefix=head)
-        attribution = {}
-        expl, model_txt, facts = self._explain_quests(infos, later, words, speech, attribution=attribution)
-        if not expl:
+            extra = {"markup": head_markup, "speech_context": head_context} if head_markup else {}
+            if speak_fn(head, "briefing", False, **extra) is not False:
+                speech = EarlySpeech(lambda t, u, **kw: speak_fn(t, "briefing", u, **kw),
+                                     words, prefix=head, policy=limits)
+        attribution, delivery = {}, {}
+        expl, model_txt, facts = self._explain_quests(infos, later, words, speech, attribution=attribution,
+                                                     policy=limits, delivery=delivery)
+        if not expl and not delivery.get("no_answer"):
             expl = " ".join(filter(None, (briefing.offline_explanation(b) for b in infos)))
             expl = c.localize_text(expl)
         msg = {"kind": "briefing", "text": (head + " " + expl).strip(), "speak": True, "urgent": False,
                "model": model_txt, "quests": [b["id"] for b in infos], "t": time.time()}
+        if delivery.get("markup"):
+            offset = len(speech_markup.canonical(head)) + (1 if head and expl else 0)
+            msg["markup"] = {"text": speech_markup.canonical(msg["text"]), "spans": [
+                {**span, "start": span["start"] + offset, "end": span["end"] + offset}
+                for span in delivery["markup"]["spans"]]}
+        if head_context:
+            msg["speech_context"] = head_context
         if attribution:
             msg["attribution"] = attribution
         # Both parts are ready: do not retranslate the model's native explanation or the early-spoken objective.
@@ -156,10 +172,11 @@ class Briefings:
             infos.append(b)
         return infos
 
-    def _explain_quests(self, infos, later, words, speech, attribution=None):
+    def _explain_quests(self, infos, later, words, speech, attribution=None, policy=None, delivery=None):
         """The fast model's explanation of how to do the quests, when it can be called. -> (text or "", the model
         note, fact ids)."""
         c = self.coach
+        policy = policy or c.speech_policy()
         model = c.cfg.get("fast_model")
         if not c.llm.available(model):
             return "", "offline", []
@@ -168,15 +185,25 @@ class Briefings:
                                            short_json([briefing.prompt_fields(b) for b in infos], 5000))
         user = c._user_message(ctx, trigger, cc=c.llm.ref_marker(model))
         text, _meta = c.llm.call_once(model, user, 400, deep=False, tools=c._shared_tools(model),
-                                     on_text=speech, role="quest briefing")
+                                     on_text=speech, role="quest briefing", speech_policy=policy)
         if attribution is not None and _meta.get("attribution"):
             attribution.update(_meta["attribution"])
         if not text:
             return "", "offline", []
+        text, _tone, hints = speech_markup.split_headers(text, policy)
         text, facts, _had = c._directives(text, with_facts=True)
+        if not text:
+            c.emit({"kind": "error", "text": "The model returned no answer text.", "speak": False})
+            if delivery is not None:
+                delivery["no_answer"] = True
+            return "", c._model_note(model, _meta), facts
         if is_skip(text):
             return "", "offline", facts
-        return trim_words(text, words), c._model_note(model, _meta), facts
+        final = trim_words(text, words)
+        if delivery is not None:
+            delivery["markup"] = speech_markup.resolve(text, hints, policy, clipped=final,
+                                                       committed=speech.used if speech is not None else 0)
+        return final, c._model_note(model, _meta), facts
 
     def step_videos(self):
         """The current RestedXP step's YouTube clips (see briefing.StepVideos): what each shows, said aloud, and the
