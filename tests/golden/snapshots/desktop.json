@@ -86,6 +86,7 @@
    "tts:status:get",
    "tts:synth",
    "tts:voices",
+   "tts:windowsPrepare",
    "tts:windowsSpeak",
    "tts:windowsStop",
    "update:check",

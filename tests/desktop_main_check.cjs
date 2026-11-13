@@ -340,11 +340,20 @@ async function windowsProcessVoiceChecks() {
   const { registerIpc } = require(path.join(dist, "app", "ipc.js"));
   const { OWN_PAGES } = require(path.join(dist, "app", "assets.js"));
   let configuredVoice;
+  let defaultIdentity = "token:a";
+  let catalogueReads = 0;
+  const voiceCatalogue = () => {
+    catalogueReads++;
+    return Promise.resolve([
+      { id: "Same name", name: "Same name", identity: "token:a", isDefault: defaultIdentity === "token:a" },
+      { id: "Same name", name: "Same name", identity: "token:b", isDefault: defaultIdentity === "token:b" },
+    ]);
+  };
   registerIpc({
     engine, updater: {}, sampler: {}, speech: {},
     mainWindow: { send(channel, line) { if (channel === "engine:logline" && line.text.startsWith("[date/time]")) deliveredDateLogs.push(line); } },
     overlay: { readDragKey() {} },
-    windowsTts: { configure(_enabled, voice) { configuredVoice = voice; }, stop() {} },
+    windowsTts: { configure(_enabled, voice) { configuredVoice = voice; }, stop() {}, voices: voiceCatalogue },
     edgeTts: { configure() {} }, broadcast() {}, setMuted() {}, pushMute() {}, installUpdate() {},
     applyOverlaySettings() {}, updateTray() {}, ensureSpeech: async () => {},
   });
@@ -448,6 +457,28 @@ async function windowsProcessVoiceChecks() {
     "a stale start must not synchronize the voice in a different engine home");
   settings.current = { ...settings.current, engineHome: h };
 
+  reset("", { voiceName: "" });
+  await invoke("config:set", { companion: { voice: { markup_voices: { "token:a": ["rate"], "token:b": ["pitch"] } } } });
+  assert.deepStrictEqual(config.readConfig().companion.voice.markup_destination,
+    { provider: "windows", identity: "token:a", features: ["rate"] });
+  defaultIdentity = "token:b";
+  await config.refreshSpeechDestination(engine);
+  assert.deepStrictEqual(config.readConfig().companion.voice.markup_destination,
+    { provider: "windows", identity: "token:b", features: ["pitch"] },
+    "Changing Windows default resolves a new actual identity without transferring permissions or evidence");
+  const readsBeforeSupplied = catalogueReads;
+  await config.refreshSpeechDestination(engine, [
+    { id: "New default", name: "New default", identity: "token:unpermitted", isDefault: true },
+  ]);
+  assert.deepStrictEqual(config.readConfig().companion.voice.markup_destination,
+    { provider: "windows", identity: "token:unpermitted", features: [] },
+    "A fresh native catalogue projects an unpermitted default without inheriting the old voice grants");
+  assert.strictEqual(catalogueReads, readsBeforeSupplied, "Projection reuses a supplied native catalogue without recursively enumerating");
+  await appVoice({ provider: "edge" });
+  assert.deepStrictEqual(config.readConfig().companion.voice.markup_destination,
+    { provider: "edge", identity: "", features: [] }, "A saved Windows fallback is not an active native destination");
+  assert.deepStrictEqual(config.readConfig().companion.voice.markup_voices,
+    { "token:a": ["rate"], "token:b": ["pitch"] }, "Projection never becomes a second permission store");
   const http = require("http");
   let mode = "save", requests = [], release, received;
   const server = http.createServer(async (req, res) => {
@@ -480,7 +511,7 @@ async function windowsProcessVoiceChecks() {
     reset("Legacy");
     await appVoice({ windowsProcessUseAppVoice: true });
     assert.strictEqual(requests.length, 1);
-    assert.deepStrictEqual(requests[0].save, { companion: { voice: { voice: "App A" } } });
+    assert.deepStrictEqual(requests[0].save, { companion: { voice: { voice: "App A", markup_destination: { provider: "windows", identity: "", features: [] } } } });
     assert.strictEqual(processVoice(), "App A", "running engine owns the linked config write");
     await appVoice({ voiceName: "Running B" });
     assert.strictEqual(processVoice(), "Running B");

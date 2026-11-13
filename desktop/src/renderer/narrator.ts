@@ -17,6 +17,12 @@ import { Obj, SpeechSettings } from "./types.js";
 import type { LogAttribution, TtsStatus } from "../shared/ipc.js";
 import { edgeSpeech } from "./edge-speech.js";
 import type { EdgeStream } from "./edge-speech.js";
+import { live } from "./state.js";
+import { prepareSpeechMarkup, speechFeatures } from "./speech-markup.js";
+import type { SpeechFeature, SpeechMarkup } from "../shared/speech-markup.js";
+
+interface DeliveryOptions { rate?: number; volume?: number; markup?: SpeechMarkup; native?: NativeLine }
+interface NativeLine { voiceName: string; features: SpeechFeature[]; markup?: SpeechMarkup; mode: string }
 
 interface Line {
   text: string;
@@ -25,10 +31,12 @@ interface Line {
   provider: string;
   voiceLabel: string;
   windows: Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
+  native: NativeLine | Promise<NativeLine>;
   requestId: string;
   attribution?: LogAttribution;
   synthMs?: number;
   nativeId?: string;
+  nativeText?: string;
   player?: HTMLAudioElement;
   tag?: string;
   done?: () => void;
@@ -61,6 +69,10 @@ class Narrator {
   private current: Line | null = null;
   private muted = false;
   private bargedAt = 0;
+  private cancelEpoch = 0;
+
+  /** Pending preparation belongs to this cancellation lifecycle, not whichever line starts later. */
+  get cancellationEpoch(): number { return this.cancelEpoch; }
   lastVoice = "";
   lastVoiceAt = 0;
   lastText = "";
@@ -105,7 +117,7 @@ class Narrator {
       this.sapiSynthMs.set(s.requestId, s.synthMs);
       const cur = this.current;
       if (cur && cur.nativeId === s.requestId && (s.phase === "speaking" || s.phase === "fallback") && s.actualVoice) {
-        this.noteVoice(`${s.actualVoice} (SAPI5)`, cur.text, Date.now(), s.synthMs, s.requestId);
+        this.noteVoice(`${s.actualVoice} (SAPI5)`, cur.nativeText ?? cur.text, Date.now(), s.synthMs, s.requestId);
       }
     }
   }
@@ -118,7 +130,7 @@ class Narrator {
   }
 
   /** A coach line. Only the online providers interpret the optional persona style and tone. */
-  say(text: string, interrupt = false, style = "", tone = "", overrides?: { rate?: number; volume?: number }): void {
+  say(text: string, interrupt = false, style = "", tone = "", overrides?: DeliveryOptions): void {
     if (!text || this.muted) return;
     if (interrupt) this.stop();
     this.enqueue(text, undefined, undefined, style, tone, overrides);
@@ -183,11 +195,22 @@ class Narrator {
     }
   }
 
-  private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = "", overrides?: { rate?: number; volume?: number }): void {
+  private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = "", overrides?: DeliveryOptions): void {
+    if (this.provider === "windows" && text.length > 4000) {
+      const original = text;
+      text = Array.from(text).slice(0, 4000).join("");
+      if (text !== original && overrides?.markup?.text === original) {
+        const spans = Array.isArray(overrides.markup.spans)
+          ? overrides.markup.spans.filter((span) => span.end <= 4000) : [];
+        overrides = { ...overrides, markup: { text, spans } };
+      }
+    }
     const line: Line = {
       text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done, audio: null, requestId: crypto.randomUUID(),
       windows: { voiceName: this.voiceName, rate: overrides?.rate ?? this.rate, volume: overrides?.volume ?? this.volume },
+      native: this.nativeSnapshot(text, overrides),
     };
+    if (line.native instanceof Promise) void line.native.then((snapshot) => { line.native = snapshot; });
     if (line.provider === "edge") {
       line.edge = edgeSpeech.start(text, line.requestId);
     } else if (line.provider !== "windows") {
@@ -209,10 +232,34 @@ class Narrator {
     void this.next();
   }
 
+  private nativeSnapshot(text: string, options?: DeliveryOptions): NativeLine | Promise<NativeLine> {
+    if (options?.native) return structuredClone(options.native);
+    const selected = this.voiceName;
+    const config = live.config?.companion?.voice || {};
+    const permissions = structuredClone(config.markup_voices || {});
+    const mode = String(config.markup_mode || "ai");
+    const markup = options?.markup ? structuredClone(options.markup) : undefined;
+    return call("tts:voices", "windows").then((voices) => {
+      const voice = selected ? voices?.find((v: { identity?: string; id: string }) => v.identity === selected || v.id === selected)
+        : voices?.find((v: { isDefault?: boolean }) => v.isDefault);
+      const identity = voice?.identity || "";
+      const features = identity ? speechFeatures(permissions[identity]) : [];
+      return { voiceName: identity || selected, features, mode,
+        markup: prepareSpeechMarkup(text, markup, features, mode) };
+    });
+  }
+
   private async windowsSay(line: Line, text = line.text): Promise<boolean> {
+    if (line.provider !== "windows" && text.length > 4000) text = Array.from(text).slice(0, 4000).join("");
     line.nativeId = line.requestId;
+    line.nativeText = text;
     try {
-      const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text, line.windows);
+      const native = line.native instanceof Promise ? await line.native : line.native;
+      if (this.current !== line || line.cancelled) return false;
+      const markup = text === line.text && line.provider === "windows" ? native.markup
+        : prepareSpeechMarkup(text, undefined, native.features, native.mode);
+      const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text,
+        { ...line.windows, voiceName: native.voiceName }, markup, native.features);
       const synthMs = this.sapiSynthMs.get(line.requestId) ?? null;
       this.sapiSynthMs.delete(line.requestId);
       if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text, Date.now(), synthMs, line.requestId);
@@ -362,6 +409,7 @@ class Narrator {
   }
 
   stop(): void {
+    this.cancelEpoch++;
     const current = this.current;
     this.current = null;
     if (current) this.cancelLine(current);

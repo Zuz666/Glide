@@ -563,12 +563,12 @@ class LLMClient:
         return text
 
     def call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None,
-                  role=None, operation="completion"):
+                  role=None, operation="completion", speech_policy=None):
         with self._operation(model, deep, role, operation) as current:
-            text, meta = self._call_once(model, user, max_tokens, deep, tools, schema, on_text)
+            text, meta = self._call_once(model, user, max_tokens, deep, tools, schema, on_text, speech_policy)
             return self._finish(current, text, meta)
 
-    def _call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None):
+    def _call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None, speech_policy=None):
         """One-shot answer (live callouts, and everything without the knowledge layer), booked to the deep or fast
         path. `tools`: sent with tool_choice none only to share the questions' cached prefix (see caching). `schema`:
         a JSON schema the reply must follow (structured outputs, Claude API only; if the API refuses it the request
@@ -583,26 +583,31 @@ class LLMClient:
             opts = dict(opts, output_config=dict(opts.get("output_config") or {},
                                                  format={"type": "json_schema", "schema": schema}))
         t0 = time.time()
-        body = {"model": model, "max_tokens": max_tokens, "system": self.system_fn(self.cache_marker(model, deep)),
+        allowance = speech_policy.allowance if speech_policy is not None else 0
+        system = self.system_fn(self.cache_marker(model, deep))
+        if speech_policy is not None and allowance:
+            system = [*system, {"type": "text", "text": speech_policy.instruction()}]
+        body = {"model": model, "max_tokens": max_tokens + allowance, "system": system,
                 "messages": [{"role": "user", "content": user}]}
         if tools:
             body["tools"] = [dict(t) for t in tools]
             body["tool_choice"] = {"type": "none"}
         data, opts = self.post(body, opts, path, on_text=on_text, effort=effort)
-        data = self._retry_empty(body, opts, data, path, effort=effort)
+        data = self._retry_empty(body, opts, data, path, effort=effort, base=max_tokens, allowance=allowance)
         self.last_latency = time.time() - t0
         if data is None:
             return None, meta
         return self._answer_text(data), meta
 
-    def _retry_empty(self, body, opts, data, path, effort=None):
+    def _retry_empty(self, body, opts, data, path, effort=None, base=None, allowance=0):
         """An answer cut off at max_tokens before any text (a model that spent the budget thinking): ask once more
         with four times the room (at least 2,400 tokens) instead of showing an empty answer."""
         if not data or data.get("stop_reason") != "max_tokens" or any(
                 isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip()
                 for b in data.get("content") or []):
             return data
-        retry: dict[str, Any] = dict(body, max_tokens=max(int(body.get("max_tokens") or 0) * 4, 2400))
+        original = int(body.get("max_tokens") or 0) if base is None else base
+        retry: dict[str, Any] = dict(body, max_tokens=max(original * 4, 2400) + allowance)
         if retry.get("tools"):
             retry["tool_choice"] = {"type": "none"}        # just the answer this time
         self.emit({"kind": "info", "speak": False, "text": "The answer ran out of room (%s, %d tokens); asking once more "
@@ -611,13 +616,14 @@ class LLMClient:
         return again if again is not None else data
 
     def call_tools(self, model, messages, tools, max_calls, deadline_s, ctx=None, max_tokens=600, deep=False,
-                   on_text=None, role=None, operation="tool loop"):
+                   on_text=None, role=None, operation="tool loop", speech_policy=None):
         with self._operation(model, deep, role, operation) as current:
-            text, meta = self._call_tools(model, messages, tools, max_calls, deadline_s, ctx, max_tokens, deep, on_text)
+            text, meta = self._call_tools(model, messages, tools, max_calls, deadline_s, ctx, max_tokens, deep,
+                                          on_text, speech_policy)
             return self._finish(current, text, meta)
 
     def _call_tools(self, model, messages, tools, max_calls, deadline_s, ctx=None, max_tokens=600, deep=False,
-                    on_text=None):
+                    on_text=None, speech_policy=None):
         """Tool-use loop for questions and reviews. Sends tools (tool_choice auto); on stop_reason "tool_use" runs
         every tool_use block through run_tool (knowledge.api.dispatch on the live ctx, or the coach's own tools) and
         sends the tool_result blocks back; stops at end_turn. After max_calls tool calls or deadline_s seconds the
@@ -630,6 +636,9 @@ class LLMClient:
         opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
         tools = [dict(t) for t in tools or ()]
         system = self.system_fn(self.cache_marker(model, deep))     # covers tools + system (one prefix)
+        allowance = speech_policy.allowance if speech_policy is not None else 0
+        if speech_policy is not None and allowance:
+            system = [*system, {"type": "text", "text": speech_policy.instruction()}]
         tail = self.caching(model) == "explicit" and models_mod.provider(model) == "anthropic" \
             and self.opt.get("prompt_cache")
         messages = list(messages)
@@ -643,7 +652,7 @@ class LLMClient:
                 tools = [self._basic_web(t) for t in tools]
             sent = self._tail_cached(messages) if tail and not force and messages[-1].get("role") == "user" \
                 else messages
-            body = {"model": model, "max_tokens": max_tokens, "system": system, "messages": sent}
+            body = {"model": model, "max_tokens": max_tokens + allowance, "system": system, "messages": sent}
             if tools:
                 body["tools"] = tools
                 body["tool_choice"] = {"type": "none" if force else "auto"}
@@ -671,7 +680,7 @@ class LLMClient:
             messages.append({"role": "user", "content": results})
             if meta["tool_calls"] >= max_calls or time.time() - t0 >= deadline_s:
                 force = True
-        data = self._retry_empty(body, opts, data, path, effort=effort)
+        data = self._retry_empty(body, opts, data, path, effort=effort, base=max_tokens, allowance=allowance)
         self.last_latency = time.time() - t0
         return self._answer_text(data or {}), meta
 

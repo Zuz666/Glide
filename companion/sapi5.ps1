@@ -1,4 +1,5 @@
 # Native SAPI5 JSON-line worker. Run with 64-bit Windows PowerShell 5.1.
+param([string]$OutputDirectory = '')
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -17,7 +18,7 @@ $exitCode = 0
 
 function Write-Protocol {
     param([object]$Message)
-    $line = ConvertTo-Json -InputObject $Message -Compress -Depth 5
+    $line = ConvertTo-Json -InputObject $Message -Compress -Depth 12
     $script:outputWriter.WriteLine($line)
 }
 
@@ -49,10 +50,12 @@ function Add-Tokens {
             if ([string]::IsNullOrEmpty($name)) {
                 throw 'An installed SAPI5 voice has no display name.'
             }
-            if (-not $Names.ContainsKey($name)) {
-                $entry = [pscustomobject]@{ name = $name; token = $token }
+            $identity = [string]$token.Id
+            if (-not ($Entries | Where-Object { $_.identity -ceq $identity })) {
+                $entry = [pscustomobject]@{ name = $name; identity = $identity; token = $token }
                 $Entries.Add($entry)
-                $Names.Add($name, $entry)
+                if (-not $Names.ContainsKey($name)) { $Names.Add($name, $entry) }
+                if (-not $Names.ContainsKey($identity)) { $Names.Add($identity, $entry) }
                 # Keep the live token, including tokens supplied by dynamic enumerators.
                 $token = $null
             }
@@ -71,6 +74,8 @@ function Update-Catalogue {
     $oneCore = $null
     $oneCoreKey = $null
     try {
+        $probe = New-Object -ComObject SAPI.SpVoice
+        try { $script:defaultToken = $probe.Voice } finally { Release-Com $probe }
         # Classic failures are real failures, not an empty successful catalogue.
         $classic = $script:voice.GetVoices('', '')
         Add-Tokens $classic $entries $names
@@ -84,8 +89,16 @@ function Update-Catalogue {
             $oneCore = $category.EnumerateTokens('', '')
             Add-Tokens $oneCore $entries $names
         }
+        $defaultIdentity = [string]$script:defaultToken.Id
+        if (-not ($entries | Where-Object { $_.identity -ceq $defaultIdentity })) {
+            $defaultName = [string]$script:defaultToken.GetDescription()
+            $entry = [pscustomobject]@{ name = $defaultName; identity = $defaultIdentity; token = $script:defaultToken }
+            $entries.Add($entry)
+            if (-not $names.ContainsKey($defaultName)) { $names.Add($defaultName, $entry) }
+            if (-not $names.ContainsKey($defaultIdentity)) { $names.Add($defaultIdentity, $entry) }
+        }
 
-        Release-Catalogue $script:catalogue
+        # Queued turns retain the actual live token; let RCW lifetime release replaced catalogues.
         $script:catalogue = $entries
         $script:byName = $names
         $entries = $null
@@ -97,6 +110,226 @@ function Update-Catalogue {
         Release-Com $classic
         if ($null -ne $oneCoreKey) { $oneCoreKey.Dispose() }
     }
+}
+
+function Get-ScalarOffsets {
+    param([string]$Text)
+    $offsets = [System.Collections.Generic.List[int]]::new()
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $offsets.Add($i)
+        if ([char]::IsHighSurrogate($Text[$i])) {
+            if ($i + 1 -ge $Text.Length -or -not [char]::IsLowSurrogate($Text[$i + 1])) { throw 'Invalid Unicode text.' }
+            $i++
+        }
+        elseif ([char]::IsLowSurrogate($Text[$i])) { throw 'Invalid Unicode text.' }
+    }
+    $offsets.Add($Text.Length)
+    return ,$offsets
+}
+
+function Get-Features {
+    param([object]$Features)
+    if ($null -eq $Features) { return ,@() }
+    if ($Features -isnot [array] -or $Features.Count -gt 4) { throw 'Features must be an array.' }
+    foreach ($feature in $Features) {
+        if ($feature -isnot [string] -or @('rate', 'pitch', 'boundaries', 'pauses') -cnotcontains $feature) {
+            throw 'Unknown speech feature.'
+        }
+    }
+    return ,@($Features | Select-Object -Unique)
+}
+
+function Compile-Markup {
+    param([object]$Markup, [string]$Text, [object[]]$Features, [string]$Language = 'und')
+    if ($Markup -isnot [pscustomobject] -or $Markup.text -isnot [string] -or $Markup.text -cne $Text -or
+        $Markup.spans -isnot [array] -or $Markup.spans.Count -gt 128) { throw 'Invalid speech markup.' }
+    foreach ($property in $Markup.PSObject.Properties.Name) {
+        if (@('text', 'spans') -cnotcontains $property) { throw 'Unknown markup property.' }
+    }
+    $offsets = Get-ScalarOffsets $Text
+    $length = $offsets.Count - 1
+    $clip = [math]::Min(4000, $length)
+    $settings = [System.Xml.XmlWriterSettings]::new()
+    $settings.OmitXmlDeclaration = $true
+    $buffer = [System.Text.StringBuilder]::new()
+    $writer = [System.Xml.XmlWriter]::Create($buffer, $settings)
+    try {
+        $writer.WriteStartElement('speak', 'http://www.w3.org/2001/10/synthesis')
+        $writer.WriteAttributeString('version', '1.0')
+        $writer.WriteAttributeString('xml', 'lang', 'http://www.w3.org/XML/1998/namespace', $Language)
+        $position = 0
+        $previousEnd = 0
+        $pauses = 0
+        $scope = $false
+        foreach ($span in $Markup.spans) {
+            if ($span -isnot [pscustomobject]) { throw 'Invalid speech span.' }
+            $p = $span.PSObject.Properties
+            if ($null -eq $p['start'] -or $null -eq $p['end'] -or
+                -not (Test-JsonNumber $span.start) -or -not (Test-JsonNumber $span.end) -or
+                [math]::Truncate([double]$span.start) -ne $span.start -or
+                [math]::Truncate([double]$span.end) -ne $span.end -or
+                $span.start -lt $previousEnd -or $span.end -le $span.start -or $span.end -gt $length) { throw 'Invalid speech span offsets.' }
+            foreach ($key in $p.Name) {
+                if (@('start', 'end', 'rate', 'pitch', 'boundary', 'after_ms') -cnotcontains $key) { throw 'Unknown span property.' }
+            }
+            foreach ($key in @('rate', 'pitch')) {
+                if ($null -ne $p[$key]) {
+                    $values = if ($key -eq 'rate') { @('slow', 'medium', 'fast') } else { @('low', 'medium', 'high') }
+                    if ($Features -cnotcontains $key -or $values -cnotcontains $span.$key) { throw 'Disallowed prosody effect.' }
+                }
+            }
+            if ($null -ne $p['boundary'] -and ($Features -cnotcontains 'boundaries' -or @('s', 'p') -cnotcontains $span.boundary)) { throw 'Disallowed boundary.' }
+            if ($null -ne $p['after_ms']) {
+                if ($Features -cnotcontains 'pauses' -or -not (Test-JsonNumber $span.after_ms) -or
+                    [math]::Truncate([double]$span.after_ms) -ne $span.after_ms -or $span.after_ms -lt 0 -or $span.after_ms -gt 1500) { throw 'Disallowed native pause.' }
+                $pauses += $span.after_ms
+                if ($pauses -gt 3000) { throw 'Native pause budget exceeded.' }
+            }
+            $previousEnd = [int]$span.end
+            # A clipped target is dropped whole; it never moves to another occurrence.
+            if ($span.end -gt $clip) { continue }
+            if (-not $scope) {
+                foreach ($following in $Markup.spans) {
+                    if ($following.end -lt $span.end -or $following.end -gt $clip) { continue }
+                    if ($null -ne $following.PSObject.Properties['boundary']) {
+                        $writer.WriteStartElement([string]$following.boundary)
+                        $scope = $true
+                        break
+                    }
+                }
+            }
+            $writer.WriteString($Text.Substring($offsets[$position], $offsets[[int]$span.start] - $offsets[$position]))
+            $prosody = $null -ne $p['rate'] -or $null -ne $p['pitch']
+            if ($prosody) {
+                $writer.WriteStartElement('prosody')
+                foreach ($key in @('rate', 'pitch')) { if ($null -ne $p[$key]) { $writer.WriteAttributeString($key, [string]$span.$key) } }
+            }
+            $writer.WriteString($Text.Substring($offsets[[int]$span.start], $offsets[[int]$span.end] - $offsets[[int]$span.start]))
+            if ($prosody) { $writer.WriteEndElement() }
+            if ($null -ne $p['after_ms']) {
+                $writer.WriteStartElement('break')
+                $writer.WriteAttributeString('time', ('{0}ms' -f $span.after_ms))
+                $writer.WriteEndElement()
+            }
+            if ($null -ne $p['boundary']) { $writer.WriteEndElement(); $scope = $false }
+            $position = [int]$span.end
+        }
+        $writer.WriteString($Text.Substring($offsets[$position], $offsets[$clip] - $offsets[$position]))
+        $writer.WriteEndElement()
+        $writer.Flush()
+        return $buffer.ToString()
+    }
+    finally { $writer.Dispose() }
+}
+
+function Read-ManualNode {
+    param([object]$Node, [object]$State, [hashtable]$Effects, [int]$Depth)
+    if ($Depth -gt 8) { throw 'SSML nesting limit exceeded.' }
+    if ($Node -is [System.Xml.XmlText] -or $Node -is [System.Xml.XmlWhitespace] -or $Node -is [System.Xml.XmlSignificantWhitespace]) {
+        $start = $State.length
+        [void]$State.text.Append($Node.Value)
+        $State.length += (Get-ScalarOffsets $Node.Value).Count - 1
+        if ($State.length -gt 4000) { throw 'SSML text limit exceeded.' }
+        if ($Node.Value.Length -gt 0) {
+            $span = @{ start = $start; end = $State.length }
+            foreach ($key in $Effects.Keys) { $span[$key] = $Effects[$key] }
+            $State.spans.Add([pscustomobject]$span)
+            if ($State.spans.Count -gt 128) { throw 'SSML span limit exceeded.' }
+        }
+        return
+    }
+    if ($Node -isnot [System.Xml.XmlElement] -or $Node.NamespaceURI -cne 'http://www.w3.org/2001/10/synthesis') { throw 'Unsupported SSML content.' }
+    $name = $Node.LocalName
+    if (@('prosody', 's', 'p', 'break') -cnotcontains $name) { throw 'Unsupported SSML control.' }
+    if (($name -eq 's' -or $name -eq 'p') -and $State.features -cnotcontains 'boundaries') { throw 'Disallowed boundary.' }
+    if ($name -eq 'break' -and $State.features -cnotcontains 'pauses') { throw 'Disallowed native pause.' }
+    $next = @{}
+    foreach ($key in $Effects.Keys) { $next[$key] = $Effects[$key] }
+    foreach ($attribute in $Node.Attributes) {
+        if ($attribute.NamespaceURI -ne '' -or $name -ne 'prosody' -or @('rate', 'pitch') -cnotcontains $attribute.LocalName) {
+            if (-not ($name -eq 'break' -and $attribute.Name -ceq 'time')) { throw 'Unsupported SSML attribute.' }
+        }
+        if ($name -eq 'prosody') {
+            $key = $attribute.LocalName
+            $values = if ($key -eq 'rate') { @('slow', 'medium', 'fast') } else { @('low', 'medium', 'high') }
+            if ($State.features -cnotcontains $key -or $values -cnotcontains $attribute.Value) { throw 'Disallowed prosody effect.' }
+            $next[$key] = $attribute.Value
+        }
+    }
+    if ($name -eq 'break') {
+        if ($Node.Attributes.Count -ne 1 -or $Node.HasChildNodes -or $State.spans.Count -eq 0 -or
+            $Node.GetAttribute('time') -cnotmatch '^([0-9]{1,4})(ms|s)$') { throw 'Invalid native break.' }
+        $ms = [int]$Matches[1]
+        if ($Matches[2] -eq 's') { $ms *= 1000 }
+        $last = $State.spans[$State.spans.Count - 1]
+        if ($null -ne $last.PSObject.Properties['after_ms']) { throw 'Multiple breaks at one boundary.' }
+        $last | Add-Member -NotePropertyName after_ms -NotePropertyValue $ms
+        return
+    }
+    if ($name -eq 'prosody' -and $Node.Attributes.Count -eq 0) { throw 'Prosody requires rate or pitch.' }
+    $before = $State.spans.Count
+    foreach ($child in $Node.ChildNodes) { Read-ManualNode $child $State $next ($Depth + 1) }
+    if ($State.spans.Count -eq $before) { throw 'Empty speech scope.' }
+    if ($name -eq 's' -or $name -eq 'p') {
+        # A boundary marks the following sentence/paragraph end, not every prosody run.
+        # Coincident paragraph/sentence endings retain the stronger paragraph boundary.
+        $last = $State.spans[$State.spans.Count - 1]
+        if ($null -eq $last.PSObject.Properties['boundary'] -or $name -eq 'p') {
+            $last | Add-Member -NotePropertyName boundary -NotePropertyValue $name -Force
+        }
+    }
+}
+
+function Prepare-Manual {
+    param([object]$Ssml, [object[]]$Features)
+    if ($Ssml -isnot [string] -or $Ssml.Length -eq 0 -or [System.Text.Encoding]::UTF8.GetByteCount($Ssml) -gt 32768 -or
+        $Ssml -match '<[!?]') { throw 'SSML must be a bounded document without declarations or processing instructions.' }
+    $settings = [System.Xml.XmlReaderSettings]::new()
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $settings.MaxCharactersInDocument = 32768
+    $reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($Ssml), $settings)
+    try {
+        $doc = [System.Xml.XmlDocument]::new()
+        $doc.XmlResolver = $null
+        $doc.PreserveWhitespace = $true
+        $doc.Load($reader)
+        $root = $doc.DocumentElement
+        if ($root.LocalName -cne 'speak' -or $root.NamespaceURI -cne 'http://www.w3.org/2001/10/synthesis' -or
+            $root.GetAttribute('version') -cne '1.0' -or
+            $root.GetAttribute('lang', 'http://www.w3.org/XML/1998/namespace') -cnotmatch '^[a-zA-Z]{2,8}(-[a-zA-Z0-9]{1,8})*$') { throw 'Invalid W3C speak envelope.' }
+        foreach ($attribute in $root.Attributes) {
+            if ($attribute.Name -cnotin @('xmlns', 'version', 'xml:lang')) { throw 'Unsupported speak metadata.' }
+        }
+        $state = @{ text = [System.Text.StringBuilder]::new(); length = 0; features = $Features
+                    spans = [System.Collections.Generic.List[object]]::new() }
+        foreach ($child in $root.ChildNodes) { Read-ManualNode $child $state @{} 1 }
+        if ([string]::IsNullOrWhiteSpace($state.text.ToString())) { throw 'SSML has no speech text.' }
+        $markup = [pscustomobject]@{ text = $state.text.ToString(); spans = @($state.spans.ToArray()) }
+        [void](Compile-Markup $markup $markup.text $Features)
+        return $markup
+    }
+    finally { $reader.Dispose() }
+}
+
+function Get-TokenLanguage {
+    param([object]$Token)
+    try {
+        $language = ([string]$Token.GetAttribute('Language')).Split(';')[0]
+        return [System.Globalization.CultureInfo]::GetCultureInfo([Convert]::ToInt32($language, 16)).Name
+    }
+    catch { return 'und' }
+}
+
+function Resolve-Token {
+    param([string]$Selection)
+    if ([string]::IsNullOrEmpty($Selection)) {
+        $probe = New-Object -ComObject SAPI.SpVoice
+        try { return $probe.Voice } finally { Release-Com $probe }
+    }
+    if (-not $script:byName.ContainsKey($Selection)) { Update-Catalogue }
+    if (-not $script:byName.ContainsKey($Selection)) { throw ('The requested SAPI5 voice is not installed: {0}' -f $Selection) }
+    return $script:byName[$Selection].token
 }
 
 function Test-JsonNumber {
@@ -129,6 +362,12 @@ function Stop-Speaks {
     }
     $script:queue = $kept
     foreach ($turn in $cancelled) {
+        if ($null -ne $turn.output) {
+            $turn.output.Close()
+            $script:voice.AudioOutputStream = $null
+            Release-Com $turn.output
+            $turn.output = $null
+        }
         Write-Protocol @{ id = $turn.id; event = 'cancelled' }
     }
 }
@@ -166,11 +405,19 @@ function Invoke-CommandLine {
             throw 'Command op must be a string.'
         }
         switch -CaseSensitive ($command.op) {
+            'prepare' {
+                if ($null -eq $properties['ssml']) { throw 'Prepare requires ssml.' }
+                $features = if ($null -ne $properties['features']) { Get-Features $command.features } else { @() }
+                $markup = Prepare-Manual $command.ssml $features
+                Write-Protocol @{ id = $requestId; event = 'prepared'; markup = $markup }
+            }
             'voices' {
                 Update-Catalogue
                 $voices = @(
                     foreach ($entry in $script:catalogue) {
-                        @{ id = $entry.name; name = $entry.name }
+                        @{ id = $entry.name; name = $entry.name; identity = $entry.identity
+                           isDefault = ($entry.identity -ceq [string]$script:defaultToken.Id)
+                           evidence = @{ rate = 'unknown'; pitch = 'unknown'; boundaries = 'unknown'; pauses = 'unknown' } }
                     }
                 )
                 Write-Protocol @{ id = $requestId; event = 'voices'; voices = $voices }
@@ -190,6 +437,15 @@ function Invoke-CommandLine {
                 if (-not (Test-JsonNumber $command.volume) -or $command.volume -lt 0 -or $command.volume -gt 100 -or [math]::Truncate([double]$command.volume) -ne $command.volume) {
                     throw 'Speak volume must be an integer from 0 to 100.'
                 }
+                $features = if ($null -ne $properties['features']) { Get-Features $command.features } else { @() }
+                $offsets = Get-ScalarOffsets $command.text
+                $content = $command.text.Substring(0, $offsets[[math]::Min(4000, $offsets.Count - 1)])
+                $flags = 17
+                $token = Resolve-Token $command.voice
+                if ($null -ne $properties['markup']) {
+                    $content = Compile-Markup $command.markup $command.text $features (Get-TokenLanguage $token)
+                    $flags = 265
+                }
                 if ($null -ne $properties['interrupt']) {
                     if ($command.interrupt -isnot [bool]) {
                         throw 'Speak interrupt must be a boolean.'
@@ -206,6 +462,10 @@ function Invoke-CommandLine {
                     voice = $command.voice
                     rate = [int]$command.rate
                     volume = [int]$command.volume
+                    token = $token
+                    content = $content
+                    flags = $flags
+                    output = $null
                     actualVoice = $null
                     started = $false
                     warmup = $false
@@ -236,6 +496,10 @@ function Invoke-CommandLine {
                         rate = 10
                         volume = 0
                         actualVoice = $null
+                        token = (Resolve-Token $command.voice)
+                        content = '1'
+                        flags = 17
+                        output = $null
                         started = $false
                         warmup = $true
                     })
@@ -265,25 +529,29 @@ function Start-NextSpeak {
     while ($null -eq $script:active -and $script:queue.Count -gt 0) {
         $turn = $script:queue.Dequeue()
         try {
-            $token = $script:defaultToken
-            if (-not [string]::IsNullOrEmpty($turn.voice)) {
-                if (-not $script:byName.ContainsKey($turn.voice)) { Update-Catalogue }
-                if (-not $script:byName.ContainsKey($turn.voice)) {
-                    throw ('The requested SAPI5 voice is not installed: {0}' -f $turn.voice)
-                }
-                $token = $script:byName[$turn.voice].token
-            }
-            # An empty selection must restore the OS default, not reuse the
-            # custom token assigned by the preceding turn.
+            $token = $turn.token
             $script:voice.Voice = $token
             $turn.actualVoice = [string]$token.GetDescription()
             $script:voice.Rate = $turn.rate
             $script:voice.Volume = $turn.volume
-            # SVSFlagsAsync | SVSFIsNotXML: text is never interpreted as SSML.
-            [void]$script:voice.Speak($turn.text, 17)
+            if ($OutputDirectory -and -not $turn.warmup) {
+                $stream = New-Object -ComObject SAPI.SpFileStream
+                try {
+                    $stream.Open((Join-Path $OutputDirectory ('{0}.wav' -f $turn.id)), 3, $false)
+                    $script:voice.AudioOutputStream = $stream
+                    $turn.output = $stream
+                }
+                catch { Release-Com $stream; throw }
+            }
+            # Plain=17; only the escaped, validated W3C document uses async SSML=265.
+            [void]$script:voice.Speak($turn.content, $turn.flags)
             $script:active = $turn
         }
         catch {
+            if ($null -ne $turn.output) {
+                try { $turn.output.Close(); $script:voice.AudioOutputStream = $null } finally { Release-Com $turn.output }
+                $turn.output = $null
+            }
             Write-Protocol @{ id = $turn.id; event = 'error'; error = $_.Exception.Message }
             continue
         }
@@ -314,6 +582,12 @@ function Complete-ActiveSpeak {
     # while the new one is still starting.
     $turn = $script:active
     $script:active = $null
+    if ($null -ne $turn.output) {
+        $turn.output.Close()
+        $script:voice.AudioOutputStream = $null
+        Release-Com $turn.output
+        $turn.output = $null
+    }
     if ($hresult -lt 0) {
         $nativeError = [System.Runtime.InteropServices.Marshal]::GetExceptionForHR($hresult)
         $message = 'SAPI5 synthesis failed (0x{0:X8}): {1}' -f ([long]$hresult -band 4294967295), $nativeError.Message
@@ -340,11 +614,19 @@ try {
     if (-not [Environment]::Is64BitProcess) {
         throw 'SAPI5 requires 64-bit Windows PowerShell.'
     }
+    if ($OutputDirectory -and (-not [System.IO.Path]::IsPathRooted($OutputDirectory) -or
+        -not [System.IO.Directory]::Exists($OutputDirectory))) { throw 'OutputDirectory must be an existing absolute scratch directory.' }
     $script:voice = New-Object -ComObject SAPI.SpVoice
     $script:defaultToken = $script:voice.Voice
     if ($null -eq $script:defaultToken) { throw 'The OS has no default SAPI5 voice.' }
     Update-Catalogue
-    Write-Protocol @{ event = 'ready' }
+    $initialVoices = @(
+        foreach ($entry in $script:catalogue) {
+            @{ id = $entry.name; name = $entry.name; identity = $entry.identity
+               isDefault = ($entry.identity -ceq [string]$script:defaultToken.Id) }
+        }
+    )
+    Write-Protocol @{ event = 'ready'; voices = $initialVoices }
     $readTask = $script:inputReader.ReadLineAsync()
     while ($true) {
         if ($readTask.IsCompleted) {

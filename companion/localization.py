@@ -64,6 +64,10 @@ class Localizer:
             result = self.localize(original)
             message["text"] = result["text"]
             if original != result["text"]:
+                # Translation gives reliable words, not subspan correspondence. Never bind stale source
+                # offsets or guess from a coincidentally surviving quotation in the translated sentence.
+                message.pop("markup", None)
+                message.pop("speech_context", None)
                 message.setdefault("original_text", original)  # diagnostics remain available verbatim
         return message
 

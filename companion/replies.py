@@ -3,6 +3,8 @@ directive lines found, SKIP recognised, the length capped at whole sentences, an
 sentence while it arrives (EarlySpeech)."""
 import re
 
+import speech_markup
+
 
 _FACTS_LINE = re.compile(r"^\s*[*_`>-]*\s*facts?\s*[*_`]*\s*:\s*(.*)$", re.I)
 _FACT_START = re.compile(r"^(?:q|c|i|p|h|s|g|n|poi|web):", re.I)
@@ -84,10 +86,10 @@ def split_watch(text):
 
 # the lines a reply ends with that are never spoken (the coach strips and applies them)
 DIRECTIVES = ("SKIP", "FACTS", "WATCH:", "UNWATCH:", "PERSONA:", "VOICE:", "BANTER:", "CHAT:", "NAME:", "LORE:",
-              "TONE:", "ROLE:", "SCENE:")
+              "TONE:", "SPEECH:", "ROLE:", "SCENE:")
 
 
-MIDLINE_DIRECTIVE = re.compile(r"(?<=\S)\s+(?:VOICE|NAME|LORE|TONE|ROLE|SCENE|PERSONA|BANTER|CHAT)\s*:\s")
+MIDLINE_DIRECTIVE = re.compile(r"(?<=\S)\s+(?:VOICE|NAME|LORE|TONE|SPEECH|ROLE|SCENE|PERSONA|BANTER|CHAT)\s*:\s")
 
 
 class EarlySpeech:
@@ -97,56 +99,59 @@ class EarlySpeech:
     `prefix`) goes on the final message; the app then says only the rest. A reply in character starts with a
     "TONE: <delivery>" line: it is read into `tone` (the lines are spoken with it) and never said."""
     _END = re.compile(r"[.!?](?=\s)")
-    _TONE = re.compile(r"\s*TONE\s*:\s*([^\n]*)\n", re.I)
 
-    def __init__(self, speak, limit_words, urgent=False, prefix=""):
+    def __init__(self, speak, limit_words, urgent=False, prefix="", policy=None):
         self.speak, self.limit, self.urgent = speak, limit_words, urgent
         self.buf, self.used, self.words, self.stopped = "", 0, 0, False
-        self.spoken = prefix.strip()
-        self.tone = None                  # the reply's TONE: line, once read ("" when it has none)
+        self.spoken = speech_markup.canonical(prefix)
+        self.tone = None
+        self.policy = policy or speech_markup.Policy()
 
     def __call__(self, chunk):
         if self.stopped:
             return
         self.buf += chunk
-        if self.tone is None:
-            head = self.buf.lstrip()
-            if head.upper().startswith("TONE:") or "TONE:".startswith(head.upper()):
-                m = self._TONE.match(self.buf)
-                if not m:
-                    return                 # the TONE line hasn't ended yet
-                self.tone, self.used = m.group(1).strip(), m.end()
-            else:
-                self.tone = ""
+        body, self.tone, hints = speech_markup.split_headers(self.buf, self.policy, complete=False)
+        # Only prose contributes to canonical offsets and the commitment ledger. Metadata, including a
+        # partial or late header, is never a speech unit.
+        lines = body.split("\n")
+        cut = next((i for i, line in enumerate(lines) if line.strip().upper().startswith(DIRECTIVES)), None)
+        directive = cut is not None
+        if directive:
+            body = "\n".join(lines[:cut])
+        mid = MIDLINE_DIRECTIVE.search(body)
+        if mid:
+            body, directive = body[:mid.start()], True
+        canonical = speech_markup.canonical(body) + (" " if body.endswith((" ", "\n", "\r", "\t")) else "")
         while not self.stopped:
-            rest = self.buf[self.used:]
+            rest = canonical[self.used:].lstrip()
+            start = len(canonical) - len(rest)
+            # A punctuation mark needs a following separator (or a directive) before committing. The
+            # final unterminated sentence belongs to final delivery, as before.
             m = self._END.search(rest)
+            if not m and directive:
+                m = re.search(r"[.!?]$", rest)
             if not m:
+                if directive:
+                    self.stopped = True
                 return
-            raw = rest[:m.end()]
-            self.used += m.end()
-            # a line that doesn't end in . ! ? runs on into the next: a directive line there ends what is said
-            lines = raw.split("\n")
-            cut = next((i for i, ln in enumerate(lines) if ln.strip().upper().startswith(DIRECTIVES)), None)
-            if cut is not None:
-                raw, self.stopped = "\n".join(lines[:cut]), True
-            mid = MIDLINE_DIRECTIVE.search(raw)    # one written mid-line ("...east. SCENE: we're hunters")
-            if mid:
-                raw, self.stopped = raw[:mid.start()], True
-            sentence = " ".join(raw.split())
-            up = sentence.upper()
+            sentence = rest[:m.end()]
             n = len(sentence.split())
-            if not sentence or "FACTS:" in up or self.words + n > self.limit:
+            if not sentence or "FACTS:" in sentence.upper() or self.words + n > self.limit:
                 self.stopped = True
                 return
-            last = self.stopped                     # the words before the directive line, then nothing more
-            if self.speak(sentence, self.urgent and not self.words) is False:
-                self.stopped = True                 # not said (push-to-talk held): the final message says it
+            end = start + len(sentence)
+            markup = speech_markup.resolve(body, hints, self.policy, committed=self.used)
+            markup = speech_markup.prepare_with_policy(body, self.policy, markup)
+            markup = speech_markup.slice_markup(markup, start, end, sentence)
+            accepted = self.speak(sentence, self.urgent and not self.words, markup=markup) if markup else \
+                self.speak(sentence, self.urgent and not self.words)
+            if accepted is False:
+                self.stopped = True       # PTT refused: final delivery still owns these words.
                 return
+            self.used = end
             self.words += n
             self.spoken = (self.spoken + " " + sentence).strip()
-            if last:
-                return
 
     @property
     def said(self):

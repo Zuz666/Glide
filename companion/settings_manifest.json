@@ -1,5 +1,5 @@
 {
-  "about": "Every engine setting in config.json (under \"companion\"): its default, its range, its kind, and how a change applies. Read by companion/settings.py (the engine's defaults and clamped reads), companion/tuning.py (what the dashboard may change live) and the desktop Settings page (desktop/scripts/gen-settings.js makes src/renderer/settings-manifest.ts from it at build time). kind: int, number, bool, text, list. live: the coach takes a change at once (POST /settings); app: the desktop app acts on it itself; neither: a coach restart. standalone: read by the standalone Python overlay (companion/overlay.py, the engine run without the app); the app's overlay has its own settings in app-settings.json and reads only overlay.drag_key from here. in_defaults false: load_config leaves it out when config.json doesn't set it (its absence means something). Labels and help text live in desktop/src/renderer/settings-schema.ts.",
+  "about": "Every engine setting in config.json (under \"companion\"): its default, its range, its kind, and how a change applies. Read by companion/settings.py (the engine's defaults and clamped reads), companion/tuning.py (what the dashboard may change live) and the desktop Settings page (desktop/scripts/gen-settings.js makes src/renderer/settings-manifest.ts from it at build time). kind: int, number, bool, text, list, object. live: the coach takes a change at once (POST /settings); app: the desktop app acts on it itself; neither: a coach restart. standalone: read by the standalone Python overlay (companion/overlay.py, the engine run without the app); the app's overlay has its own settings in app-settings.json and reads only overlay.drag_key from here. in_defaults false: load_config leaves it out when config.json doesn't set it (its absence means something). Labels and help text live in desktop/src/renderer/settings-schema.ts.",
   "settings": {
     "grid.cols": {"default": 96, "kind": "int"},
     "grid.rows": {"default": 8, "kind": "int"},
@@ -90,6 +90,10 @@
     "voice.voice": {"default": "", "kind": "text"},
     "voice.output": {"default": "app", "kind": "text"},
     "voice.announce": {"default": true, "kind": "bool"},
+    "voice.markup_mode": {"default": "ai", "kind": "text", "app": true},
+    "voice.markup_profile": {"default": "standard", "kind": "text", "app": true},
+    "voice.markup_voices": {"default": {}, "kind": "object", "app": true},
+    "voice.markup_destination": {"default": {}, "kind": "object", "app": true},
 
     "gear.kind": {"default": "Speedrun", "kind": "text"},
     "gear.spec": {"default": "", "kind": "text"},

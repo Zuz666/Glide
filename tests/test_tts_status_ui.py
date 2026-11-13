@@ -155,8 +155,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if channel == "tts:voices":
             if args[0] == "windows":
                 return self.send_data([
-                    {"id": "Xenia (Russian)", "name": "Xenia (Russian)"},
-                    {"id": "Microsoft Zira", "name": "Microsoft Zira"},
+                    {"id": "Xenia (Russian)", "name": "Xenia (Russian)", "identity": "token:xenia", "isDefault": True},
+                    {"id": "Microsoft Zira", "name": "Microsoft Zira", "identity": "token:zira", "isDefault": False},
                 ])
             if args[0] == "openai":
                 return self.send_data([{"id": "coral", "name": "coral"}, {"id": "alloy", "name": "alloy"}])

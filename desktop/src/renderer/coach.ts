@@ -11,6 +11,7 @@ import { EngineStatus, LiteInitEvent, LiteState, PttEvent, SpeakEvent, ThinkingE
 export const ENGINE_LABEL: Record<string, string> = { stopped: "Stopped", building: "Building", starting: "Starting", running: "Running",
                                                       stopping: "Stopping", crashed: "Stopped with an error" };
 let events: EventSource | null = null;
+let connectionRevision = 0;
 
 export function onEngine(s: EngineStatus): void {
   live.engineState = s.state;
@@ -19,6 +20,7 @@ export function onEngine(s: EngineStatus): void {
   refreshStatus();
   if (s.url !== live.engineUrl) {
     live.engineUrl = s.url;
+    connectionRevision++;
     events?.close();
     events = null;
     if (live.engineUrl) showDashboard(live.engineUrl);
@@ -48,7 +50,7 @@ function showDashboard(url: string): void {
   f.src = `${url}/#t=${encodeURIComponent(live.engineToken)}&dates=native`; // only this embedded view uses Windows formatting
   f.classList.add("on");
   $("dash-empty").style.display = "none";
-  connectEvents(url);
+  void connectEvents(url);
 }
 
 function hideDashboard(): void {
@@ -89,7 +91,11 @@ const BARGE_MS = 150;            // as the engine's BARGE_S
 let bargeTimer = 0;
 
 /** The light stream: the session bar's keys of the state, and the speak and push-to-talk events. */
-function connectEvents(url: string): void {
+async function connectEvents(url: string): Promise<void> {
+  const revision = connectionRevision;
+  const config = await call("config:get");
+  if (revision !== connectionRevision || live.engineUrl !== url) return;
+  live.config = config || {};
   events = new EventSource(url + "/events?lite=1");
   events.addEventListener("init", (e) => {
     try {
@@ -128,7 +134,7 @@ function connectEvents(url: string): void {
   events.addEventListener("speak", (e) => {
     try {
       const d: SpeakEvent = JSON.parse((e as MessageEvent).data);
-      speech.say(String(d.text || ""), !!d.interrupt, d.style ? String(d.style) : "", d.tone ? String(d.tone) : "");
+      speech.say(String(d.text || ""), !!d.interrupt, d.style ? String(d.style) : "", d.tone ? String(d.tone) : "", { markup: d.markup });
     } catch { /* ignore */ }
   });
   events.addEventListener("voice_spoken", (e) => {

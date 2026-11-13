@@ -6,7 +6,7 @@ export interface ManifestEntry {
   default: unknown;
   min?: number;
   max?: number;
-  kind: "int" | "number" | "bool" | "text" | "list";
+  kind: "int" | "number" | "bool" | "text" | "list" | "object";
   live?: boolean;
   app?: boolean;
 }
@@ -97,6 +97,10 @@ export const MANIFEST: Record<string, ManifestEntry> = {
   "voice.voice": {"default":"","kind":"text"},
   "voice.output": {"default":"app","kind":"text"},
   "voice.announce": {"default":true,"kind":"bool"},
+  "voice.markup_mode": {"default":"ai","kind":"text","app":true},
+  "voice.markup_profile": {"default":"standard","kind":"text","app":true},
+  "voice.markup_voices": {"default":{},"kind":"object","app":true},
+  "voice.markup_destination": {"default":{},"kind":"object","app":true},
   "gear.kind": {"default":"Speedrun","kind":"text"},
   "gear.spec": {"default":"","kind":"text"},
   "gear.min_gain_pct": {"default":3,"min":0,"max":50,"kind":"number"},

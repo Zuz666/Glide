@@ -122,7 +122,7 @@ fake.on_message({"kind": "answer", "text": "Go east.\nKill boars there.", "speak
 fake.on_message({"kind": "answer", "text": "Go east.", "speak": True, "spoken": "Go east."})
 fake.on_message({"kind": "answer", "text": "Something else.", "speak": True, "spoken": "Let me check."})
 fake.on_message({"kind": "callout", "text": "Rebuff.", "speak": True, "urgent": True})
-assert voice_said == [("Kill boars there.", False), ("Something else.", False), ("Rebuff.", True)], voice_said
+assert voice_said == [("Kill boars there.", False), ("Rebuff.", True)], voice_said
 fake._flags = {"voice": False}                        # /coach voice off: early speech too, except answers
 voice_said.clear()
 fake.speak_early("Rebuff.", "callout")

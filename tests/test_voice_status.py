@@ -19,10 +19,15 @@ import voice  # noqa: E402
 
 
 class Commands:
-    def __init__(self):
+    def __init__(self, worker=None):
         self.sent = queue.Queue()
+        self.worker = worker
 
     def write(self, text):
+        command = json.loads(text)
+        if command["op"] == "voices" and self.worker is not None and self.worker.auto_catalogue:
+            self.worker.emit("voices", command["id"], voices=self.worker.catalogue)
+            return
         self.sent.put(json.loads(text))
 
     def flush(self):
@@ -34,7 +39,10 @@ class Worker:
         read_fd, write_fd = os.pipe()
         self.stdout = os.fdopen(read_fd, "r", encoding="utf-8")
         self.output = os.fdopen(write_fd, "w", encoding="utf-8", buffering=1)
-        self.stdin = Commands()
+        self.stdin = Commands(self)
+        self.auto_catalogue = True
+        self.catalogue = [{"id": "Requested voice", "name": "Requested voice",
+                           "identity": "token:A", "isDefault": True}]
         self.returncode = None
 
     def poll(self):
@@ -65,6 +73,26 @@ def spawn(*args, **kwargs):
     worker = Worker()
     workers.append(worker)
     return worker
+
+
+# A preparation token predates discovery/style work; mute/unmute or PTT cannot revive it.
+speech_events = []
+event_sink = type("Events", (), {"publish": lambda self, key, data: speech_events.append((key, data))})()
+hub_voice = voice.HubVoice({"enabled": True, "announce": False}, event_sink, announce=False)
+token = hub_voice.cancellation_token()
+hub_voice.say("Accepted.", cancellation_token=token)
+hub_voice.hush()
+hub_voice.say("Cancelled before preparation.", cancellation_token=token)
+token = hub_voice.cancellation_token()
+hub_voice.set_muted(True)
+hub_voice.set_muted(False)
+hub_voice.say("Cancelled by mute.", cancellation_token=token)
+hub_voice.style_fn = lambda: hub_voice.hush() or ""
+hub_voice.say("Cancelled during preparation.")
+assert [data["text"] for _, data in speech_events] == ["Accepted."], speech_events
+hub_voice.style_fn = None
+hub_voice.say("Fresh.")
+assert [data["text"] for _, data in speech_events] == ["Accepted.", "Fresh."], speech_events
 
 
 h = dashboard.Hub()
@@ -129,6 +157,48 @@ with tempfile.TemporaryDirectory() as tmp:
             new.emit("done", fresh["id"], voice="New voice")
             latest = received(q)
             assert latest["text"] == "New worker's turn" and latest["voice"] == "New voice", latest
+            # Same display name, different actual defaults: permissions follow tokens, not selectors.
+            v.cfg["voice"] = ""
+            v.cfg["markup_voices"] = {"token:A": ["rate", "pitch"], "token:B": ["pauses"]}
+            markup = {"text": "A 😀 & <B>.", "spans": [{"start": 2, "end": 3, "rate": "slow", "pitch": "high"}]}
+            v.say(markup["text"], markup=markup, features=["rate"])
+            frozen = new.command()
+            assert frozen["voice"] == "token:A" and frozen["features"] == ["rate"], frozen
+            assert frozen["markup"]["text"] == "A 😀 & <B>."
+            assert frozen["markup"]["spans"] == [{"start": 2, "end": 3, "rate": "slow"}], frozen
+            new.catalogue = [{"id": "Requested voice", "name": "Requested voice",
+                              "identity": "token:B", "isDefault": True}]
+            v.say(markup["text"], markup=markup, features=["rate"])
+            changed = new.command()
+            assert changed["voice"] == "token:B" and changed["features"] == [], changed
+            assert "markup" not in changed and changed["text"] == markup["text"], changed
+            assert frozen["markup"]["spans"][0]["rate"] == "slow", "later settings changed accepted controls"
+            new.emit("cancelled", frozen["id"])
+            new.emit("cancelled", changed["id"])
+
+            # Discovery cannot hold off PTT or revive a line whose enqueue was waiting for the catalogue.
+            new.auto_catalogue = False
+            waiting = threading.Thread(target=lambda: v.say("Cancelled during discovery"), daemon=True)
+            waiting.start()
+            discovery = new.command()
+            assert discovery["op"] == "voices", discovery
+            v.hush()
+            stop = new.command()
+            assert stop["op"] == "cancel", stop
+            new.emit("voices", discovery["id"], voices=new.catalogue)
+            waiting.join(3)
+            assert not waiting.is_alive() and new.stdin.sent.empty(), "PTT-cancelled discovery resurrected speech"
+            stale_token = v.cancellation_token()
+            v.hush()
+            assert new.command()["op"] == "cancel"
+            v.say("Cancelled before native preparation.", cancellation_token=stale_token)
+            assert new.stdin.sent.empty(), "a stale supplied token began catalogue discovery"
+            stale_token = v.cancellation_token()
+            v.set_muted(True)
+            assert new.command()["op"] == "cancel"
+            v.set_muted(False)
+            v.say("Cancelled before mute was released.", cancellation_token=stale_token)
+            assert new.stdin.sent.empty(), "mute/unmute revived an old preparation token"
     finally:
         for worker in workers:
             worker.close()

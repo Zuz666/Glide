@@ -521,6 +521,172 @@ try {
   await until(() => document.getElementById('sv-voice')?.options.length >= 3
     && !!document.querySelector('[data-key="companion.voice.voice"] select'),
     'Expected native voice choices and nested process voice controls');
+  // Real editable surface against the controlled native IPC boundary. Native consumer tests own XML grammar.
+  const markupBefore = await window.glide.invoke('config:get');
+  const markupSay = narratorMod.speech.say, markupInvoke = window.glide.invoke;
+  const markupSamples = [], preparations = [];
+  let prepareFailure = '';
+  let delayPreparation = false, releasePreparation, releaseEdgeCatalogue, delayEdgeCatalogue = false;
+  let finishNewerLine, newerRequest;
+  const stoppedNativeRequests = [];
+  narratorMod.speech.say = (...args) => markupSamples.push(args);
+  window.glide.invoke = (channel, ...args) => {
+    if (channel === 'tts:voices' && args[0] === 'edge' && delayEdgeCatalogue)
+      return new Promise(resolve => { releaseEdgeCatalogue = () => resolve([{ id: 'ru-RU-DmitryNeural', name: 'Dmitry' }]); });
+    if (channel === 'tts:windowsSpeak' && args[1] === 'Newer coach line.')
+      return new Promise(resolve => { newerRequest = args[0]; finishNewerLine = () => resolve({ voice: 'Xenia (Russian)' }); });
+    if (channel === 'tts:windowsStop') { stoppedNativeRequests.push(args[0]); return Promise.resolve(); }
+    if (channel !== 'tts:windowsPrepare') return markupInvoke(channel, ...args);
+    preparations.push(args);
+    if (prepareFailure) return Promise.reject(new Error(prepareFailure));
+    if (delayPreparation) return new Promise(resolve => {
+      releasePreparation = () => resolve({ text: 'Take a moment to recover.', spans: [{ start: 0, end: 25, rate: 'slow' }] });
+    });
+    return Promise.resolve({ text: 'Take a moment to recover.', spans: [{ start: 0, end: 25, rate: 'slow' }] });
+  };
+  try {
+    await window.glide.invoke('config:set', { companion: { voice: { markup_mode: 'ai', markup_profile: 'expanded', markup_voices: {} } } });
+    await page.renderSettings();
+    await until(() => document.querySelectorAll('[data-speech-feature]').length === 4);
+    const rate = () => document.querySelector('[data-speech-feature="rate"]');
+    check(!rate().checked && document.getElementById('sv-markup-profile').disabled,
+      'Unknown voices start without permission and keep the saved budget inactive');
+    check(document.querySelector('#sv-sample-example option[value="rate-span"]').disabled
+      && document.querySelector('#sv-sample-example option[value="rate-span"]').textContent.includes('requires rate'),
+      'Disabled span examples explain the missing permission');
+    const count = markupSamples.length;
+    rate().checked = true;
+    rate().dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => !document.querySelector('#sv-sample-example option[value="rate-phrase"]').disabled);
+    check(document.getElementById('sv-markup-features').textContent.includes('evidence: unknown')
+      && !document.getElementById('sv-markup-profile').disabled && markupSamples.length === count,
+      'Opting into rate enables AI eligibility without changing evidence or producing sound');
+    const profile = document.getElementById('sv-markup-profile');
+    check(profile.value === 'expanded', 'Inactive profile choices must be retained');
+    const mode = document.getElementById('sv-markup-mode');
+    profile.value = 'light';
+    profile.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => !profile.closest('[data-special="voices"]').dataset.voiceSaving);
+    check(rate().checked && markupSamples.length === count, 'Changing the budget never changes permissions or starts a sample');
+    mode.value = 'local';
+    mode.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => profile.disabled && mode.value === 'local' && !profile.closest('[data-special="voices"]').dataset.voiceSaving);
+    check(profile.value === 'light', 'Local-only mode retains the saved profile while inactive');
+    mode.value = 'off';
+    mode.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => profile.disabled && mode.value === 'off' && !profile.closest('[data-special="voices"]').dataset.voiceSaving);
+    check(profile.value === 'light', 'Off mode retains the saved profile');
+    const example = document.getElementById('sv-sample-example');
+    example.value = 'rate-phrase';
+    example.dispatchEvent(new Event('change', { bubbles: true }));
+    const sample = document.getElementById('sv-sample');
+    const phraseDraft = sample.value;
+    check(document.getElementById('sv-sample-mode').value === 'ssml' && phraseDraft.includes('<prosody')
+      && markupSamples.length === count, 'Selecting an example sets editable SSML without autoplay, even with automatic markup off');
+    sample.dispatchEvent(new Event('input', { bubbles: true }));
+    check(document.getElementById('sv-sample-mode').value === 'ssml', 'Editing an SSML sample retains its explicit mode');
+    document.getElementById('sv-test').click();
+    await until(() => markupSamples.length === count + 1);
+    check(markupSamples.at(-1)[0] === 'Take a moment to recover.'
+      && preparations.at(-1)[0] === phraseDraft && preparations.at(-1)[1].voiceName === 'token:xenia',
+      'Play validates the displayed draft against the actual app voice before submitting canonical words');
+    example.value = 'rate-span';
+    example.dispatchEvent(new Event('change', { bubbles: true }));
+    check(sample.value.includes('safe path') && document.getElementById('sv-sample-mode').value === 'ssml'
+      && markupSamples.length === count + 1, 'Word/span example insertion is silent');
+    const retained = sample.value;
+    delayPreparation = true;
+    document.getElementById('sv-test').click();
+    await until(() => !!releasePreparation);
+    narratorMod.speech.bargeIn();
+    markupSay.call(narratorMod.speech, 'Newer coach line.');
+    await until(() => !!finishNewerLine);
+    delayPreparation = false;
+    releasePreparation();
+    await until(() => !document.getElementById('sv-test').disabled);
+    check(markupSamples.length === count + 1 && !stoppedNativeRequests.includes(newerRequest),
+      'Push-to-talk cancels pending manual preparation; its late result neither plays nor interrupts newer speech');
+    finishNewerLine();
+    await until(() => narratorMod.speech.lastText === 'Newer coach line.');
+    prepareFailure = 'Malformed or forbidden SSML';
+    document.getElementById('sv-test').click();
+    await until(() => document.getElementById('sv-sample-error').textContent.includes(prepareFailure));
+    check(markupSamples.length === count + 1 && sample.value === retained,
+      'A strict native preparation failure is visible and never interrupts or enqueues speech');
+    await page.renderSettings();
+    check(document.getElementById('sv-sample').value === retained
+      && document.getElementById('sv-sample-mode').value === 'ssml', 'Rerender retains the SSML draft and mode');
+    prepareFailure = '';
+    await window.glide.invoke('app:settings:set', { speech: { edge: { voice: '' } } });
+    await page.renderSettings();
+    releasePreparation = undefined;
+    delayPreparation = true;
+    document.getElementById('sv-test').click();
+    await until(() => !!releasePreparation);
+    delayEdgeCatalogue = true;
+    const changingProvider = document.getElementById('sv-prov');
+    changingProvider.value = 'edge';
+    changingProvider.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => !!releaseEdgeCatalogue);
+    const beforeBlockedPlay = preparations.length;
+    document.getElementById('sv-test').click();
+    check(document.getElementById('sv-test').disabled && preparations.length === beforeBlockedPlay,
+      'Selecting Edge blocks SSML Play before its asynchronous voice catalogue lookup completes');
+    delayPreparation = false;
+    releasePreparation();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    check(markupSamples.length === count + 1, 'A provider change invalidates an already-pending manual preparation immediately');
+    delayEdgeCatalogue = false;
+    releaseEdgeCatalogue();
+    await until(() => document.getElementById('sv-prov')?.value === 'edge'
+      && document.getElementById('sv-sample-help').textContent.includes('will not be sent online'));
+    check(document.getElementById('sv-sample').value === retained, 'Deferred provider discovery preserves the editable SSML draft');
+    await window.glide.invoke('app:settings:set', { speech: { provider: 'google' } });
+    await page.renderSettings();
+    check(document.getElementById('sv-sample').value === retained && document.getElementById('sv-test').disabled
+      && document.getElementById('sv-sample-help').textContent.includes('will not be sent online'),
+      'A non-native destination preserves the draft and visibly refuses SSML instead of changing routes');
+    await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: '' } });
+    await page.renderSettings();
+    await until(() => document.getElementById('sv-markup-identity').textContent.includes('token:xenia'));
+    check(document.getElementById('sv-markup-identity').textContent.includes('unknown'),
+      'Windows default resolves to its real identity, never a permission key for the selector');
+    const permissionVoice = document.getElementById('sv-markup-voice');
+    permissionVoice.value = 'token:zira';
+    permissionVoice.dispatchEvent(new Event('change', { bubbles: true }));
+    check(!rate().checked, 'A different voice does not inherit the first voice permission');
+    permissionVoice.value = 'token:xenia';
+    permissionVoice.dispatchEvent(new Event('change', { bubbles: true }));
+    check(rate().checked, 'Per-voice permissions survive switching back');
+    const source = document.getElementById('sv-sample-source');
+    source.value = 'template';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    check(document.getElementById('sv-sample-mode').value === 'plain', 'Template selection explicitly restores plain mode');
+    check(markupSamples.length === count + 1, 'Settings, provider, voice, budget and source changes never autoplay');
+    const voicePanel = document.querySelector('[data-special="voices"]');
+    const panelWidth = voicePanel.style.width;
+    voicePanel.style.width = '460px';
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const panelBounds = voicePanel.getBoundingClientRect();
+    for (const id of ['sv-markup-mode', 'sv-markup-profile', 'sv-markup-voice', 'sv-markup-features', 'sv-sample', 'sv-sample-example']) {
+      const bounds = document.getElementById(id).getBoundingClientRect();
+      check(bounds.left >= panelBounds.left && bounds.right <= panelBounds.right + 1,
+        'Compact voice settings must keep ' + id + ' inside the scrollable settings surface');
+    }
+    check(document.getElementById('sv-markup-budget-help').getBoundingClientRect().width >= 250,
+      'Compact budget help must retain readable line lengths instead of collapsing to letter-wide columns');
+    voicePanel.style.width = panelWidth;
+  } finally {
+    narratorMod.speech.say = markupSay;
+    window.glide.invoke = markupInvoke;
+    await window.glide.invoke('config:set', { companion: { voice: {
+      markup_mode: markupBefore.companion?.voice?.markup_mode ?? 'ai',
+      markup_profile: markupBefore.companion?.voice?.markup_profile ?? 'standard',
+      markup_voices: markupBefore.companion?.voice?.markup_voices ?? {},
+    } } });
+    await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: 'Xenia (Russian)' } });
+    await page.renderSettings();
+  }
   // Windows short-time patterns are independent of the browser locale and full-time pattern.
   narratorMod.speech.noteVoice('Regional voice (SAPI5)', 'Regional sample', Date.UTC(2030, 10, 12, 16, 13, 27));
   await until(() => document.getElementById('sv-last')?.textContent.includes('21h13'),
@@ -545,6 +711,17 @@ try {
   await until(() => liveVoiceLabel.textContent.includes('21h13') && !liveVoiceLabel.textContent.includes('Updated'));
   check(!document.querySelector('[data-group="voice:Windows speech process"]'),
     'Windows speech process must no longer be a separate settings card');
+  // A known catalogue stays editable while a new native discovery is still pending.
+  const invokeBeforeWindowsRefresh = window.glide.invoke;
+  let releaseWindowsRefresh;
+  window.glide.invoke = (channel, ...args) => channel === 'tts:voices' && args[0] === 'windows'
+    ? new Promise(resolve => { releaseWindowsRefresh = () => resolve([
+      { id: 'Xenia (Russian)', name: 'Xenia (Russian)', identity: 'token:xenia', isDefault: true },
+      { id: 'Microsoft Zira', name: 'Microsoft Zira', identity: 'token:zira', isDefault: false },
+    ]); })
+    : invokeBeforeWindowsRefresh(channel, ...args);
+  await page.renderSettings();
+  await until(() => !!releaseWindowsRefresh);
   const processRow = document.querySelector('[data-key="companion.voice.voice"]');
   const customToggle = document.querySelector('[data-key="app:speech.windowsProcessUseAppVoice"] input');
   check(processRow.closest('[data-group]').dataset.group === 'voice:Coach voice',
@@ -559,12 +736,18 @@ try {
   check(!processRow.hidden && !processRow.querySelector('select').disabled,
     'Separate voice mode must expose an editable installed-voice selector');
   const processSelect = processRow.querySelector('select');
-  processSelect.value = 'Microsoft Zira';
+  processSelect.value = 'token:zira';
   processSelect.dispatchEvent(new Event('change', { bubbles: true }));
-  check(fieldsMod.edits.get('companion.voice.voice') === 'Microsoft Zira',
+  check(fieldsMod.edits.get('companion.voice.voice') === 'token:zira',
     'A custom process voice must be staged for the engine settings save');
   check(processSummary().includes('Microsoft Zira') && !processSummary().includes('Xenia (Russian)'),
     'Separate voice summary must show the selected process voice, not the app voice');
+  releaseWindowsRefresh();
+  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  check(processSelect.value === 'token:zira' && fieldsMod.edits.get('companion.voice.voice') === 'token:zira'
+    && !processSelect.disabled && customToggle.checked,
+    'Completing silent discovery preserves the separate voice selected while refresh was pending');
+  window.glide.invoke = invokeBeforeWindowsRefresh;
   customToggle.checked = false;
   customToggle.dispatchEvent(new Event('change', { bubbles: true }));
   check(!fieldsMod.edits.has('companion.voice.voice'),
@@ -675,6 +858,33 @@ try {
   });
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
+  }
+  if (process.env.GLIDE_VOICE_SCREENSHOT_DIR) {
+    fs.mkdirSync(process.env.GLIDE_VOICE_SCREENSHOT_DIR, { recursive: true });
+    const surface = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
+      (async () => {
+        const page = await import('/renderer/settings/page.js');
+        await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: 'token:xenia' } });
+        await window.glide.invoke('config:set', { companion: { voice: { markup_mode: 'ai', markup_profile: 'standard',
+          markup_voices: { 'token:xenia': ['rate', 'pitch', 'boundaries', 'pauses'] } } } });
+        page.openSettingsTab('voice');
+        await page.renderSettings();
+        for (let i = 0; i < 100 && document.querySelector('#sv-sample-example option[value="combined"]')?.disabled; i++)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        const example = document.getElementById('sv-sample-example');
+        example.value = 'combined';
+        example.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('sv-markup-mode').closest('.field').scrollIntoView({ block: 'start' });
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      })()` });
+    if (surface.exceptionDetails) throw Error(surface.exceptionDetails.exception?.description || surface.exceptionDetails.text);
+    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await sleep(100);
+      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `speech-markup-${label}.png`), Buffer.from(image.data, "base64"));
+    }
+    await send("Emulation.setDeviceMetricsOverride", { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false });
   }
   const dateFrameContexts = new Map();
   for (let retry = 0; retry < 100 && dateFrameContexts.size < 2; retry++) {

@@ -1,7 +1,7 @@
 // Settings > Voice > Coach voice: the narrator's voice service and its voice, speed and volume, a sample, and the
 // last spoken text and voice. Saved to the app settings as each control changes.
 import { updateAppSettings } from "../app-settings.js";
-import { call } from "../bridge.js";
+import { call, glide, ipcError } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
 import { speech, voiceLastLineHtml } from "../narrator.js";
 import { Field, Group } from "../settings-schema.js";
@@ -11,6 +11,8 @@ import { bindField, edits, fieldHtml, getPath, updateDirty } from "./fields.js";
 import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
 import { jumpLinkHtml, keyRequirementHtml, loadConfiguredKeys } from "./key-links.js";
 import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
+import { SPEECH_FEATURES, speechFeatures } from "../speech-markup.js";
+import type { SpeechFeature } from "../../shared/speech-markup.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
   ["windows", "Windows voices (SAPI5, offline)", ""],
@@ -26,6 +28,98 @@ const VOICE_LIST: Record<string, [string, string]> = { edge: ["edge", "voice"], 
 let sampleSource: "template" | "last" | "custom" = "template";
 let customSample = "";
 let sampleObserver: MutationObserver | null = null;
+let sampleMode: "plain" | "ssml" = "plain";
+let customSampleMode: "plain" | "ssml" = "plain";
+let nativeCatalogue: Voice[] = [];
+let permissionIdentity = "";
+let permissionDestination = "";
+let voiceBindings: AbortController | null = null;
+const EXAMPLES: { id: string; label: string; features: SpeechFeature[]; body: string }[] = [
+  { id: "rate-phrase", label: "Rate — whole phrase", features: ["rate"], body: '<prosody rate="slow">Take a moment to recover.</prosody>' },
+  { id: "rate-span", label: "Rate — one passage", features: ["rate"], body: 'Move to the <prosody rate="slow">safe path</prosody> before continuing.' },
+  { id: "pitch-phrase", label: "Pitch — whole phrase", features: ["pitch"], body: '<prosody pitch="high">Ready for the next step.</prosody>' },
+  { id: "pitch-span", label: "Pitch — one word", features: ["pitch"], body: 'Choose the <prosody pitch="low">left</prosody> path.' },
+  { id: "boundaries", label: "Sentence and paragraph boundaries", features: ["boundaries"], body: '<p><s>Recover first</s><s>Then continue</s></p><p>Follow the road</p>' },
+  { id: "pause", label: "Native pause (may be ignored)", features: ["pauses"], body: 'Stop here.<break time="750ms"/>Now continue.' },
+  { id: "combined", label: "Combined rate and pitch — phrase and span", features: ["rate", "pitch"], body: '<prosody rate="slow" pitch="low">Recover first.</prosody> Then follow the <prosody rate="fast" pitch="high">safe road</prosody>.' },
+];
+const voicePolicy = (): Obj => getPath(live.config, "companion.voice") || {};
+function nativeVoice(selected: string): Voice | undefined {
+  return selected ? nativeCatalogue.find((v) => v.identity === selected || v.id === selected) : nativeCatalogue.find((v) => v.isDefault);
+}
+function permitted(identity: string): SpeechFeature[] {
+  return identity ? speechFeatures(voicePolicy().markup_voices?.[identity]) : [];
+}
+
+async function changingVoice(host: HTMLElement, save: () => Promise<void>): Promise<void> {
+  host.dataset.voiceSaving = String(Number(host.dataset.voiceSaving || 0) + 1);
+  host.dispatchEvent(new Event("speech-destination-changed"));
+  try {
+    await save();
+  } finally {
+    const pending = Number(host.dataset.voiceSaving || 1) - 1;
+    if (pending) host.dataset.voiceSaving = String(pending);
+    else delete host.dataset.voiceSaving;
+    host.dispatchEvent(new Event("speech-destination-changed"));
+  }
+}
+
+function markupFields(): string {
+  return field("Automatic speech markup", "Permissions are per actual native voice. Online speech remains plain. Manual SSML tests remain available when automatic markup is off.",
+    `<select id="sv-markup-mode" aria-label="Automatic speech markup">${options([["ai", "AI with local fallback"], ["local", "Local rules only"], ["off", "Off"]], voicePolicy().markup_mode || "ai")}</select>`)
+    + field("Speech markup budget", "Additional output allowance only for eligible native requests; spoken-word limits do not change. The saved choice is retained while inactive.",
+      `<select id="sv-markup-profile" aria-label="Speech markup budget">${options([["light", "Light (+64 tokens, 1 hint)"], ["standard", "Standard (+128 tokens, 3 hints)"], ["expanded", "Expanded (+256 tokens, 6 hints)"]], voicePolicy().markup_profile || "standard")}</select><p id="sv-markup-budget-help" class="help"></p>`)
+    + field("Native voice effect permissions", "Enabling a feature permits requests; it does not prove an audible effect. Unknown voices start with no effects. No hidden sound probes.",
+      `<select id="sv-markup-voice" aria-label="Voice effect permissions"></select><button type="button" class="btn" id="sv-markup-load">Reload native identities</button><p id="sv-markup-identity" class="help"></p><div id="sv-markup-features"></div>`);
+}
+
+function bindMarkup(host: HTMLElement): void {
+  const mode = host.querySelector<HTMLSelectElement>("#sv-markup-mode")!;
+  const profile = host.querySelector<HTMLSelectElement>("#sv-markup-profile")!;
+  const select = host.querySelector<HTMLSelectElement>("#sv-markup-voice")!;
+  const save = (patch: Obj) => changingVoice(host, async () => {
+    const saved = await call("config:set", { companion: { voice: patch } });
+    if (saved) live.config = saved;
+    draw();
+    host.dispatchEvent(new Event("speech-markup-changed"));
+  });
+  const draw = () => {
+    if (!host.isConnected) return;
+    const policy = voicePolicy(), sp = live.appSettings.speech || {};
+    mode.value = policy.markup_mode || "ai";
+    profile.value = policy.markup_profile || "standard";
+    const active = policy.output === "windows" ? nativeVoice(policy.voice || "") : (sp.provider || "windows") === "windows" ? nativeVoice(sp.voiceName || "") : undefined;
+    const eligible = mode.value === "ai" && permitted(active?.identity || "").some((f) => f !== "boundaries");
+    profile.disabled = !eligible;
+    host.querySelector("#sv-markup-budget-help")!.textContent = eligible ? "Active for eligible AI speech requests." : "Inactive: requires AI mode and an active native voice with rate, pitch or pauses permitted.";
+    const fallback = nativeVoice(sp.voiceName || "");
+    const destination = `${policy.output || "app"}:${sp.provider || "windows"}:${(active || fallback)?.identity || ""}`;
+    if (permissionDestination !== destination) {
+      permissionIdentity = (active || fallback)?.identity || "";
+      permissionDestination = destination;
+    }
+    if (!nativeCatalogue.some((v) => v.identity === permissionIdentity)) permissionIdentity = (active || fallback)?.identity || "";
+    select.innerHTML = nativeCatalogue.map((v) => `<option value="${esc(v.identity || "")}">${esc(v.name)}${v.isDefault ? " (Windows default)" : ""}${nativeCatalogue.some((other) => other !== v && other.name === v.name) ? ` — ${esc(v.identity || v.id)}` : ""}</option>`).join("");
+    select.value = permissionIdentity;
+    select.disabled = !nativeCatalogue.length;
+    const voice = nativeCatalogue.find((v) => v.identity === permissionIdentity);
+    host.querySelector("#sv-markup-identity")!.textContent = voice
+      ? `Actual native identity: ${voice.identity}. Evidence: unknown (no reliably version-matched profile).`
+      : "Native identity unavailable. No effects are enabled.";
+    const features = permitted(permissionIdentity);
+    host.querySelector("#sv-markup-features")!.innerHTML = SPEECH_FEATURES.map((f) =>
+      `<label><input type="checkbox" data-speech-feature="${f}" ${features.includes(f) ? "checked" : ""} ${voice ? "" : "disabled"}> ${f === "boundaries" ? "Sentence / paragraph boundaries" : f === "pauses" ? "Native pauses (may be ignored)" : f} — evidence: unknown</label><br>`).join("");
+    host.querySelectorAll<HTMLInputElement>("[data-speech-feature]").forEach((input) => input.onchange = () => {
+      const enabled = [...host.querySelectorAll<HTMLInputElement>("[data-speech-feature]:checked")].map((el) => el.dataset.speechFeature!);
+      void save({ markup_voices: { [permissionIdentity]: enabled } });
+    });
+  };
+  mode.onchange = () => { void save({ markup_mode: mode.value }); };
+  profile.onchange = () => { void save({ markup_profile: profile.value }); };
+  select.onchange = () => { permissionIdentity = select.value; draw(); };
+  host.addEventListener("speech-catalogue-changed", draw, { signal: voiceBindings!.signal });
+  draw();
+}
 
 function sampleLanguageHelp(): string {
   const saved = language();
@@ -41,15 +135,30 @@ function bindSample(host: HTMLElement): void {
   const button = host.querySelector<HTMLButtonElement>("#sv-test")!;
   const preview = host.querySelector<HTMLTextAreaElement>("#sv-sample")!;
   const lastText = host.querySelector<HTMLElement>("#sv-last-text")!;
+  const mode = host.querySelector<HTMLSelectElement>("#sv-sample-mode")!;
+  const examples = host.querySelector<HTMLSelectElement>("#sv-sample-example")!;
+  const error = host.querySelector<HTMLElement>("#sv-sample-error")!;
+  const help = host.querySelector<HTMLElement>("#sv-sample-help")!;
+  let revision = 0;
   let template: string | undefined;
   let preparing = false;
   source.value = sampleSource;
+  mode.value = sampleMode;
   const draw = () => {
     const text = sampleSource === "last" ? speech.lastText : sampleSource === "custom" ? customSample : template || "";
     if (preview.value !== text) preview.value = text;
     preview.placeholder = sampleSource === "last" ? "No line has been spoken in this session."
       : sampleSource === "custom" ? "Enter text to test this voice." : "Preparing template…";
-    button.disabled = !text.trim();
+    mode.value = sampleMode;
+    const native = (live.appSettings.speech?.provider || "windows") === "windows";
+    const features = permitted(nativeVoice(live.appSettings.speech?.voiceName || "")?.identity || "");
+    examples.innerHTML = `<option value="">Insert an editable SSML example…</option>` + EXAMPLES.map((example) => {
+      const missing = example.features.filter((f) => !features.includes(f));
+      return `<option value="${example.id}" ${!native || missing.length ? "disabled" : ""}>${esc(example.label)}${missing.length ? ` — requires ${missing.join(", ")}` : ""}</option>`;
+    }).join("");
+    help.textContent = !native ? "SSML testing is available only for the app-selected Windows SAPI5 service. The draft is retained; it will not be sent online."
+      : "Examples require the voice permissions listed above. Effects remain unverified; native pauses may be ignored. Selection and editing are silent. Play validates SSML before interrupting speech.";
+    button.disabled = !text.trim() || !!host.dataset.voiceSaving || (sampleMode === "ssml" && !native);
     button.querySelector("span")!.textContent = sampleSource === "last" ? "Play last line" : "Play sample";
     lastText.hidden = !speech.lastText || sampleSource === "last";
   };
@@ -65,22 +174,81 @@ function bindSample(host: HTMLElement): void {
   };
   source.onchange = () => {
     sampleSource = source.value === "last" ? "last" : source.value === "custom" ? "custom" : "template";
+    sampleMode = sampleSource === "custom" ? customSampleMode : "plain";
+    revision++;
+    error.textContent = "";
     prepare();
     draw();
   };
   preview.oninput = () => {
     customSample = preview.value;
+    customSampleMode = sampleMode;
     sampleSource = "custom";
     source.value = "custom";
+    revision++;
+    error.textContent = "";
     draw();
   };
-  button.onclick = () => {
-    const text = sampleSource === "last" ? speech.lastText : sampleSource === "custom" ? customSample : template || "";
-    if (!text?.trim()) return;
+  mode.onchange = () => {
+    sampleMode = mode.value === "ssml" ? "ssml" : "plain";
+    customSampleMode = sampleMode;
+    customSample = preview.value;
+    sampleSource = "custom";
+    source.value = "custom";
+    revision++;
+    error.textContent = "";
+    draw();
+  };
+  examples.onchange = () => {
+    const example = EXAMPLES.find((item) => item.id === examples.value);
+    if (!example || example.features.some((f) => !permitted(nativeVoice(live.appSettings.speech?.voiceName || "")?.identity || "").includes(f))) return;
+    customSample = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">${example.body}</speak>`;
+    sampleSource = "custom";
+    source.value = "custom";
+    sampleMode = "ssml";
+    customSampleMode = sampleMode;
+    revision++;
+    error.textContent = "";
+    draw();
+  };
+  button.onclick = async () => {
+    const text = preview.value;
+    if (!text.trim()) return;
     const rate = edits.has("app:speech.rate") ? Number(edits.get("app:speech.rate") ?? 1) : undefined;
     const volume = edits.has("app:speech.volume") ? Number(edits.get("app:speech.volume") ?? 1) : undefined;
-    speech.say(text, true, "", "", { rate, volume });
+    if (sampleMode === "plain") { speech.say(text, true, "", "", { rate, volume }); return; }
+    if ((live.appSettings.speech?.provider || "windows") !== "windows") {
+      error.textContent = "SSML testing requires the app-selected Windows SAPI5 service.";
+      return;
+    }
+    const version = ++revision, selected = live.appSettings.speech?.voiceName || "";
+    const cancellation = speech.cancellationEpoch;
+    button.disabled = true;
+    error.textContent = "";
+    try {
+      const voices = await glide.invoke("tts:voices", "windows");
+      const voice = selected ? voices.find((v) => v.identity === selected || v.id === selected) : voices.find((v) => v.isDefault);
+      if (!voice?.identity) throw new Error("The selected native voice identity could not be resolved.");
+      const config = await glide.invoke("config:get");
+      if (!button.isConnected || version !== revision || cancellation !== speech.cancellationEpoch) return;
+      live.config = config;
+      const features = permitted(voice.identity);
+      const markup = await glide.invoke("tts:windowsPrepare", text, { voiceName: voice.identity, rate, volume }, features);
+      if (!button.isConnected || version !== revision || cancellation !== speech.cancellationEpoch) return;
+      if ((live.appSettings.speech?.provider || "windows") !== "windows" || (live.appSettings.speech?.voiceName || "") !== selected)
+        throw new Error("The voice destination changed. Press Play to validate the retained draft again.");
+      speech.say(markup.text, true, "", "", { rate, volume, markup,
+        native: { voiceName: voice.identity, features, markup, mode: "off" } });
+    } catch (reason) {
+      if (button.isConnected && version === revision && cancellation === speech.cancellationEpoch)
+        error.textContent = `SSML not played: ${ipcError(reason)}`;
+    } finally {
+      if (button.isConnected && version === revision) draw();
+    }
   };
+  host.addEventListener("speech-markup-changed", () => { revision++; draw(); }, { signal: voiceBindings!.signal });
+  host.addEventListener("speech-catalogue-changed", draw, { signal: voiceBindings!.signal });
+  host.addEventListener("speech-destination-changed", () => { revision++; draw(); }, { signal: voiceBindings!.signal });
   sampleObserver = new MutationObserver(draw);
   sampleObserver.observe(lastText, { childList: true, characterData: true, subtree: true });
   prepare();
@@ -107,16 +275,19 @@ function bindProcessVoice(fields: Field[], host: HTMLElement): void {
     select.disabled = !toggle.checked || select.dataset.loading === "true";
     if (!toggle.checked) {
       edits.delete("companion.voice.voice");
-      select.value = String(getPath(live.config, "companion.voice.voice") ?? "");
+      const saved = String(getPath(live.config, "companion.voice.voice") ?? "");
+      const resolved = nativeVoice(saved)?.identity;
+      select.value = resolved && [...select.options].some((option) => option.value === resolved) ? resolved : saved;
       updateDirty();
     }
     const summary = host.querySelector<HTMLElement>("#sv-process-summary");
     if (summary) {
       const voice = toggle.checked ? select.value : live.appSettings.speech?.voiceName;
-      summary.textContent = `Selected Windows voice: ${voice || "Windows default"} (${toggle.checked ? "separate voice" : "follows the app's Windows voice"}). Used only when Spoken by is Windows speech process; online voice services do not apply. Save to apply changes.`;
+      summary.textContent = `Selected Windows voice: ${nativeVoice(voice || "")?.name || voice || "Windows default"} (${toggle.checked ? "separate voice" : "follows the app's Windows voice"}). Used only when Spoken by is Windows speech process; online voice services do not apply. Save to apply changes.`;
     }
   };
   toggle.addEventListener("change", sync);
+  host.addEventListener("speech-catalogue-changed", sync, { signal: voiceBindings!.signal });
   select.addEventListener("change", sync);
   sync();
 }
@@ -178,17 +349,20 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   const sp: SpeechSettings = live.appSettings.speech || {};
   const prov = sp.provider || "windows";
   sampleObserver?.disconnect();
+  voiceBindings?.abort();
+  voiceBindings = new AbortController();
   const process = processFields(g, sp);
   const output = edits.get("companion.voice.output") ?? getPath(live.config, "companion.voice.output");
   const showProcess = prov === "windows" || output === "windows";
-  const save = (patch: Obj) => updateAppSettings({ speech: patch });
+  const save = (patch: Obj) => changingVoice(host, () => updateAppSettings({ speech: patch }));
   host.innerHTML = field("Voice service", output === "windows"
     ? "Coach callouts currently use the Windows speech process. This selection is used for this app's voice test; online failures fall back to the app's Windows voice."
     : "Windows voices work offline. Online services send text to the provider and may require an API key or payment. If online speech fails, unspoken text uses the app's Windows voice.",
       `<select id="sv-prov">${PROVIDERS.map(([id, l]) => `<option value="${id}" ${id === prov ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${keyNote(PROVIDERS.find((p) => p[0] === prov)![2])}${VOICE_SETUP_GUIDE}`)
     + providerFields(prov, sp)
     + (showProcess ? `<section class="voice-process"><h3>Windows speech process</h3><p id="sv-process-summary" aria-live="polite"></p>${process.map(fieldHtml).join("")}${prov !== "windows" ? `<button type="button" class="btn" id="sv-process-load">Reload Windows voices</button>` : ""}</section>` : "")
-    + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option><option value="custom">Custom text</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><textarea id="sv-sample" class="voice-text" aria-label="Voice test text" rows="2" placeholder="Preparing template…"></textarea></div>`)
+    + markupFields()
+    + field("Test voice", sampleLanguageHelp(), `<div class="voice-preview"><div class="voice-preview-controls"><select id="sv-sample-source" aria-label="Text source for voice test"><option value="template">Template phrase</option><option value="last">Last spoken line</option><option value="custom">Custom text</option></select><select id="sv-sample-mode" aria-label="Voice test input mode"><option value="plain">Plain text</option><option value="ssml">SSML</option></select><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div><select id="sv-sample-example" aria-label="SSML examples"></select><textarea id="sv-sample" class="voice-text" aria-label="Voice test text" rows="4" placeholder="Preparing template…"></textarea><p id="sv-sample-help" class="help"></p><p id="sv-sample-error" role="alert"></p></div>`)
     + field("Last line spoken with", "The online voice or Windows voice Glide used for its last line. WoW's Text to Speech (Options > Accessibility) and Windows Narrator have their own voices.", `<div class="voice-last" aria-live="polite"><span id="sv-last" class="help">${voiceLastLineHtml()}</span><span id="sv-last-text" class="help voice-text" ${speech.lastText ? "" : "hidden"}>${esc(speech.lastText)}</span></div>`);
 
   const activeEnv = PROVIDERS.find((p) => p[0] === prov)?.[2] || "";
@@ -203,7 +377,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   host.querySelector<HTMLButtonElement>("#sv-silero")!.onclick = () => call("shell:open", "https://github.com/snakers4/silero-models/releases/tag/v5.6");
   host.querySelector<HTMLButtonElement>("#sv-win-speech")!.onclick = () => call("shell:open", "ms-settings:speech");
   host.querySelector<HTMLButtonElement>("#sv-sapi-panel")!.onclick = () => call("shell:speechPanel");
-  $("sv-prov").onchange = async (e) => {
+  $("sv-prov").onchange = async (e) => changingVoice(host, async () => {
     const provider = (e.target as HTMLSelectElement).value;
     if (provider === "edge" && !edgeVoice(sp).startsWith(`${language()}-`)) {
       const catalogue = await call("tts:voices", "edge");
@@ -213,8 +387,9 @@ export function renderVoices(g: Group, host: HTMLElement): void {
       await save({ provider, edge: { voice: voice.id } });
     } else await save({ provider });
     renderVoices(g, host);
-  };
+  });
   bindSample(host);
+  bindMarkup(host);
   if (showProcess) bindProcessVoice(process, host);
   if (prov === "windows") $("sv-voice").onchange = async (e) => {
     await save({ voiceName: (e.target as HTMLSelectElement).value });
@@ -234,7 +409,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
   if (VOICE_LIST[prov]) bindVoiceList(prov, sp as Obj, save);
   if (prov === "elevenlabs") $("sv-e-model").onchange = (e) => save({ elevenlabs: { ...(sp.elevenlabs || {}), model: (e.target as HTMLSelectElement).value } });
   if (prov === "azure") $("sv-a-region").onchange = (e) => save({ azure: { ...(sp.azure || {}), region: (e.target as HTMLInputElement).value.trim() } });
-  if (prov === "windows" || showProcess) bindWindowsVoices();
+  bindWindowsVoices();
 }
 
 /** The provider's voice list: Load voices fills it, a pick saves it in the provider's own settings. */
@@ -278,25 +453,33 @@ function bindWindowsVoices(): void {
   const main = document.getElementById("sv-voice") as HTMLSelectElement | null;
   const process = document.querySelector<HTMLSelectElement>('[data-key="companion.voice.voice"] select');
   const toggle = document.querySelector<HTMLInputElement>('[data-key="app:speech.windowsProcessUseAppVoice"] input');
-  const button = (document.getElementById("sv-windows-load") || document.getElementById("sv-process-load")) as HTMLButtonElement;
+  const button = (document.getElementById("sv-windows-load") || document.getElementById("sv-process-load") || document.getElementById("sv-markup-load")) as HTMLButtonElement;
   const selects = [main, process].filter((select): select is HTMLSelectElement => !!select);
-  const load = async () => {
-    const selected = selects.map((select) => select.value);
-    button.disabled = true;
+  const draw = (voices: Voice[]) => {
+    nativeCatalogue = voices;
     for (const select of selects) {
+      // A refresh must not overwrite a choice made while its catalogue request was pending.
+      const value = select.value;
+      const matched = value ? voices.find((v) => v.identity === value || v.id === value) : undefined;
+      const defaultVoice = voices.find((v) => v.isDefault);
+      select.innerHTML = `<option value="">Windows default${defaultVoice ? ` — ${esc(defaultVoice.name)}` : ""}</option>`
+        + voices.map((v) => `<option value="${esc(v.identity || v.id)}">${esc(v.name)}${voices.some((other) => other !== v && other.name === v.name) ? ` — ${esc(v.identity || v.id)}` : ""}</option>`).join("")
+        + (value && !matched ? `<option value="${esc(value)}">${esc(value)} (not installed)</option>` : "");
+      select.value = matched?.identity || value;
+    }
+    button.closest<HTMLElement>('[data-special="voices"]')?.dispatchEvent(new Event("speech-catalogue-changed"));
+  };
+  if (nativeCatalogue.length) draw(nativeCatalogue);
+  const load = async () => {
+    button.disabled = true;
+    if (!nativeCatalogue.length) for (const select of selects) {
       select.disabled = true;
       select.dataset.loading = "true";
     }
     try {
       const voices = await call("tts:voices", "windows");
       if (!voices || !button.isConnected) return;
-      for (const [index, select] of selects.entries()) {
-        const value = selected[index];
-        select.innerHTML = `<option value="">Windows default</option>`
-          + voices.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")
-          + (value && !voices.some((v) => v.id === value) ? `<option value="${esc(value)}">${esc(value)} (not installed)</option>` : "");
-        select.value = value;
-      }
+      draw(voices);
     } finally {
       if (button.isConnected) {
         button.disabled = false;
@@ -308,5 +491,7 @@ function bindWindowsVoices(): void {
     }
   };
   button.onclick = load;
+  const markupReload = document.getElementById("sv-markup-load");
+  if (markupReload) markupReload.onclick = load;
   void load();
 }

@@ -6,6 +6,7 @@
 // the sandboxed preload can't load a local module at all, so nothing here may exist at run time. Import it with
 // `import type` only.
 import type { DateTimeRequest } from "./date-time";
+import type { SpeechFeature, SpeechMarkup } from "./speech-markup";
 
 /** Free-form JSON: config.json, the release notes. */
 export type Obj = Record<string, any>;
@@ -53,7 +54,13 @@ export interface SpeechSettings {
   azure?: { region?: string; voice?: string };
   google?: { voice?: string };
 }
-export interface Voice { id: string; name: string }
+export interface Voice {
+  id: string; name: string;
+  /** Actual SAPI token id, independent of display names and the Windows-default selector. */
+  identity?: string;
+  isDefault?: boolean;
+  evidence?: Partial<Record<SpeechFeature, "unknown" | "measured" | "documented" | "ignored">>;
+}
 export type TtsPhase =
   | "muted"
   | "no-key"
@@ -476,7 +483,10 @@ export interface InvokeMap {
   "app:dates": (requests: DateTimeRequest[]) => string[];
   "tts:synth": (text: string, style?: string, tone?: string, requestId?: string) => { mime: string; data: Uint8Array; attribution: LogAttribution };
   "tts:voices": (provider: TtsProvider) => Voice[];
-  "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">) => { voice: string };
+  "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">,
+    markup?: SpeechMarkup, features?: SpeechFeature[]) => { voice: string };
+  "tts:windowsPrepare": (ssml: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">,
+    features: SpeechFeature[]) => SpeechMarkup;
   "tts:windowsStop": (id?: string) => void;
   "tts:edgeStart": (id: string, text: string) => void;
   "tts:edgeDecoded": (id: string, attempt: string, ok: boolean) => void;

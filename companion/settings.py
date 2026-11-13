@@ -25,18 +25,20 @@ def default(key):
     return ENTRIES[key]["default"]
 
 
-def clamp(key, value):
+def clamp(key, value) -> Any:
     """`value` as setting `key` takes it: the default when it is unset or of the wrong kind, numbers kept in range."""
     e = ENTRIES[key]
     d, kind = e["default"], e["kind"]
     if value is None:
-        return d
+        return json.loads(json.dumps(d)) if kind == "object" else d
     if kind == "bool":
         return bool(value)
     if kind == "text":
         return value if isinstance(value, str) else str(value)
     if kind == "list":
         return value if isinstance(value, list) else d
+    if kind == "object":
+        return value if isinstance(value, dict) else json.loads(json.dumps(d))
     try:
         if kind == "int":
             v = int(round(float(value)))

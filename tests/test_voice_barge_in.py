@@ -125,8 +125,18 @@ const edgeCandidates = new Map();
 globalThis.OfflineAudioContext = class {
   decodeAudioData() { return Promise.resolve({ duration: 1, length: 44100, numberOfChannels: 1 }); }
 };
+let releaseInitialConfig;
+const nativeRequests = [];
 globalThis.glide = {
   invoke: (ch, ...a) => {
+    if (ch === "config:get") return new Promise(resolve => {
+      releaseInitialConfig = () => resolve({ companion: { voice: {
+        markup_mode: "ai", markup_voices: { "token:zira": ["rate"] },
+      } } });
+    });
+    if (ch === "tts:voices") return Promise.resolve([
+      { id: "Microsoft Zira", name: "Microsoft Zira", identity: "token:zira", isDefault: true },
+    ]);
     if (ch === "tts:edgeStart") {
       const [id, text] = a;
       log.push("edge:" + text); edgeCandidates.set(id, text);
@@ -145,7 +155,7 @@ globalThis.glide = {
       return Promise.resolve();
     }
     if (ch === "tts:edgeCancel") { edgeCandidates.delete(a[0]); return Promise.resolve(); }
-    if (ch === "tts:windowsSpeak") return nativeSpeak(a[0], a[1]);
+    if (ch === "tts:windowsSpeak") { nativeRequests.push({ text: a[1], settings: a[2], markup: a[3], features: a[4] }); return nativeSpeak(a[0], a[1]); }
     if (ch === "tts:windowsStop") return nativeStop(a[0]);
     if (ch !== "tts:synth") return Promise.resolve();
     log.push("synth:" + a[0]);
@@ -167,13 +177,23 @@ globalThis.EventSource = class {
 const { onEngine } = await import(process.argv[2]);
 const { speech } = await import(process.argv[3]);
 onEngine({ state: "running", detail: "", port: 1, url: "http://engine", token: "t" });
+const startupBlocked = streams.length === 0;
+releaseInitialConfig();
+await sleep(0);
 const es = streams[streams.length - 1];
 const fire = (name, data) => es.l[name]({ data: JSON.stringify(data) });
 const WIN = { provider: "windows", voiceName: "Microsoft Zira" }, ONLINE = { provider: "openai" };
-const out = { stream: es.url };
+const out = { stream: es.url, startup_blocked: startupBlocked };
 const take = (name) => { out[name] = log.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
 let t, p;
+// Staying on Coach still loads canonical permissions before its first streamed speech.
+speech.configure(false, WIN);
+fire("speak", { text: "First coach line.", interrupt: false,
+  markup: { text: "First coach line.", spans: [{ start: 0, end: 5, rate: "slow" }] } });
+await sleep(DUR * 2);
+out.startup_native = nativeRequests.at(-1);
+take("startup_speech");
 
 // Online voice: the line being played stops and queued lines are dropped.
 speech.configure(false, ONLINE);
@@ -255,6 +275,8 @@ try:
     for name, folder, dest in (("coach.ts", RENDERER, "renderer"), ("narrator.ts", RENDERER, "renderer"),
                                ("edge-speech.ts", RENDERER, "renderer"), ("engine.ts", SHARED, "shared"),
                                ("ipc.ts", SHARED, "shared"), ("date-time.ts", SHARED, "shared"),
+                               ("speech-markup.ts", SHARED, "shared"),
+                               ("speech-markup.ts", RENDERER, "renderer"),
                                ("date-time.ts", RENDERER, "renderer")):
         with open(os.path.join(folder, name), encoding="utf-8") as fh:
             files[f"{dest}/{name}"] = fh.read()
@@ -273,6 +295,10 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
 assert got["stream"] == "http://engine/events?lite=1", got["stream"]
+assert got["startup_blocked"], "Speech events must not connect before shared configuration is initialized"
+assert got["startup_native"]["text"] == "First coach line."
+assert got["startup_native"]["settings"]["voiceName"] == "token:zira"
+assert got["startup_native"]["markup"]["spans"] == [{"start": 0, "end": 5, "rate": "slow"}]
 
 # Online: o1 stops where it is, o2 and o3 never play; the session bar says Listening.
 c = got["online"]

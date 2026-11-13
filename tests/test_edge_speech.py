@@ -26,11 +26,6 @@ export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "renderer/dom.ts": 'export { esc } from "./real-dom.js";\nexport const toast = (...a: unknown[]) => (globalThis as any).notices.push(a);\n',
-    "renderer/types.ts": """
-export type { LogAttribution } from "../shared/ipc.js";
-export type Obj = any;
-export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
-""",
 }
 
 RUN = r"""
@@ -250,7 +245,7 @@ console.log('OK');
 files = dict(STUBS)
 with open(os.path.join(DESK, "src", "renderer", "dom.ts"), encoding="utf-8") as fh:
     files["renderer/real-dom.ts"] = fh.read()
-for folder, names in (("renderer", ("narrator.ts", "edge-speech.ts", "date-time.ts")), ("shared", ("ipc.ts", "engine.ts", "date-time.ts"))):
+for folder, names in (("renderer", ("narrator.ts", "edge-speech.ts", "date-time.ts", "state.ts", "types.ts", "speech-markup.ts")), ("shared", ("ipc.ts", "engine.ts", "date-time.ts", "speech-markup.ts"))):
     for name in names:
         with open(os.path.join(DESK, "src", folder, name), encoding="utf-8") as fh:
             files[f"{folder}/{name}"] = fh.read()

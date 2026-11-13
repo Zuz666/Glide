@@ -330,7 +330,8 @@ function request(h,id,body=text,decode=true) {
   cache('app/settings',{settings});
   cache('app/config',{engineHome:()=>root,keyValue:k=>storedKeys[k]||'',endpointKeyEnvs:()=>[],engineOptions:()=>({}),
     configPath:()=>path.join(root,'config.json'),readConfig:()=>({}),saveConfig:async p=>p,
-    saveAppSettingsPatch:async p=>settings.merge(p)});
+    saveAppSettingsPatch:async p=>settings.merge(p),
+    setSpeechDestinationCatalogue:()=>{},refreshSpeechDestination:async()=>{}});
   cache('secrets',{KNOWN_KEYS:[],keyStatus:()=>[],setKey:async(k,v)=>{storedKeys[k]=v;}});
   let synthImpl = async () => Buffer.from([1,2,3]);
   cache('tts',{TTS_KEYS:{openai:'OPENAI_API_KEY',elevenlabs:'ELEVENLABS_API_KEY',azure:'AZURE_SPEECH_KEY',google:'GOOGLE_TTS_API_KEY'},
