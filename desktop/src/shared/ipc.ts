@@ -483,8 +483,10 @@ export interface InvokeMap {
   "app:dates": (requests: DateTimeRequest[]) => string[];
   "tts:synth": (text: string, style?: string, tone?: string, requestId?: string) => { mime: string; data: Uint8Array; attribution: LogAttribution };
   "tts:voices": (provider: TtsProvider) => Voice[];
+  // Native audio timings are an optional pair of approximate submission-to-delivery observations.
   "tts:windowsSpeak": (id: string, text: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">,
-    markup?: SpeechMarkup, features?: SpeechFeature[]) => { voice: string };
+    markup?: SpeechMarkup, features?: SpeechFeature[]) => { voice: string; ssmlDocument?: string; completionMs?: number;
+      firstAudioMs?: number; lastAudioMs?: number };
   "tts:windowsPrepare": (ssml: string, settings: Pick<SpeechSettings, "voiceName" | "rate" | "volume">,
     features: SpeechFeature[]) => SpeechMarkup;
   "tts:windowsStop": (id?: string) => void;

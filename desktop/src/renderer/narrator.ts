@@ -23,6 +23,31 @@ import type { SpeechFeature, SpeechMarkup } from "../shared/speech-markup.js";
 
 interface DeliveryOptions { rate?: number; volume?: number; markup?: SpeechMarkup; native?: NativeLine }
 interface NativeLine { voiceName: string; features: SpeechFeature[]; markup?: SpeechMarkup; mode: string }
+interface NativeTiming { completionMs?: number; firstAudioMs?: number; lastAudioMs?: number }
+interface SpokenLine {
+  id: number;
+  voice: string;
+  text: string;
+  at: number;
+  synthMs: number | null;
+  requestId: string;
+  ssml: boolean | null;
+  ssmlDocument: string;
+  nativeTiming: NativeTiming | null;
+}
+
+/** History/replay presentation only; the submitted speech and exact native document stay unchanged. */
+function spokenWords(text: string): string {
+  const words = text.replace(/<\/?(speak|prosody|p|s|break|emphasis|say-as|phoneme|sub|voice|lang|mark)(?=[\s/>])(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi,
+    (_tag, name: string) => /^(p|s|break)$/i.test(name) ? " " : "");
+  if (words === text) return text;
+  const entities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+  return words.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[\da-f]+);/gi, (entity, name: string) => {
+    if (name[0] !== "#") return entities[name.toLowerCase()];
+    const value = name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+    return value > 0 && value <= 0x10ffff && !(value >= 0xd800 && value <= 0xdfff) ? String.fromCodePoint(value) : entity;
+  }).replace(/[ \t]+/g, " ").trim();
+}
 
 interface Line {
   text: string;
@@ -37,6 +62,7 @@ interface Line {
   synthMs?: number;
   nativeId?: string;
   nativeText?: string;
+  nativeSsml?: boolean;
   player?: HTMLAudioElement;
   tag?: string;
   done?: () => void;
@@ -73,11 +99,16 @@ class Narrator {
 
   /** Pending preparation belongs to this cancellation lifecycle, not whichever line starts later. */
   get cancellationEpoch(): number { return this.cancelEpoch; }
-  lastVoice = "";
-  lastVoiceAt = 0;
-  lastText = "";
-  lastSynthMs: number | null = null;
-  private lastRequestId = "";
+  private readonly spokenLines: SpokenLine[] = [];
+  private spokenSequence = 0;
+  get recentLines(): readonly Readonly<SpokenLine>[] { return this.spokenLines; }
+  get lastVoice(): string { return this.spokenLines[0]?.voice || ""; }
+  get lastVoiceAt(): number { return this.spokenLines[0]?.at || 0; }
+  get lastText(): string { return this.spokenLines[0]?.text || ""; }
+  get lastSynthMs(): number | null { return this.spokenLines[0]?.synthMs ?? null; }
+  get lastNativeTiming(): NativeTiming | null { return this.spokenLines[0]?.nativeTiming ?? null; }
+  get lastSsml(): boolean | null { return this.spokenLines[0]?.ssml ?? null; }
+  get lastSsmlDocument(): string { return this.spokenLines[0]?.ssmlDocument || ""; }
   private sapiSynthMs = new Map<string, number>();
   private lastError = 0;
 
@@ -93,19 +124,31 @@ class Narrator {
   }
 
   /** Observe speech without playing it; an older reconnect replay must not replace a newer line. */
-  noteVoice(name: string, text: string, at = Date.now(), synthMs: number | null = null, requestId = ""): void {
-    if (at < this.lastVoiceAt) return;
-    this.lastVoice = name;
-    this.lastVoiceAt = at;
-    this.lastText = text;
-    this.lastSynthMs = synthMs;
-    this.lastRequestId = requestId;
-    const el = document.getElementById("sv-last");
-    if (el) el.innerHTML = voiceLastLineHtml();
-    const line = document.getElementById("sv-last-text");
-    if (line) {
-      line.textContent = text;
-      line.hidden = false;
+  noteVoice(name: string, text: string, at = Date.now(), synthMs: number | null = null, requestId = "",
+    ssml: boolean | null = null, ssmlDocument = "", nativeTiming: NativeTiming | null = null): void {
+    text = spokenWords(text);
+    const index = this.spokenLines.findIndex(line => line.voice === name && (requestId
+      ? line.requestId === requestId
+      : !line.requestId && line.at === at && line.text === text));
+    const previous = this.spokenLines[index];
+    if (at < (previous?.at ?? this.lastVoiceAt)) return;
+    const line: SpokenLine = { id: previous?.id ?? ++this.spokenSequence, voice: name, text, at, synthMs,
+      requestId, ssml, ssmlDocument: ssml === true ? ssmlDocument : "", nativeTiming };
+    if (previous) this.spokenLines[index] = line;
+    else {
+      this.spokenLines.unshift(line);
+      if (this.spokenLines.length > 3) this.spokenLines.pop();
+    }
+    this.renderHistory();
+  }
+
+  private renderHistory(): void {
+    const host = document.getElementById("sv-history");
+    if (!host) return;
+    const expanded = new Set([...host.querySelectorAll("details[open]")].map(el => (el.parentElement as HTMLElement).dataset.spokenId));
+    host.innerHTML = voiceHistoryHtml();
+    for (const row of host.querySelectorAll<HTMLElement>(".voice-last-entry")) {
+      if (expanded.has(row.dataset.spokenId)) row.querySelector("details")!.open = true;
     }
   }
   onTtsStatus(s: TtsStatus): void {
@@ -117,7 +160,8 @@ class Narrator {
       this.sapiSynthMs.set(s.requestId, s.synthMs);
       const cur = this.current;
       if (cur && cur.nativeId === s.requestId && (s.phase === "speaking" || s.phase === "fallback") && s.actualVoice) {
-        this.noteVoice(`${s.actualVoice} (SAPI5)`, cur.nativeText ?? cur.text, Date.now(), s.synthMs, s.requestId);
+        this.noteVoice(`${s.actualVoice} (SAPI5)`, cur.nativeText ?? cur.text, Date.now(), s.synthMs, s.requestId,
+          cur.nativeSsml ?? null, "", {});
       }
     }
   }
@@ -258,11 +302,15 @@ class Narrator {
       if (this.current !== line || line.cancelled) return false;
       const markup = text === line.text && line.provider === "windows" ? native.markup
         : prepareSpeechMarkup(text, undefined, native.features, native.mode);
+      line.nativeSsml = !!markup;
       const result = await glide.invoke("tts:windowsSpeak", line.nativeId, text,
         { ...line.windows, voiceName: native.voiceName }, markup, native.features);
       const synthMs = this.sapiSynthMs.get(line.requestId) ?? null;
       this.sapiSynthMs.delete(line.requestId);
-      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text, Date.now(), synthMs, line.requestId);
+      if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, text, Date.now(), synthMs,
+        line.requestId, line.nativeSsml, result.ssmlDocument, {
+          completionMs: result.completionMs, firstAudioMs: result.firstAudioMs, lastAudioMs: result.lastAudioMs,
+        });
       return true;
     } catch (error) {
       if (this.current === line && !line.cancelled) {
@@ -289,7 +337,7 @@ class Narrator {
       if (!fragment) break;
       // Failure discards every unstarted accepted file, including one whose next() just resolved.
       if (stream.terminal && stream.terminal.reason !== "complete") break;
-      const result = await this.play(fragment.blob, line, line.text.slice(fragment.start, fragment.end),
+      const result = await this.play(fragment.blob, line, line.text.slice(0, fragment.end),
         fragment.attribution, () => { unstarted = fragment.end; }, stream, fragment.synthMs);
       if (this.current !== line || line.cancelled) return;
       if (result.failed) {
@@ -313,10 +361,10 @@ class Narrator {
       const ok = await this.windowsSay(line, line.text.slice(unstarted));
       if (!line.cancelled) this.reportPlayback(line, ok ? "ended" : "error");
     } else if (line.reportedPlaying) {
-      if (terminal?.reason === "complete" && this.lastRequestId === line.requestId && stream.synthMs !== undefined) {
-        this.lastSynthMs = stream.synthMs;
-        const el = document.getElementById("sv-last");
-        if (el) el.innerHTML = voiceLastLineHtml();
+      const observed = this.spokenLines.find(entry => entry.requestId === line.requestId && !entry.nativeTiming);
+      if (terminal?.reason === "complete" && observed && stream.synthMs !== undefined) {
+        observed.synthMs = stream.synthMs;
+        this.renderHistory();
       }
       this.reportPlayback(line, "ended");
     }
@@ -395,7 +443,7 @@ class Narrator {
         call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
           { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });
         this.noteVoice(`${onlineVoiceLabel(line, source)} (online voice)`, text,
-          Date.now(), fragmentSynthMs ?? line.synthMs ?? null, line.requestId);
+          Date.now(), fragmentSynthMs ?? line.synthMs ?? null, line.requestId, false);
       }).catch((e: unknown) => {
         if (finished) return;
         failed = true;
@@ -437,19 +485,37 @@ export function fmtSynthDuration(ms: number | null): string {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
 }
 
-function voiceLastAttribution(): string {
-  if (!speech.lastVoice) return "nothing spoken yet this session";
-  const dur = fmtSynthDuration(speech.lastSynthMs);
-  return `${speech.lastVoice}${dur ? `, generated in ${dur}` : ""}`;
+function voiceAttribution(line?: Readonly<SpokenLine>): string {
+  if (!line?.voice) return "nothing spoken yet this session";
+  const dur = fmtSynthDuration(line.synthMs);
+  const native = line.nativeTiming;
+  const completion = fmtSynthDuration(native?.completionMs ?? null);
+  const first = native?.firstAudioMs, last = native?.lastAudioMs;
+  const audio = first !== undefined && last !== undefined && native?.completionMs !== undefined
+    && Number.isFinite(first) && Number.isFinite(last) && Number.isFinite(native.completionMs)
+    && 0 <= first && first <= last && last <= native.completionMs
+    ? `, first audio ≈${fmtSynthDuration(first)}, last audio ≈${fmtSynthDuration(last)}` : "";
+  const timing = audio || (dur ? `, ${native ? "first word reported" : "generated"} in ${dur}` : "");
+  const unavailable = native && completion && !audio ? ", audio timing unavailable" : "";
+  const format = line.ssml === null ? "" : line.ssml ? ", SSML submitted" : ", Plain text";
+  return `${line.voice}${timing}${unavailable}${completion ? `, speech completed in ${completion}` : ""}${format}`;
 }
 
 /** Plain-text last-spoken metadata for consumers that do not accept markup. */
 export function voiceLastLine(): string {
   const time = speech.lastVoice ? dateTimeText(speech.lastVoiceAt, "shortTime") : "";
-  return `${voiceLastAttribution()}${time ? `, ${time}` : ""}`;
+  return `${voiceAttribution(speech.recentLines[0])}${time ? `, at ${time}` : ""}`;
 }
 
-/** The attribution stays escaped prose; only the timestamp is a live semantic time leaf. */
-export function voiceLastLineHtml(): string {
-  return `${esc(voiceLastAttribution())}${speech.lastVoice ? `, ${dateTimeHtml(speech.lastVoiceAt, "shortTime")}` : ""}`;
+/** Each observation owns its attribution and document; timestamps remain live semantic leaves. */
+export function voiceHistoryHtml(): string {
+  if (!speech.recentLines.length) return `<span id="sv-last" class="help">${voiceAttribution()}</span>`;
+  return speech.recentLines.map((line, index) => {
+    const id = (suffix = "") => index === 0 ? ` id="sv-last${suffix}"` : "";
+    return `<div class="voice-last-entry" data-spoken-id="${line.id}">
+      <span${id()} class="help voice-line-attribution">${esc(voiceAttribution(line))}, at ${dateTimeHtml(line.at, "shortTime")}</span>
+      <span${id("-text")} class="help voice-text voice-line-text">${esc(line.text)}</span>
+      <details${id("-ssml")} ${line.ssmlDocument ? "" : "hidden"}><summary>SSML sent to SAPI5</summary><pre class="voice-text"><code${id("-ssml-document")}>${esc(line.ssmlDocument)}</code></pre></details>
+    </div>`;
+  }).join("");
 }

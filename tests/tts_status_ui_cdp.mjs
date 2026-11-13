@@ -230,10 +230,10 @@ try {
         'Horizontal jitter on ' + baseline[i].id + ' during phase=' + st.phase + ': dLeft=' + dLeft + ', dWidth=' + dWidth);
     }
   }
-  // Verify SAPI5 generation latency propagates through tts:status -> speech.onTtsStatus -> voiceLastLine().
+  // Native word-event latency and successful completion time reach the same last-line record.
   const narratorMod = await import('/renderer/narrator.js');
   narratorMod.speech.configure(false, { provider: 'windows', voiceName: 'Xenia (Russian)' });
-  // Simulate an active SAPI5 sample line receiving its started synthMs from WindowsTts via TtsStatus.
+  // The first-word event alone must not display a completion duration.
   let resolveSapi5;
   const origInvoke = window.glide.invoke;
   window.glide.invoke = async (ch, ...args) => {
@@ -243,9 +243,10 @@ try {
         provider: 'windows', voiceLabel: 'SAPI5 · Xenia', fullVoice: 'Windows SAPI5 (Xenia (Russian))',
         phase: 'speaking', requestId: reqId, actualVoice: 'Xenia (Russian)', synthMs: 2294, updatedAt: Date.now(),
       });
-      check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s'),
-        'Expected immediate SAPI5 generation time on started, got: ' + narratorMod.voiceLastLine());
-      return new Promise((r) => { resolveSapi5 = () => r({ voice: 'Xenia (Russian)' }); });
+      check(narratorMod.speech.lastSynthMs === 2294 && narratorMod.speech.lastNativeTiming?.completionMs === undefined
+        && narratorMod.voiceLastLine().includes('2.29s'),
+        'The native first-word event is visible while completion remains unknown');
+      return new Promise((r) => { resolveSapi5 = () => r({ voice: 'Xenia (Russian)', completionMs: 6247 }); });
     }
     return origInvoke(ch, ...args);
   };
@@ -254,8 +255,16 @@ try {
   resolveSapi5();
   await sampleDone;
   window.glide.invoke = origInvoke;
-  check(narratorMod.voiceLastLine().includes('Xenia (Russian) (SAPI5), generated in 2.29s'),
-    'Expected SAPI5 generation time retained after completion, got: ' + narratorMod.voiceLastLine());
+  check(narratorMod.speech.lastSynthMs === 2294 && narratorMod.speech.lastNativeTiming?.completionMs === 6247
+    && narratorMod.voiceLastLine().includes('2.29s') && narratorMod.voiceLastLine().includes('6.25s'),
+    'Completion adds its full duration without replacing the first-word latency');
+  window.glide.invoke = async (channel, ...args) => channel === 'tts:windowsSpeak'
+    ? { voice: 'Xenia (Russian)', completionMs: 3100 } : origInvoke(channel, ...args);
+  await narratorMod.speech.speakAndWait('Завершено без события слова.', 'no-word');
+  window.glide.invoke = origInvoke;
+  check(narratorMod.speech.lastSynthMs === null && narratorMod.speech.lastNativeTiming?.completionMs === 3100
+    && narratorMod.voiceLastLine().includes('3.10s') && !narratorMod.voiceLastLine().includes('2.29s'),
+    'Completion without a word event shows only its own completion, never a stale or fabricated first-word duration');
 
   // Saved sessionBarOrder migration: legacy order with "models" but no "stt"/"tts" places "stt","tts" right after "models".
   sbOrder.orderSessionBar(['cost', 'time', 'models', 'grow', 'translation', 'mute', 'mode']);
@@ -529,8 +538,15 @@ try {
   let delayPreparation = false, releasePreparation, releaseEdgeCatalogue, delayEdgeCatalogue = false;
   let finishNewerLine, newerRequest;
   const stoppedNativeRequests = [];
+  let exerciseSampleDelivery = false;
+  const sampleDeliveries = [];
   narratorMod.speech.say = (...args) => markupSamples.push(args);
   window.glide.invoke = (channel, ...args) => {
+    if (channel === 'tts:windowsSpeak' && exerciseSampleDelivery) {
+      sampleDeliveries.push(args);
+      return Promise.resolve({ voice: 'Xenia (Russian)', completionMs: 1000, ...(args[3]
+        ? { ssmlDocument: '<speak><s>Coaching stays marked.</s></speak>' } : {}) });
+    }
     if (channel === 'tts:voices' && args[0] === 'edge' && delayEdgeCatalogue)
       return new Promise(resolve => { releaseEdgeCatalogue = () => resolve([{ id: 'ru-RU-DmitryNeural', name: 'Dmitry' }]); });
     if (channel === 'tts:windowsSpeak' && args[1] === 'Newer coach line.')
@@ -551,6 +567,42 @@ try {
     const rate = () => document.querySelector('[data-speech-feature="rate"]');
     check(!rate().checked && document.getElementById('sv-markup-profile').disabled,
       'Unknown voices start without permission and keep the saved budget inactive');
+    const evidence = document.getElementById('sv-markup-evidence');
+    const evidenceBefore = evidence.textContent;
+    const voiceDetails = document.getElementById('sv-markup-details');
+    const identity = document.getElementById('sv-markup-identity');
+    check(!voiceDetails.open && evidence.checkVisibility() && rate().checkVisibility() && !identity.checkVisibility(),
+      'Technical identity is collapsed while effect permissions and verification status remain visible');
+    voiceDetails.querySelector('summary').click();
+    check(voiceDetails.open && identity.checkVisibility() && identity.textContent === 'token:xenia',
+      'Voice details reveals the selected native identity');
+    const inputMode = document.getElementById('sv-sample-mode');
+    const plainExamples = document.getElementById('sv-sample-example');
+    const textSource = document.getElementById('sv-sample-source');
+    await until(() => document.getElementById('sv-sample').value.trim());
+    const initialPlain = document.getElementById('sv-sample').value;
+    check(textSource.value === 'template', 'Initial plain source is Template phrase');
+    inputMode.value = 'ssml';
+    inputMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(textSource.value === 'custom' && !textSource.querySelector('option[value="template"]')
+      && document.getElementById('sv-sample').value === '' && document.getElementById('sv-test').disabled,
+      'SSML offers its own custom and last-line sources without interpreting a plain template as XML');
+    inputMode.value = 'plain';
+    inputMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(!document.getElementById('sv-source-control').hidden && textSource.value === 'template'
+      && document.getElementById('sv-sample').value === initialPlain,
+      'Returning to Plain text restores the template and its source unchanged');
+    check(inputMode.value === 'plain' && plainExamples.options[0].textContent.includes('plain-text')
+      && !plainExamples.querySelector('option[value="rate-phrase"]').disabled,
+      'Plain-text examples are available without native effect permissions');
+    const plainCount = markupSamples.length;
+    plainExamples.value = 'rate-phrase';
+    plainExamples.dispatchEvent(new Event('change', { bubbles: true }));
+    check(document.getElementById('sv-sample').value === 'Немного отдохните и восстановите силы.'
+      && inputMode.value === 'plain' && markupSamples.length === plainCount,
+      'Plain example selection inserts Russian words without XML or autoplay');
+    inputMode.value = 'ssml';
+    inputMode.dispatchEvent(new Event('change', { bubbles: true }));
     check(document.querySelector('#sv-sample-example option[value="rate-span"]').disabled
       && document.querySelector('#sv-sample-example option[value="rate-span"]').textContent.includes('requires rate'),
       'Disabled span examples explain the missing permission');
@@ -558,7 +610,7 @@ try {
     rate().checked = true;
     rate().dispatchEvent(new Event('change', { bubbles: true }));
     await until(() => !document.querySelector('#sv-sample-example option[value="rate-phrase"]').disabled);
-    check(document.getElementById('sv-markup-features').textContent.includes('evidence: unknown')
+    check(evidence.textContent === evidenceBefore && voiceDetails.open
       && !document.getElementById('sv-markup-profile').disabled && markupSamples.length === count,
       'Opting into rate enables AI eligibility without changing evidence or producing sound');
     const profile = document.getElementById('sv-markup-profile');
@@ -582,7 +634,18 @@ try {
     const sample = document.getElementById('sv-sample');
     const phraseDraft = sample.value;
     check(document.getElementById('sv-sample-mode').value === 'ssml' && phraseDraft.includes('<prosody')
-      && markupSamples.length === count, 'Selecting an example sets editable SSML without autoplay, even with automatic markup off');
+      && phraseDraft.includes('xml:lang="ru-RU"') && phraseDraft.includes('Немного отдохните и восстановите силы.')
+      && !phraseDraft.includes('Take a moment') && markupSamples.length === count,
+      'SSML example uses saved Russian language, preserving controls without autoplay or translation calls');
+    inputMode.value = 'plain';
+    inputMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(!document.getElementById('sv-source-control').hidden && textSource.value === 'custom'
+      && sample.value === 'Немного отдохните и восстановите силы.',
+      'SSML examples do not overwrite the independent plain-text draft');
+    inputMode.value = 'ssml';
+    inputMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(textSource.value === 'custom' && sample.value === phraseDraft,
+      'Returning to SSML restores the exact markup draft');
     sample.dispatchEvent(new Event('input', { bubbles: true }));
     check(document.getElementById('sv-sample-mode').value === 'ssml', 'Editing an SSML sample retains its explicit mode');
     document.getElementById('sv-test').click();
@@ -592,8 +655,8 @@ try {
       'Play validates the displayed draft against the actual app voice before submitting canonical words');
     example.value = 'rate-span';
     example.dispatchEvent(new Event('change', { bubbles: true }));
-    check(sample.value.includes('safe path') && document.getElementById('sv-sample-mode').value === 'ssml'
-      && markupSamples.length === count + 1, 'Word/span example insertion is silent');
+    check(sample.value.includes('безопасный путь') && document.getElementById('sv-sample-mode').value === 'ssml'
+      && markupSamples.length === count + 1, 'Localized word/span example insertion is silent');
     const retained = sample.value;
     delayPreparation = true;
     document.getElementById('sv-test').click();
@@ -616,6 +679,93 @@ try {
     await page.renderSettings();
     check(document.getElementById('sv-sample').value === retained
       && document.getElementById('sv-sample-mode').value === 'ssml', 'Rerender retains the SSML draft and mode');
+    const sentDocument = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ru-RU"><prosody rate="slow">Проверка &lt;img src=x&gt; &amp; разметки.</prosody></speak>';
+    speech.noteVoice('Xenia (Russian) (SAPI5)', 'Проверка <img src=x> & разметки.', Date.now(), 321, 'marked-ui', true, sentDocument, { completionMs: 5470 });
+    check(document.getElementById('sv-last').textContent.includes('SSML submitted'),
+      'Last spoken attribution visibly identifies submitted SSML without claiming realized effects');
+    const documentView = document.getElementById('sv-last-ssml');
+    documentView.querySelector('summary').click();
+    check(!documentView.hidden && documentView.open
+      && document.getElementById('sv-last-ssml-document').textContent === sentDocument
+      && document.getElementById('sv-last-ssml-document').children.length === 0
+      && document.getElementById('sv-last-text').textContent === 'Проверка <img src=x> & разметки.',
+      'Exact submitted XML is readable as inert code, separately from canonical spoken words');
+    await page.renderSettings();
+    check(document.getElementById('sv-last-ssml-document').textContent === sentDocument,
+      'Settings rerender retains the exact successful native document');
+    check(document.getElementById('sv-last').textContent.includes('321ms')
+      && document.getElementById('sv-last').textContent.includes('5.47s'),
+      'Both native measurements survive settings rerendering beside the submitted document');
+    const selectReplaySource = (value) => {
+      const control = document.getElementById('sv-sample-source');
+      control.value = value;
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    selectReplaySource('last');
+    check(document.getElementById('sv-sample').value === sentDocument && markupSamples.length === count + 1
+      && document.getElementById('sv-sample-mode').value === 'ssml' && !document.getElementById('sv-test').disabled,
+      'SSML last-line selection exposes the exact submitted document silently without switching formats');
+    await page.renderSettings();
+    check(document.getElementById('sv-sample-source').value === 'last'
+      && document.getElementById('sv-sample').value === sentDocument,
+      'SSML last-line source survives settings rerendering');
+    prepareFailure = '';
+    document.getElementById('sv-test').click();
+    await until(() => markupSamples.length === count + 2);
+    check(preparations.at(-1)[0] === sentDocument && preparations.at(-1)[1].voiceName === 'token:xenia',
+      'Last-line replay validates the saved XML against the current native destination');
+    const replayMode = document.getElementById('sv-sample-mode');
+    replayMode.value = 'plain';
+    replayMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(document.getElementById('sv-sample-source').value === 'custom'
+      && document.getElementById('sv-sample').value === 'Немного отдохните и восстановите силы.',
+      'SSML last-line replay leaves the independent plain source and draft intact');
+    replayMode.value = 'ssml';
+    replayMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(document.getElementById('sv-sample-source').value === 'last'
+      && document.getElementById('sv-sample').value === sentDocument,
+      'Returning to SSML restores its last-line source');
+    selectReplaySource('custom');
+    check(document.getElementById('sv-sample').value === retained,
+      'Selecting last-spoken SSML never overwrites the custom SSML draft');
+    selectReplaySource('last');
+    const replayEditor = document.getElementById('sv-sample');
+    const editedDocument = sentDocument.replace('rate="slow"', 'rate="fast"');
+    replayEditor.value = editedDocument;
+    replayEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    const nextDocument = sentDocument.replace('Проверка', 'Повтор');
+    speech.noteVoice('Xenia (Russian) (SAPI5)', 'Повтор <img src=x> & разметки.', Date.now(), 200, 'marked-ui-next', true, nextDocument, { completionMs: 1000 });
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    check(document.getElementById('sv-sample-source').value === 'custom' && replayEditor.value === editedDocument,
+      'Editing last-spoken SSML detaches a custom draft that later speech cannot replace');
+    replayEditor.value = retained;
+    replayEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    selectReplaySource('last');
+    check(replayEditor.value === nextDocument, 'Last-spoken SSML follows the latest completed native document');
+    releasePreparation = undefined;
+    delayPreparation = true;
+    document.getElementById('sv-test').click();
+    await until(() => !!releasePreparation);
+    speech.noteVoice('Xenia (Russian) (SAPI5)', 'Без разметки.', Date.now(), 123, 'plain-ui', false, "", {});
+    check(document.getElementById('sv-last').textContent.includes('Plain text')
+      && !document.getElementById('sv-last').textContent.includes('SSML submitted'),
+      'A following plain line clears the previous SSML attribution');
+    check(!document.getElementById('sv-last').textContent.includes('5.47s'),
+      'A new native observation without completion cannot reuse the previous line duration');
+    check(document.getElementById('sv-last-ssml').hidden
+      && document.getElementById('sv-last-ssml-document').textContent === '',
+      'A subsequent plain turn removes the previous document instead of misattributing it');
+    await until(() => replayEditor.value === '' && document.getElementById('sv-test').disabled);
+    check(document.getElementById('sv-sample-help').textContent.includes('no saved SSML'),
+      'A latest plain line disables SSML replay with an explanation instead of reusing older markup');
+    delayPreparation = false;
+    releasePreparation();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    check(markupSamples.length === count + 2,
+      'A changed last-spoken document invalidates pending replay preparation without playing stale XML');
+    selectReplaySource('custom');
+    check(replayEditor.value === retained && !document.getElementById('sv-test').disabled,
+      'Unavailable last-line markup does not discard the retained custom document');
     prepareFailure = '';
     await window.glide.invoke('app:settings:set', { speech: { edge: { voice: '' } } });
     await page.renderSettings();
@@ -635,40 +785,55 @@ try {
     delayPreparation = false;
     releasePreparation();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    check(markupSamples.length === count + 1, 'A provider change invalidates an already-pending manual preparation immediately');
+    check(markupSamples.length === count + 2, 'A provider change invalidates an already-pending manual preparation immediately');
     delayEdgeCatalogue = false;
     releaseEdgeCatalogue();
     await until(() => document.getElementById('sv-prov')?.value === 'edge'
-      && document.getElementById('sv-sample-help').textContent.includes('will not be sent online'));
-    check(document.getElementById('sv-sample').value === retained, 'Deferred provider discovery preserves the editable SSML draft');
-    await window.glide.invoke('app:settings:set', { speech: { provider: 'google' } });
-    await page.renderSettings();
-    check(document.getElementById('sv-sample').value === retained && document.getElementById('sv-test').disabled
-      && document.getElementById('sv-sample-help').textContent.includes('will not be sent online'),
-      'A non-native destination preserves the draft and visibly refuses SSML instead of changing routes');
+      && !document.getElementById('sv-sample-mode'));
+    for (const provider of ['edge', 'google', 'openai', 'elevenlabs', 'azure']) {
+      await window.glide.invoke('app:settings:set', { speech: { provider } });
+      await page.renderSettings();
+      check(!document.getElementById('sv-sample-mode')
+        && !document.getElementById('sv-markup-mode')
+        && !document.getElementById('sv-markup-profile')
+        && !document.getElementById('sv-markup-voice'),
+        provider + ' must not offer native SSML or effect controls');
+      check(!document.getElementById('sv-source-control').hidden && !document.getElementById('sv-test').disabled
+        && document.getElementById('sv-sample').value === 'Немного отдохните и восстановите силы.',
+        provider + ' restores the independent plain draft instead of exposing or sending the retained SSML draft');
+    }
     await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: '' } });
     await page.renderSettings();
     await until(() => document.getElementById('sv-markup-identity').textContent.includes('token:xenia'));
-    check(document.getElementById('sv-markup-identity').textContent.includes('unknown'),
-      'Windows default resolves to its real identity, never a permission key for the selector');
+    const restoredMode = document.getElementById('sv-sample-mode');
+    check(restoredMode.value === 'plain', 'Returning to Windows keeps the active plain preview');
+    restoredMode.value = 'ssml';
+    restoredMode.dispatchEvent(new Event('change', { bubbles: true }));
+    check(document.getElementById('sv-sample').value === retained,
+      'Returning to native SSML restores its exact draft without modifying online plain text');
+    check(document.getElementById('sv-markup-evidence').textContent === evidenceBefore,
+      'Windows default resolves to its real identity without upgrading effect evidence');
     const permissionVoice = document.getElementById('sv-markup-voice');
     permissionVoice.value = 'token:zira';
     permissionVoice.dispatchEvent(new Event('change', { bubbles: true }));
-    check(!rate().checked, 'A different voice does not inherit the first voice permission');
+    check(!rate().checked && document.getElementById('sv-markup-identity').textContent === 'token:zira',
+      'A different voice updates its diagnostic identity without inheriting permissions');
     permissionVoice.value = 'token:xenia';
     permissionVoice.dispatchEvent(new Event('change', { bubbles: true }));
     check(rate().checked, 'Per-voice permissions survive switching back');
+    restoredMode.value = 'plain';
+    restoredMode.dispatchEvent(new Event('change', { bubbles: true }));
     const source = document.getElementById('sv-sample-source');
     source.value = 'template';
     source.dispatchEvent(new Event('change', { bubbles: true }));
-    check(document.getElementById('sv-sample-mode').value === 'plain', 'Template selection explicitly restores plain mode');
-    check(markupSamples.length === count + 1, 'Settings, provider, voice, budget and source changes never autoplay');
+    check(markupSamples.length === count + 2, 'Settings, provider, voice, budget and source changes never autoplay');
     const voicePanel = document.querySelector('[data-special="voices"]');
     const panelWidth = voicePanel.style.width;
+    document.getElementById('sv-markup-details').open = true;
     voicePanel.style.width = '460px';
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const panelBounds = voicePanel.getBoundingClientRect();
-    for (const id of ['sv-markup-mode', 'sv-markup-profile', 'sv-markup-voice', 'sv-markup-features', 'sv-sample', 'sv-sample-example']) {
+    for (const id of ['sv-markup-mode', 'sv-markup-profile', 'sv-markup-voice', 'sv-markup-features', 'sv-markup-details', 'sv-markup-identity', 'sv-sample', 'sv-sample-example']) {
       const bounds = document.getElementById(id).getBoundingClientRect();
       check(bounds.left >= panelBounds.left && bounds.right <= panelBounds.right + 1,
         'Compact voice settings must keep ' + id + ' inside the scrollable settings surface');
@@ -676,6 +841,40 @@ try {
     check(document.getElementById('sv-markup-budget-help').getBoundingClientRect().width >= 250,
       'Compact budget help must retain readable line lengths instead of collapsing to letter-wide columns');
     voicePanel.style.width = panelWidth;
+    // Drive the real narrator: a plain editor must not inherit automatic coaching markup.
+    narratorMod.speech.say = markupSay;
+    exerciseSampleDelivery = true;
+    await window.glide.invoke('config:set', { companion: { voice: {
+      markup_mode: 'ai', markup_voices: { 'token:xenia': ['boundaries'] },
+    } } });
+    await page.renderSettings();
+    speech.say('Coaching stays marked.');
+    await until(() => speech.lastText === 'Coaching stays marked.');
+    check(sampleDeliveries.at(-1)[3]?.spans.some(span => span.boundary === 's')
+      && !document.getElementById('sv-last-ssml').hidden,
+      'Automatic coaching still submits permitted sentence markup');
+    const plainSource = document.getElementById('sv-sample-source');
+    plainSource.value = 'template';
+    plainSource.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => document.getElementById('sv-sample').value.trim());
+    const plainTemplate = document.getElementById('sv-sample').value;
+    document.getElementById('sv-test').click();
+    await until(() => speech.lastText === plainTemplate && speech.lastSsml === false);
+    check(sampleDeliveries.at(-1)[1] === plainTemplate && sampleDeliveries.at(-1)[3] === undefined
+      && document.getElementById('sv-last-ssml').hidden && speech.lastSsmlDocument === '',
+      'Plain template bypasses automatic markup and clears the preceding SSML document after delivery');
+    const literal = 'Keep <s>literal tags</s> & punctuation.';
+    const plainEditor = document.getElementById('sv-sample');
+    plainEditor.value = literal;
+    plainEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('sv-test').click();
+    await until(() => speech.lastText === 'Keep literal tags & punctuation.');
+    check(sampleDeliveries.at(-1)[1] === literal && sampleDeliveries.at(-1)[3] === undefined && speech.lastSsml === false
+      && document.getElementById('sv-last-text').textContent === 'Keep literal tags & punctuation.',
+      'Plain delivery stays literal while the history view omits speech-control tags');
+    const retainedPolicy = (await window.glide.invoke('config:get')).companion.voice;
+    check(retainedPolicy.markup_mode === 'ai' && retainedPolicy.markup_voices['token:xenia'].includes('boundaries'),
+      'A plain preview does not disable automatic coaching markup or change per-voice permissions');
   } finally {
     narratorMod.speech.say = markupSay;
     window.glide.invoke = markupInvoke;
@@ -686,6 +885,83 @@ try {
     } } });
     await window.glide.invoke('app:settings:set', { speech: { provider: 'windows', voiceName: 'Xenia (Russian)' } });
     await page.renderSettings();
+  }
+  // Compare actual observations, not three lifecycle notifications for the same utterance.
+  const historyRows = () => [...document.querySelectorAll('#sv-history .voice-last-entry')];
+  const historyTexts = () => historyRows().map(row => row.querySelector('.voice-line-text').textContent);
+  const historyAt = Date.now();
+  const nativeDocument = '<speak><prosody rate="slow">Восстановите силы.</prosody></speak>';
+  speech.noteVoice('Xenia (SAPI5)', 'Старая фраза.', historyAt, 100, 'history-old', false, '', { completionMs: 1000 });
+  speech.noteVoice('Xenia (SAPI5)', 'Восстановите силы.', historyAt + 1, 77, 'history-native', true, '', {});
+  speech.noteVoice('Xenia (SAPI5)', 'Восстановите силы.', historyAt + 2, 77, 'history-native', true, nativeDocument,
+    { completionMs: 900, firstAudioMs: 30, lastAudioMs: 400 });
+  check(historyTexts().filter(text => text === 'Восстановите силы.').length === 1
+    && historyRows()[0].textContent.includes('first audio ≈30ms, last audio ≈400ms, speech completed in 900ms')
+    && !historyRows()[0].textContent.includes('generated in') && !historyRows()[0].textContent.includes('77ms'),
+    'Completion replaces the word proxy with explicitly approximate audio endpoints in the same history entry');
+  document.getElementById('sv-last-ssml').open = true;
+  const annotated = '<speak><p><s>Берите <prosody rate="slow">меч &amp; щит</prosody>.</s><s>Здоровье &lt; 30%.</s></p></speak>';
+  const plainObserved = 'Берите меч & щит. Здоровье < 30%.';
+  speech.noteVoice('Edge-TTS ru-RU-SvetlanaNeural (online voice)', annotated, historyAt + 3, 3460, 'history-edge-a', false);
+  speech.noteVoice('Edge-TTS ru-RU-SvetlanaNeural (online voice)', annotated, historyAt + 4, 2460, 'history-edge-b', false);
+  check(JSON.stringify(historyTexts()) === JSON.stringify([plainObserved, plainObserved, 'Восстановите силы.']),
+    'History retains exactly the newest three requests, including repeated phrases, without SSML syntax');
+  check(historyRows()[0].textContent.includes('2.46s') && historyRows()[1].textContent.includes('3.46s')
+    && historyRows()[2].textContent.includes('900ms') && historyRows()[2].querySelector('details').open
+    && historyRows()[2].querySelector('code').textContent === nativeDocument,
+    'Each phrase keeps its own timing and expanded native document when newer lines arrive');
+  check(!historyRows()[0].textContent.includes('first audio') && !historyRows()[1].textContent.includes('last audio')
+    && historyRows()[2].textContent.includes('last audio ≈400ms'),
+    'Online entries cannot inherit native endpoint estimates from a retained comparison line');
+  check(historyRows().every(row => row.querySelector('time').previousSibling.textContent.endsWith(', at ')),
+    'Every spoken-line timestamp is introduced by at');
+  await until(() => narratorMod.voiceLastLine().includes(', Plain text, at '),
+    'Plain-text attribution uses the same at separator once native date formatting resolves');
+  await page.renderSettings();
+  check(JSON.stringify(historyTexts()) === JSON.stringify([plainObserved, plainObserved, 'Восстановите силы.']),
+    'Reopening voice settings preserves the three comparison entries');
+  const lastSource = document.getElementById('sv-sample-source');
+  lastSource.value = 'last';
+  lastSource.dispatchEvent(new Event('change', { bubbles: true }));
+  check(document.getElementById('sv-sample').value === plainObserved,
+    'Last-line preview uses the cleaned words, not SSML tags');
+  speech.noteVoice('Eugene (SAPI5)', 'Наблюдение процесса.', historyAt + 5, 120, '', false, '', { completionMs: 1500 });
+  const beforeReplay = JSON.stringify(historyTexts());
+  speech.noteVoice('Eugene (SAPI5)', 'Наблюдение процесса.', historyAt + 5, 120, '', false, '', { completionMs: 1500 });
+  speech.noteVoice('Old voice', 'Устаревшая фраза.', historyAt - 1);
+  check(JSON.stringify(historyTexts()) === beforeReplay && historyRows()[0].textContent.includes('1.50s'),
+    'Replayed process observations and stale events cannot duplicate or displace comparison entries');
+  const interleavedAt = Math.max(Date.now(), speech.lastVoiceAt + 1);
+  const interleavedDocument = '<speak><s>Тестовая фраза.</s></speak>';
+  speech.noteVoice('Xenia (SAPI5)', 'Тестовая фраза.', interleavedAt, 70, 'interleaved-native', true, '', {});
+  speech.noteVoice('Eugene (SAPI5)', 'Независимая речь движка.', interleavedAt + 1, 180, '', false, '', { completionMs: 1400 });
+  speech.noteVoice('Xenia (SAPI5)', 'Тестовая фраза.', interleavedAt + 2, 70, 'interleaved-native', true, interleavedDocument,
+    { completionMs: 950, firstAudioMs: 0, lastAudioMs: 700 });
+  check(JSON.stringify(historyTexts()) === JSON.stringify(['Независимая речь движка.', 'Тестовая фраза.', 'Наблюдение процесса.'])
+    && historyRows()[1].textContent.includes('first audio ≈0ms, last audio ≈700ms, speech completed in 950ms')
+    && historyRows()[1].querySelector('code').textContent === interleavedDocument
+    && speech.lastText === 'Независимая речь движка.',
+    'A delayed native completion updates its retained entry without duplicating it or replacing independent speech');
+  check(historyRows()[0].textContent.includes('audio timing unavailable')
+    && historyRows()[0].textContent.includes('first word reported in 180ms'),
+    'Missing audio observations remain explicit and never relabel a word event as byte arrival');
+  speech.noteVoice('Xenia (SAPI5)', 'Тестовая фраза.', interleavedAt + 1, 70, 'interleaved-native', true, '', {});
+  check(historyTexts()[0] === 'Независимая речь движка.'
+    && historyTexts().filter(text => text === 'Тестовая фраза.').length === 1
+    && historyRows()[1].textContent.includes('last audio ≈700ms') && historyRows()[1].querySelector('code').textContent === interleavedDocument,
+    'An older update cannot erase the retained completion or its SSML document');
+  const invalidTimingAt = Math.max(Date.now(), speech.lastVoiceAt + 1);
+  for (const [index, timing] of [
+    { completionMs: 1000, firstAudioMs: 10 },
+    { completionMs: 1000, firstAudioMs: 500, lastAudioMs: 100 },
+    { completionMs: 1000, firstAudioMs: 10, lastAudioMs: 1001 },
+    { completionMs: 1000, firstAudioMs: NaN, lastAudioMs: 100 },
+  ].entries()) {
+    speech.noteVoice('Incomplete observation (SAPI5)', 'Нет достоверных границ аудио.', invalidTimingAt + index,
+      50, 'invalid-audio-' + index, false, '', timing);
+    check(historyRows()[0].textContent.includes('audio timing unavailable')
+      && !historyRows()[0].textContent.includes('first audio') && !historyRows()[0].textContent.includes('last audio'),
+      'Invalid or incomplete endpoint pairs do not fabricate audio timings');
   }
   // Windows short-time patterns are independent of the browser locale and full-time pattern.
   narratorMod.speech.noteVoice('Regional voice (SAPI5)', 'Regional sample', Date.UTC(2030, 10, 12, 16, 13, 27));
@@ -872,17 +1148,66 @@ try {
         for (let i = 0; i < 100 && document.querySelector('#sv-sample-example option[value="combined"]')?.disabled; i++)
           await new Promise((resolve) => setTimeout(resolve, 20));
         const example = document.getElementById('sv-sample-example');
+        const inputMode = document.getElementById('sv-sample-mode');
+        inputMode.value = 'ssml';
+        inputMode.dispatchEvent(new Event('change', { bubbles: true }));
         example.value = 'combined';
         example.dispatchEvent(new Event('change', { bubbles: true }));
+        const { speech } = await import('/renderer/narrator.js');
+        const comparisonText = 'Сначала восстановите силы. Затем продолжайте. Следуйте по дороге.';
+        speech.noteVoice('Edge-TTS ru-RU-SvetlanaNeural (online voice)', comparisonText,
+          Math.max(Date.now(), speech.lastVoiceAt + 1), 3460, 'comparison-edge', false);
+        speech.noteVoice('Xenia (Russian) (SAPI5)', comparisonText,
+          speech.lastVoiceAt + 1, 1051, 'comparison-plain', false, '', { completionMs: 5480, firstAudioMs: 400, lastAudioMs: 4400 });
+        speech.noteVoice('Xenia (Russian) (SAPI5)', 'Сначала восстановите силы. Затем продолжайте. Следуйте по дороге.',
+          Math.max(Date.now(), speech.lastVoiceAt + 1), 258, 'document-preview', true, document.getElementById('sv-sample').value,
+          { completionMs: 5470, firstAudioMs: 115, lastAudioMs: 3092 });
+        document.getElementById('sv-last-ssml').open = true;
+        const source = document.getElementById('sv-sample-source');
+        source.value = 'last';
+        source.dispatchEvent(new Event('change', { bubbles: true }));
         document.getElementById('sv-markup-mode').closest('.field').scrollIntoView({ block: 'start' });
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       })()` });
     if (surface.exceptionDetails) throw Error(surface.exceptionDetails.exception?.description || surface.exceptionDetails.text);
     for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      for (const expanded of [false, true]) {
+        await send("Runtime.evaluate", { expression: `document.getElementById('sv-markup-details').open = ${expanded};
+          document.getElementById('sv-markup-voice').closest('.field').scrollIntoView({ block: 'start' });` });
+        await sleep(100);
+        const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `speech-markup-${label}${expanded ? "-details" : ""}.png`), Buffer.from(image.data, "base64"));
+      }
+      await send("Runtime.evaluate", { expression: `document.getElementById('sv-sample-source').closest('.field').scrollIntoView({ block: 'start' });` });
       await sleep(100);
-      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-      fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `speech-markup-${label}.png`), Buffer.from(image.data, "base64"));
+      const replayImage = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `ssml-last-spoken-${label}.png`), Buffer.from(replayImage.data, "base64"));
+      await send("Runtime.evaluate", { expression: `document.getElementById('sv-last').closest('.field').scrollIntoView({ block: 'start' });` });
+      await sleep(100);
+      const timingImage = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `voice-timing-${label}.png`), Buffer.from(timingImage.data, "base64"));
+    }
+    const onlineSurface = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
+      (async () => {
+        const page = await import('/renderer/settings/page.js');
+        await window.glide.invoke('config:set', { companion: { voice: { output: 'app' } } });
+        await window.glide.invoke('app:settings:set', { speech: { provider: 'edge', edge: { voice: 'ru-RU-SvetlanaNeural' } } });
+        await page.renderSettings();
+        const { speech } = await import('/renderer/narrator.js');
+        speech.noteVoice('Edge-TTS ru-RU-SvetlanaNeural (online voice)',
+          '<speak><s>Сначала восстановите силы.</s><s>Затем продолжайте. Следуйте по дороге.</s></speak>',
+          speech.lastVoiceAt + 1, 3460, 'comparison-online', false);
+      })()` });
+    if (onlineSurface.exceptionDetails) throw Error(onlineSurface.exceptionDetails.exception?.description || onlineSurface.exceptionDetails.text);
+    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      for (const [view, target] of [["controls", "sv-prov"], ["history", "sv-history"]]) {
+        await send("Runtime.evaluate", { expression: `document.getElementById('${target}').closest('.field').scrollIntoView({ block: 'start' });` });
+        await sleep(100);
+        const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `online-${view}-${label}.png`), Buffer.from(image.data, "base64"));
+      }
     }
     await send("Emulation.setDeviceMetricsOverride", { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false });
   }
@@ -1006,10 +1331,14 @@ try {
   const overlayResult = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
 (async () => {
   const listeners = new Map();
+  let finishInitialization;
+  const initialized = new Promise(resolve => { finishInitialization = resolve; });
   window.glide = {
     async invoke(channel, ...args) {
       const response = await fetch('/ipc', { method: 'POST', body: JSON.stringify({ channel, args }) });
-      return response.json();
+      const result = await response.json();
+      if (channel === 'engine:get') finishInitialization();
+      return result;
     },
     on(channel, fn) {
       if (!listeners.has(channel)) listeners.set(channel, new Set());
@@ -1036,6 +1365,9 @@ try {
     close() {}
   };
   await import('/renderer/overlay.js');
+  // Import does not await the overlay's async settings/status bootstrap; let it finish before driving live events.
+  await initialized;
+  await raf();
   emit('engine:state', { state: 'running', url: 'http://127.0.0.1:59999', port: 59999, detail: '', token: 't' });
   await raf();
 
