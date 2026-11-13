@@ -93,7 +93,11 @@ def windows_evidence():
                 break
             if error:
                 raise ctypes.WinError(error)
-            key = buffer.raw[172:428].decode("utf-16le").split("\0", 1)[0]
+            # Bytes after the WCHAR terminator are not part of the native string.
+            raw_key = buffer.raw[172:428]
+            end = next((offset for offset in range(0, len(raw_key), 2)
+                        if raw_key[offset:offset + 2] == b"\0\0"), len(raw_key))
+            key = raw_key[:end].decode("utf-16le")
             if key == name:
                 return buffer.raw.hex()
         raise AssertionError(f"Windows timezone fixture unavailable: {name}")
