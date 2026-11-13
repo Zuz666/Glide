@@ -36,6 +36,7 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         self.peak = 0
         self.behavior = self.reply
         self.block_connect = None
+        self.blocked_connects = asyncio.Queue()
         self.reject_connect = False
         self.connection_attempts = 0
         app = web.Application()
@@ -62,6 +63,7 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         if self.reject_connect:
             raise web.HTTPServiceUnavailable()
         if self.block_connect is not None:
+            self.blocked_connects.put_nowait(None)
             await self.block_connect.wait()
         ws = web.WebSocketResponse()
         try:
@@ -356,42 +358,80 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         await self.worker.close()
         self.block_connect = asyncio.Event()
         root = str(Path(__file__).resolve().parents[1] / "companion")
-        bootstrap = ("import sys,asyncio;sys.path.insert(0,%r);"
+        # Deliberately exceed the old 3s cold-start assumption: dependency/TLS
+        # initialization is not command handling, and can be slow under load.
+        bootstrap = ("import sys,asyncio,time;time.sleep(3.1);sys.path.insert(0,%r);"
                      "from edge_tts_worker import run_stdio,WorkerConfig;"
                      "asyncio.run(run_stdio(WorkerConfig(endpoint=%r)))") % (root, self.endpoint)
+        launched = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-X", "faulthandler", "-u", "-c", bootstrap,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         assert process.stdin is not None and process.stdout is not None
+        assert process.stderr is not None
+        stderr_chunks = []
+
+        async def collect_stderr():
+            while chunk := await process.stderr.read(4096):
+                stderr_chunks.append(chunk)
+
+        stderr_reader = asyncio.create_task(collect_stderr())
+        readiness_seconds = None
 
         async def send(command):
             process.stdin.write(json.dumps(command).encode() + b"\n")
             await process.stdin.drain()
 
-        async def read(kind):
-            async with asyncio.timeout(3):
-                while True:
-                    event = json.loads(await process.stdout.readline())
-                    if event["type"] == kind:
-                        return event
+        def failure(kind):
+            stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            return AssertionError(
+                "Worker did not emit %s after %.3fs; ready=%r; exit=%r; stderr before kill:\n%s"
+                % (kind, time.monotonic() - launched, readiness_seconds, process.returncode, stderr)
+            )
+
+        async def read(kind, timeout=3):
+            try:
+                async with asyncio.timeout(timeout):
+                    while True:
+                        line = await process.stdout.readline()
+                        if not line:
+                            raise AssertionError("Worker stdout closed before " + kind)
+                        event = json.loads(line)
+                        if event["type"] == kind:
+                            return event
+            except (TimeoutError, AssertionError) as error:
+                raise failure(kind) from error
 
         try:
-            await read("ready")
-            await send({"op": "start", "id": "startup", "text": "Startup speech.",
-                        "voice": "en-US-AriaNeural", "budget_ms": 1000})
-            await read("plan")
-            await send({"op": "cancel", "id": "startup"})
-            self.assertEqual((await read("end"))["reason"], "cancelled")
-            await send({"op": "shutdown"})
-            await asyncio.wait_for(process.wait(), 3)
-            assert process.stderr is not None
-            stderr = (await process.stderr.read()).decode("utf-8", errors="replace")
+            # Match the real cold-start watchdog, not an arbitrary import-speed
+            # requirement (desktop/src/main/edge-tts.ts: ensureWorker/DEADLINE_MS).
+            await read("ready", timeout=15)
+            readiness_seconds = time.monotonic() - launched
+            self.assertGreater(readiness_seconds, 3, "The slow-bootstrap regression must exceed 3s")
+            try:
+                # All six provider handshakes stay blocked for this entire
+                # shared command/cancellation/shutdown responsiveness budget.
+                async with asyncio.timeout(3):
+                    for _ in range(6):
+                        await self.blocked_connects.get()
+                    await send({"op": "start", "id": "startup", "text": "Startup speech.",
+                                "voice": "en-US-AriaNeural", "budget_ms": 1000})
+                    await read("plan")
+                    await send({"op": "cancel", "id": "startup"})
+                    self.assertEqual((await read("end"))["reason"], "cancelled")
+                    await send({"op": "shutdown"})
+                    await process.wait()
+                    await stderr_reader
+            except TimeoutError as error:
+                raise failure("plan/cancel/shutdown with blocked connections") from error
+            stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
             self.assertEqual(process.returncode, 0, "Worker stderr:\n" + stderr)
         finally:
             self.block_connect.set()
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+            await stderr_reader
 
     async def test_silent_partial_audio_never_becomes_playable(self):
         release = asyncio.Event()
