@@ -234,7 +234,8 @@ function Read-ManualNode {
             $span = @{ start = $start; end = $State.length }
             foreach ($key in $Effects.Keys) { $span[$key] = $Effects[$key] }
             $State.spans.Add([pscustomobject]$span)
-            if ($State.spans.Count -gt 128) { throw 'SSML span limit exceeded.' }
+            # Nonempty runs are bounded by the 4000-scalar text limit. Keep plain
+            # runs until enclosing scopes and following breaks attach their effects.
         }
         return
     }
@@ -305,7 +306,15 @@ function Prepare-Manual {
                     spans = [System.Collections.Generic.List[object]]::new() }
         foreach ($child in $root.ChildNodes) { Read-ManualNode $child $state @{} 1 }
         if ([string]::IsNullOrWhiteSpace($state.text.ToString())) { throw 'SSML has no speech text.' }
-        $markup = [pscustomobject]@{ text = $state.text.ToString(); spans = @($state.spans.ToArray()) }
+        $spans = @(
+            foreach ($span in $state.spans) {
+                $properties = $span.PSObject.Properties
+                if ($null -ne $properties['rate'] -or $null -ne $properties['pitch'] -or
+                    $null -ne $properties['boundary'] -or $null -ne $properties['after_ms']) { $span }
+            }
+        )
+        if ($spans.Count -gt 128) { throw 'SSML span limit exceeded.' }
+        $markup = [pscustomobject]@{ text = $state.text.ToString(); spans = $spans }
         [void](Compile-Markup $markup $markup.text $Features)
         return $markup
     }

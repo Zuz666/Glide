@@ -193,6 +193,65 @@ def ordinary(worker):
     return event
 
 
+def replay_markup(worker, markup, features):
+    fields = {"voice": "normal", "rate": 0, "volume": 70, "features": features}
+    original = worker.receive(worker.command("speak", text=markup["text"], markup=markup, **fields), "done")
+    document = original["ssml_document"]
+    prepared = worker.receive(worker.command("prepare", ssml=document, features=features), "prepared")["markup"]
+    assert prepared == markup, prepared
+    replayed = worker.receive(worker.command("speak", text=prepared["text"], markup=prepared, **fields), "done")
+    assert replayed["ssml_document"] == document, replayed
+    return document
+
+
+def markup_replay_limits(worker):
+    # Automatic sentence controls stop at 128; the final sentence is still spoken.
+    replay_markup(worker, {
+        "text": "Go. " * 128 + "End.",
+        "spans": [{"start": index * 4, "end": index * 4 + 4, "boundary": "s"} for index in range(128)],
+    }, ["boundaries"])
+
+    # Leading/trailing text and gaps are not annotations. Scalar offsets must
+    # survive the astral character in every gap, alongside both prosody effects.
+    replay_markup(worker, {
+        "text": "😀x." * 128 + "tail.",
+        "spans": [{"start": index * 3 + 1, "end": index * 3 + 2,
+                   "rate": "slow", "pitch": "high", "after_ms": 10} for index in range(128)],
+    }, ["rate", "pitch", "pauses"])
+
+    # Initially plain runs can acquire a following pause or enclosing boundary;
+    # normalization must happen only after those effects have been attached.
+    replay_markup(worker, {
+        "text": "Before marked after end",
+        "spans": [{"start": 7, "end": 13, "rate": "slow"},
+                  {"start": 13, "end": 19, "after_ms": 20},
+                  {"start": 19, "end": 23, "boundary": "p"}],
+    }, ["rate", "pauses", "boundaries"])
+
+    envelope = '<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">%s</speak>'
+    invalid = [
+        ('<prosody rate="slow">x</prosody>' * 129, "SSML span limit exceeded."),
+        ('<break time="10ms"/>words', "Invalid native break."),
+        ('<s/>words', "Empty speech scope."),
+        ('<prosody rate="slow"/>words', "Empty speech scope."),
+    ]
+    held = worker.speak("hold")
+    worker.receive(held, "started")
+    for content, error in invalid:
+        event = worker.receive(worker.command("prepare", ssml=envelope % content,
+                                             features=["rate", "pauses", "boundaries"]), "error")
+        assert event["error"] == error, event
+    rejected = worker.command("speak", voice="normal", text="words", rate=0, volume=70,
+                              markup={"text": "words", "spans": [{"start": 0, "end": 5, "rate": "slow"}]},
+                              features=[], interrupt=True)
+    event = worker.receive(rejected, "error")
+    assert event["error"] == "Disallowed prosody effect.", event
+    # Rejected preparation and interrupting speech leave accepted speech intact.
+    cancelled = worker.command("cancel", target=held)
+    worker.receive(held, "cancelled")
+    worker.receive(cancelled, "ok")
+
+
 def main():
     if sys.platform != "win32" or not POWERSHELL:
         print("SKIP: controlled SAPI worker needs Windows PowerShell (no installed voice required)")
@@ -218,6 +277,7 @@ def main():
             absent(worker.receive(held, "cancelled"))
             worker.receive(cancelled, "ok")
             ordinary(worker)
+            markup_replay_limits(worker)
         finally:
             worker.close()
         file_worker = Worker(fixture, directory)
@@ -225,7 +285,7 @@ def main():
             absent(file_worker.receive(file_worker.speak(), "done"))
         finally:
             file_worker.close()
-    print("Controlled SAPI worker timing lifecycle passed")
+    print("Controlled SAPI worker timing lifecycle and markup replay passed")
     return 0
 
 

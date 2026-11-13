@@ -950,6 +950,51 @@ try {
     && historyTexts().filter(text => text === 'Тестовая фраза.').length === 1
     && historyRows()[1].textContent.includes('last audio ≈700ms') && historyRows()[1].querySelector('code').textContent === interleavedDocument,
     'An older update cannot erase the retained completion or its SSML document');
+  // Exercise eviction through the actual native start/completion boundary, with identical wall-clock stamps.
+  const evictionInvoke = window.glide.invoke, evictionClock = Date.now;
+  const evictionAt = Math.max(Date.now(), speech.lastVoiceAt + 1);
+  const evictedText = 'Вытесненная фраза приложения.';
+  const evictedDocument = '<speak><s>Вытесненная фраза приложения.</s></speak>';
+  let finishEvicted;
+  try {
+    Date.now = () => evictionAt;
+    window.glide.invoke = (channel, ...args) => {
+      if (channel !== 'tts:windowsSpeak') return evictionInvoke(channel, ...args);
+      check(args[1] === evictedText && args[3]?.spans[0]?.boundary === 's',
+        'The evicted native request really submits marked speech');
+      emit('tts:status', { provider: 'windows', voiceLabel: 'SAPI5 · Xenia', fullVoice: 'Windows SAPI5 (Xenia)',
+        phase: 'speaking', requestId: args[0], actualVoice: 'Xenia', synthMs: 45, updatedAt: evictionAt });
+      return new Promise(resolve => { finishEvicted = () => resolve({ voice: 'Xenia', ssmlDocument: evictedDocument,
+        completionMs: 950, firstAudioMs: 20, lastAudioMs: 700 }); });
+    };
+    speech.say(evictedText, false, '', '', { native: { voiceName: 'token:xenia', features: ['boundaries'], mode: 'ai',
+      markup: { text: evictedText, spans: [{ start: 0, end: evictedText.length, boundary: 's' }] } } });
+    await until(() => !!finishEvicted);
+    check(historyTexts()[0] === evictedText && historyRows()[0].textContent.includes('45ms'),
+      'The active native start appears before independent speech evicts it');
+    for (const text of ['Первая новая фраза.', 'Вторая новая фраза.', 'Третья новая фраза.']) {
+      speech.noteVoice('Eugene (SAPI5)', text, evictionAt, 180, '', true, '<speak>' + text + '</speak>',
+        { completionMs: 1400 });
+    }
+    const mode = document.getElementById('sv-sample-mode');
+    mode.value = 'ssml';
+    mode.dispatchEvent(new Event('change', { bubbles: true }));
+    const source = document.getElementById('sv-sample-source');
+    source.value = 'last';
+    source.dispatchEvent(new Event('change', { bubbles: true }));
+    const latestDocument = '<speak>Третья новая фраза.</speak>';
+    await until(() => document.getElementById('sv-sample').value === latestDocument);
+    finishEvicted();
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    check(JSON.stringify(historyTexts()) === JSON.stringify(['Третья новая фраза.', 'Вторая новая фраза.', 'Первая новая фраза.'])
+      && speech.lastText === 'Третья новая фраза.' && speech.lastSsmlDocument === latestDocument
+      && document.getElementById('sv-last-ssml-document').textContent === latestDocument
+      && document.getElementById('sv-sample').value === latestDocument,
+      'Completing an evicted native request cannot resurrect it or replace the latest Last spoken SSML source');
+  } finally {
+    Date.now = evictionClock;
+    window.glide.invoke = evictionInvoke;
+  }
   const invalidTimingAt = Math.max(Date.now(), speech.lastVoiceAt + 1);
   for (const [index, timing] of [
     { completionMs: 1000, firstAudioMs: 10 },
