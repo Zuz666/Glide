@@ -340,12 +340,78 @@ function Test-JsonNumber {
     return (-not [double]::IsNaN([double]$Value) -and -not [double]::IsInfinity([double]$Value))
 }
 
+function Stop-AudioObservation {
+    param([object]$Turn)
+    if ($null -eq $Turn.audioObservation) { return }
+    Release-Com $Turn.audioObservation.stream
+    $Turn.audioObservation = $null
+}
+
+function Get-AudioWritePosition {
+    param([object]$Stream)
+    $status = $null
+    try {
+        $status = $Stream.Status
+        $position = $status.CurrentSeekPosition
+        if (-not ((Test-JsonNumber $position) -or $position -is [uint] -or $position -is [ulong]) -or $position -lt 0) {
+            throw 'The audio write cursor is unavailable.'
+        }
+        return [decimal]$position
+    }
+    finally { Release-Com $status }
+}
+
+function Start-AudioObservation {
+    param([object]$Turn)
+    if ($Turn.warmup -or $null -ne $Turn.output) { return }
+    $stream = $null
+    try {
+        # Read the existing default output only; never replace or seek it.
+        $stream = $script:voice.AudioOutputStream
+        $position = Get-AudioWritePosition $stream
+        $Turn.audioObservation = [pscustomobject]@{
+            stream = $stream
+            position = $position
+            first = $null
+            last = $null
+        }
+        $stream = $null
+    }
+    catch { }
+    finally { Release-Com $stream }
+}
+
+function Update-AudioObservation {
+    param([object]$Turn)
+    if ($null -eq $Turn.audioObservation) { return }
+    try {
+        $observation = $Turn.audioObservation
+        $position = Get-AudioWritePosition $observation.stream
+        if ($position -lt $observation.position) {
+            # A reset loses continuity for the whole turn, even after an advance.
+            Stop-AudioObservation $Turn
+            return
+        }
+        if ($position -gt $observation.position) {
+            $now = [System.Diagnostics.Stopwatch]::GetTimestamp()
+            if ($null -eq $observation.first) { $observation.first = $now }
+            $observation.last = $now
+            $observation.position = $position
+        }
+    }
+    catch {
+        # Optional diagnostics must never change speech or playback lifecycle.
+        Stop-AudioObservation $Turn
+    }
+}
+
 function Stop-Speaks {
     param([object]$Target = $null)
     $cancelled = [System.Collections.Generic.List[object]]::new()
     if ($null -ne $script:active -and ($null -eq $Target -or $script:active.id -eq $Target)) {
         # SVSFlagsAsync | SVSFPurgeBeforeSpeak | SVSFIsNotXML.
         # Purge only the one native turn; unrelated jobs live in our own queue.
+        Stop-AudioObservation $script:active
         [void]$script:voice.Speak('', 19)
         $cancelled.Add($script:active)
         $script:active = $null
@@ -466,6 +532,7 @@ function Invoke-CommandLine {
                     content = $content
                     flags = $flags
                     output = $null
+                    audioObservation = $null
                     actualVoice = $null
                     started = $false
                     warmup = $false
@@ -500,6 +567,7 @@ function Invoke-CommandLine {
                         content = '1'
                         flags = 17
                         output = $null
+                        audioObservation = $null
                         started = $false
                         warmup = $true
                     })
@@ -543,11 +611,13 @@ function Start-NextSpeak {
                 }
                 catch { Release-Com $stream; throw }
             }
+            Start-AudioObservation $turn
             # Plain=17; only the escaped, validated W3C document uses async SSML=265.
             [void]$script:voice.Speak($turn.content, $turn.flags)
             $script:active = $turn
         }
         catch {
+            Stop-AudioObservation $turn
             if ($null -ne $turn.output) {
                 try { $turn.output.Close(); $script:voice.AudioOutputStream = $null } finally { Release-Com $turn.output }
                 $turn.output = $null
@@ -560,6 +630,7 @@ function Start-NextSpeak {
 
 function Complete-ActiveSpeak {
     if ($null -eq $script:active) { return }
+    Update-AudioObservation $script:active
     $done = $script:voice.WaitUntilDone(0)
     $status = $null
     $hresult = 0
@@ -574,7 +645,8 @@ function Complete-ActiveSpeak {
     }
     if (-not $script:active.warmup -and -not $script:active.started -and $hresult -ge 0 -and ($wordLen -gt 0 -or $done)) {
         $script:active.started = $true
-        Write-Protocol @{ id = $script:active.id; event = 'started'; voice = $script:active.actualVoice }
+        Write-Protocol @{ id = $script:active.id; event = 'started'; voice = $script:active.actualVoice
+                          word_boundary = ($wordLen -gt 0) }
     }
     if (-not $done) { return }
     # A successful async Speak call does not guarantee successful synthesis.
@@ -582,6 +654,8 @@ function Complete-ActiveSpeak {
     # while the new one is still starting.
     $turn = $script:active
     $script:active = $null
+    $observation = $turn.audioObservation
+    Stop-AudioObservation $turn
     if ($null -ne $turn.output) {
         $turn.output.Close()
         $script:voice.AudioOutputStream = $null
@@ -597,7 +671,15 @@ function Complete-ActiveSpeak {
         Write-Protocol @{ id = $turn.id; event = 'warmed'; voice = $turn.actualVoice }
     }
     else {
-        Write-Protocol @{ id = $turn.id; event = 'done'; voice = $turn.actualVoice }
+        $completion = @{ id = $turn.id; event = 'done'; voice = $turn.actualVoice }
+        if ($turn.flags -eq 265) { $completion.ssml_document = $turn.content }
+        if ($null -ne $observation -and $null -ne $observation.first) {
+            # Retrospective, approximate write-delivery ages, not playback EOF.
+            $completedAt = [System.Diagnostics.Stopwatch]::GetTimestamp()
+            $completion.first_audio_ago_ms = [long][math]::Round(($completedAt - $observation.first) * 1000.0 / [System.Diagnostics.Stopwatch]::Frequency)
+            $completion.last_audio_ago_ms = [long][math]::Round(($completedAt - $observation.last) * 1000.0 / [System.Diagnostics.Stopwatch]::Frequency)
+        }
+        Write-Protocol $completion
     }
 }
 
@@ -659,6 +741,7 @@ catch {
     if ($null -ne $script:active) {
         $turn = $script:active
         $script:active = $null
+        Stop-AudioObservation $turn
         try { Write-Protocol @{ id = $turn.id; event = 'error'; error = $message } } catch { }
     }
     while ($script:queue.Count -gt 0) {
@@ -667,6 +750,7 @@ catch {
     }
 }
 finally {
+    if ($null -ne $script:active) { Stop-AudioObservation $script:active }
     if ($null -ne $script:voice) {
         try { [void]$script:voice.Speak('', 19) } catch { }
     }

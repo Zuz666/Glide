@@ -141,7 +141,12 @@ async function connectEvents(url: string): Promise<void> {
     try {
       const d: VoiceSpokenEvent = JSON.parse((e as MessageEvent).data);
       if (typeof d.voice === "string" && typeof d.text === "string" && Number.isFinite(d.at))
-        speech.noteVoice(`${d.voice} (SAPI5)`, d.text, d.at, typeof d.synth_ms === "number" ? d.synth_ms : null);
+        speech.noteVoice(`${d.voice} (SAPI5)`, d.text, d.at, typeof d.synth_ms === "number" ? d.synth_ms : null, "",
+          typeof d.ssml === "boolean" ? d.ssml : null,
+          typeof d.ssml_document === "string" && d.ssml_document.length <= 65536 ? d.ssml_document : "",
+          { completionMs: typeof d.completion_ms === "number" ? d.completion_ms : undefined,
+            firstAudioMs: typeof d.first_audio_ms === "number" ? d.first_audio_ms : undefined,
+            lastAudioMs: typeof d.last_audio_ms === "number" ? d.last_audio_ms : undefined });
     } catch { /* ignore */ }
   });
 }

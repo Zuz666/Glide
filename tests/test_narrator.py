@@ -58,6 +58,7 @@ globalThis.setTimeout = (fn, ms = 0, ...args) => {
 };
 globalThis.clearTimeout = (t) => { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); };
 Date.now = () => now;
+Object.defineProperty(performance, "now", { value: () => now });
 
 const DUR = 80;
 const log = [], playback = [];
@@ -77,7 +78,8 @@ function nativeSpeak(id, text) {
       onNativeStarted?.(id);
     }, 12);
     const timer = setTimeout(() => {
-      native.delete(id); log.push("end:" + text); resolve({ voice: "Installed native voice" });
+      native.delete(id); log.push("end:" + text); resolve({ voice: "Installed native voice", completionMs: DUR, firstAudioMs: 5, lastAudioMs: 50,
+        ...(text === "Keep every word." ? { ssmlDocument: '<speak><prosody rate="slow">Keep</prosody> every word.</speak>' } : {}) });
     }, DUR);
     native.set(id, { text, startTimer, timer, reject });
   });
@@ -131,18 +133,27 @@ globalThis.glide = { invoke: (ch, ...a) => {
     const [id, text] = a, attribution = { category: "TTS", provider: "edge", request_id: a[0],
       voice: "en-US-AriaNeural", ...edgeAttributions.get(a[1]) };
     log.push("edge:" + text);
-    edgeCandidates.set(id, text);
+    const fragments = text === "First. Second." ? [{ index: 0, start: 0, end: 7 }, { index: 1, start: 7, end: 14 }]
+      : [{ index: 0, start: 0, end: text.length }];
+    edgeCandidates.set(id, { text, remaining: fragments.length });
     return sleep(10).then(() => {
-      edgeEvent({ type: "plan", id, fragments: [{ index: 0, start: 0, end: text.length }] });
-      edgeEvent({ type: "candidate", id, index: 0, attempt: id, start: 0, end: text.length,
-        mime: "audio/mpeg", data: new TextEncoder().encode(text), attribution });
+      edgeEvent({ type: "plan", id, fragments });
+      for (const fragment of fragments) edgeEvent({ type: "candidate", id, ...fragment, attempt: id + ":" + fragment.index,
+        mime: "audio/mpeg", data: new TextEncoder().encode(text.slice(fragment.start, fragment.end)), attribution });
     });
   }
   if (ch === "tts:edgeDecoded") {
     const [id, attempt, ok] = a;
-    if (ok && edgeCandidates.has(id)) {
-      edgeEvent({ type: "accepted", id, index: 0, attempt });
-      edgeEvent({ type: "end", id, reason: "complete" });
+    const turn = edgeCandidates.get(id);
+    if (ok && turn) {
+      const index = Number(attempt.slice(id.length + 1));
+      const accept = () => {
+        edgeEvent({ type: "accepted", id, index, attempt });
+        if (--turn.remaining === 0) edgeEvent({ type: "end", id, reason: "complete" });
+      };
+      // Parallel synthesis may accept the final fragment before the first one.
+      if (turn.text === "First. Second." && index === 0) setTimeout(accept, 20);
+      else accept();
     }
     return Promise.resolve();
   }
@@ -180,13 +191,15 @@ const nativeOpts = [];
 const nativeVoices = new Map();
 const take = (name) => { out[name] = log.splice(0); out[name + "_pb"] = playback.splice(0); };
 const mark = (p, what) => p.then(() => log.push(what));
-const lastState = () => ({ voice: speech.lastVoice, at: speech.lastVoiceAt, text: speech.lastText, ms: speech.lastSynthMs });
+const lastState = () => ({ voice: speech.lastVoice, at: speech.lastVoiceAt, text: speech.lastText,
+  ms: speech.lastSynthMs, nativeTiming: speech.lastNativeTiming });
 
 // the coach, Windows voice: in order; an interrupting line cancels; muted says nothing
 speech.configure(false, WIN);
 speech.say("a"); speech.say("b");
 await sleep(DUR * 3); take("coach_win");
 out.win_last_line = voiceLastLine();
+out.win_state = lastState();
 speech.say("a"); await sleep(10); speech.say("c", true);
 await sleep(DUR * 2); take("coach_interrupt");
 speech.configure(true, WIN);
@@ -273,6 +286,12 @@ speech.configure(false, { provider: "edge" });
 speech.say("e1"); speech.say("e2");
 await sleep(DUR * 3); take("edge_order");
 out.edge_last_line = voiceLastLine();
+speech.say("First. Second.");
+await sleep(120);
+speech.noteVoice("Independent engine (SAPI5)", "Independent engine speech.", Date.now(), 777, "", false, "", { completionMs: 888 });
+await sleep(DUR * 2);
+out.edge_history = speech.recentLines.map(line => ({ text: line.text, ms: line.synthMs, native: line.nativeTiming }));
+take("edge_fragments");
 p = mark(speech.speakAndWait("edge-guide", "g"), "resolved:edge-guide");
 speech.say("edge-coach");
 await sleep(20); speech.cancel("g"); await p;
@@ -394,6 +413,18 @@ speech.say("Keep every word.", false, "", "", { markup: { text: "Keep every word
 ] } });
 await sleep(DUR * 2);
 out.degraded_request = nativeOpts.at(-1);
+out.degraded_label = voiceLastLine();
+out.completed_document = speech.lastSsmlDocument;
+live.config.companion.voice.markup_voices["token:b"] = [];
+speech.say("Unpermitted markup.", false, "", "", { markup: {
+  text: "Unpermitted markup.", spans: [{ start: 0, end: 11, rate: "slow" }],
+} });
+await sleep(DUR * 2);
+out.plain_after_markup = voiceLastLine();
+out.plain_document = speech.lastSsmlDocument;
+speech.say("native-failure");
+await sleep(DUR * 2);
+out.after_markup_failure = voiceLastLine();
 live.config.companion.voice.markup_voices["token:b"] = ["boundaries"];
 const denseText = "Go. ".repeat(199) + "Stay.";
 speech.say(denseText);
@@ -447,6 +478,12 @@ assert got["tagged_ms"] >= 2 * 80 - 5, got["tagged_ms"]
 assert got["cancel_discovery"] == ["resolved:discovery", "start:discovery-coach", "end:discovery-coach"], got["cancel_discovery"]
 assert got["discovery_cancel_ms"] < 20, got["discovery_cancel_ms"]
 assert got["degraded_request"]["text"] == "Keep every word."
+assert "SSML submitted" in got["degraded_label"], got["degraded_label"]
+assert got["completed_document"] == '<speak><prosody rate="slow">Keep</prosody> every word.</speak>'
+assert got["plain_document"] == ""
+assert "Plain text" in got["plain_after_markup"] and "SSML submitted" not in got["plain_after_markup"]
+assert got["after_markup_failure"] == got["plain_after_markup"], got["after_markup_failure"]
+assert "Plain text" in got["online_last_line"] and "SSML submitted" not in got["online_last_line"]
 assert got["degraded_request"]["markup"]["spans"] == [{"start": 0, "end": 4, "rate": "slow"}]
 assert got["dense_request"]["text"] == "Go. " * 199 + "Stay."
 assert 0 < len(got["dense_request"]["markup"]["spans"]) <= 128
@@ -475,6 +512,9 @@ assert got["slow_cancel_ms"] < 20 and "resolved:slow-guide" in c, c
 assert got["fallback"] == ["synth:cloud-failure", "start:cloud-failure", "end:cloud-failure"], got["fallback"]
 assert got["after_rejected"] == got["before_rejected"], got
 assert got["edge_order"] == ["edge:e1", "edge:e2", "play:e1", "ended:e1", "play:e2", "ended:e2"], got["edge_order"]
+assert [line["text"] for line in got["edge_history"]] == ["Independent engine speech.", "First. Second.", "e2"], got["edge_history"]
+assert got["edge_history"][0]["ms"] == 777 and got["edge_history"][0]["native"] == {"completionMs": 888}, got["edge_history"]
+assert got["edge_history"][1]["ms"] == 30 and got["edge_history"][1]["native"] is None, got["edge_history"]
 c = got["edge_cancel"]
 assert c[:4] == ["edge:edge-guide", "edge:edge-coach", "play:edge-guide", "pause:edge-guide"], c
 assert c[-2:] == ["play:edge-coach", "ended:edge-coach"] and "resolved:edge-guide" in c, c
@@ -482,7 +522,9 @@ assert [p["state"] for p in got["coach_online_pb"]] == ["playing", "ended", "pla
 assert [p["state"] for p in got["fallback_pb"]] == ["fallback", "ended"], got["fallback_pb"]
 assert [p["state"] for p in got["rejected_online_pb"]] == ["error"], got["rejected_online_pb"]
 assert not any(p["state"] in ("fallback", "error") for p in got["late_synthesis_pb"]), got["late_synthesis_pb"]
-assert "Installed native voice (SAPI5), generated in 12ms" in got["win_last_line"], got["win_last_line"]
+assert got["win_state"]["ms"] == 12 and got["win_state"]["nativeTiming"] == {"completionMs": 80, "firstAudioMs": 5, "lastAudioMs": 50}, got["win_state"]
+assert "first audio ≈5ms, last audio ≈50ms, speech completed in 80ms" in got["win_last_line"], got["win_last_line"]
+assert "generated in" not in got["win_last_line"] and "first word" not in got["win_last_line"], got["win_last_line"]
 assert "OpenAI gpt-4o-mini-tts, coral (online voice), generated in 2.42s" in got["online_last_line"], got["online_last_line"]
 assert "generated in " in got["edge_last_line"] and "ms" in got["edge_last_line"], got["edge_last_line"]
 assert got["preview_opts"] == [
@@ -490,9 +532,11 @@ assert got["preview_opts"] == [
     {"text": "normal-callout", "rate": 1.15, "volume": 0.75, "voice": "token:zira", "features": []},
 ], got["preview_opts"]
 assert got["online_state"]["ms"] == 2424, got["online_state"]
+assert got["online_state"]["nativeTiming"] is None, got["online_state"]
 assert got["before_stale_synthesis"] == got["after_stale_synthesis"], got
 assert got["fallback_state"]["voice"] == "Installed native voice (SAPI5)", got["fallback_state"]
 assert got["fallback_state"]["text"] == "cloud-failure" and got["fallback_state"]["ms"] == 12, got["fallback_state"]
+assert got["fallback_state"]["nativeTiming"] == {"completionMs": 80, "firstAudioMs": 5, "lastAudioMs": 50}, got["fallback_state"]
 provider_labels = {"openai": "OpenAI", "google": "Google", "elevenlabs": "ElevenLabs", "azure": "Azure"}
 for case in got["identities"]:
     identity = ", ".join(filter(None, (case.get("model"), case["voice"])))

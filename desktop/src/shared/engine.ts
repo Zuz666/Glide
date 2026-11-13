@@ -177,7 +177,12 @@ export interface VoiceSpokenEvent {
   voice: string;
   text: string;
   at: number;
-  synth_ms?: number | null;
+  synth_ms?: number | null;       // submission to the native first-word event, not audio-byte arrival
+  completion_ms?: number;        // submission to successful native completion, including playback
+  first_audio_ms?: number;       // approximate submission to first observed audio delivery; present with last_audio_ms
+  last_audio_ms?: number;        // approximate submission to last observed audio delivery; not playback completion
+  ssml?: boolean;               // validated native markup submitted, not proof that the voice honored its effects
+  ssml_document?: string;        // exact bounded document compiled by the native worker for this completed turn
 }
 
 export interface GuideElement { tag: string; map?: number; x?: number; y?: number; quest?: number; name?: string;

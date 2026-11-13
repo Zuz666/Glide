@@ -17,6 +17,8 @@ import log as console
 from localization import TEXT_RESOURCES
 import speech_markup
 
+MAX_SSML_DOCUMENT_LENGTH = 65536  # 4000 escaped scalars plus all 128 permitted span controls.
+
 
 
 def _announce(voice, localize=None):
@@ -182,11 +184,17 @@ class Voice:
         try:
             with stdout, open(self.log_path, "a", encoding="utf-8", buffering=1) as log:
                 for line in stdout:
-                    log.write(line)
                     try:
                         event = json.loads(line)
                     except ValueError:
+                        log.write(line)
                         continue
+                    # Completion XML belongs to the last-spoken observation, not diagnostic logs.
+                    if isinstance(event, dict) and "ssml_document" in event:
+                        log.write(json.dumps({key: value for key, value in event.items() if key != "ssml_document"},
+                                             ensure_ascii=False) + "\n")
+                    else:
+                        log.write(line)
                     if isinstance(event, dict) and event.get("event") in ("ready", "voices"):
                         with self._state_lock:
                             if self.proc is proc and isinstance(event.get("voices"), list):
@@ -213,8 +221,11 @@ class Voice:
                         turn = self._pending.get(ident)
                         if turn is None:
                             continue
+                        if event["event"] == "started" and event.get("word_boundary") is not True:
+                            continue
+                        elapsed_ms = round((time.monotonic() - turn["submitted"]) * 1000)
                         if event["event"] == "started":
-                            turn["synth_ms"] = round((time.monotonic() - turn["submitted"]) * 1000)
+                            turn["synth_ms"] = elapsed_ms
                         else:
                             self._pending.pop(ident)
                         if isinstance(event.get("voice"), str):
@@ -224,9 +235,21 @@ class Voice:
                     if event["event"] == "done" and isinstance(event.get("voice"), str):
                         if self.on_spoken is not None:
                             try:
-                                spoken_payload = {"voice": event["voice"], "text": turn["text"], "at": at}
+                                spoken_payload = {"voice": event["voice"], "text": turn["text"], "at": at,
+                                                  "ssml": turn["ssml"], "completion_ms": elapsed_ms}
+                                document = event.get("ssml_document")
+                                if isinstance(document, str) and 0 < len(document) <= MAX_SSML_DOCUMENT_LENGTH:
+                                    spoken_payload["ssml_document"] = document
                                 if turn.get("synth_ms") is not None:
                                     spoken_payload["synth_ms"] = turn["synth_ms"]
+                                # Ages use the worker's clock; anchor them to this request's completion clock.
+                                first_age = event.get("first_audio_ago_ms")
+                                last_age = event.get("last_audio_ago_ms")
+                                if (isinstance(first_age, (int, float)) and isinstance(last_age, (int, float))
+                                        and not isinstance(first_age, bool) and not isinstance(last_age, bool)
+                                        and 0 <= last_age <= first_age <= elapsed_ms):
+                                    spoken_payload["first_audio_ms"] = round(elapsed_ms - first_age)
+                                    spoken_payload["last_audio_ms"] = round(elapsed_ms - last_age)
                                 self.on_spoken(spoken_payload)
                             except Exception as e:  # the UI must not stop the native reader
                                 console.log_once("voice.status", e)
@@ -247,7 +270,7 @@ class Voice:
         """Use the caller's checked pipe under the voice lock so commands cannot interleave."""
         self._sequence += 1
         if op == "speak":
-            turn = {"text": fields["text"], "submitted": time.monotonic(),
+            turn = {"text": fields["text"], "submitted": time.monotonic(), "ssml": fields.get("markup") is not None,
                     "attribution": {"category": "TTS", "operation": "native speech",
                                     "provider": "SAPI5", "request_id": "standalone-%d" % self._sequence,
                                     "voice": fields.get("voice") or "Windows default",

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import threading
 import wave
+import xml.etree.ElementTree as ET
 
 
 def native_file_output():
@@ -125,16 +126,24 @@ def native_file_output():
             measurements = []
             text = "Keep moving toward the road. Stay on the path."
 
-            def synth(label, data=None, *, voice=selected, rate=0, volume=70):
+            def synth(label, data=None, *, voice=selected, rate=0, volume=70, text=text):
                 ident = command("speak", text=text, voice=voice, rate=rate, volume=volume,
                                 features=features, **({"markup": data} if data else {}))
                 done = response(ident, "done")
+                if data is None:
+                    assert "ssml_document" not in done, done
+                else:
+                    document = done["ssml_document"]
+                    root = ET.fromstring(document)
+                    assert root.tag == "{http://www.w3.org/2001/10/synthesis}speak", document
+                    assert "".join(root.itertext()) == text[:4000], document
                 path = os.path.join(directory, "%d.wav" % ident)
                 with wave.open(path, "rb") as wav:
                     assert wav.getnframes() > 0, label
                     measurements.append({"sample": label, "voice": done["voice"], "identity": voice,
                                          "seconds": wav.getnframes() / wav.getframerate(),
                                          "rate": rate, "volume": volume, "wav": path})
+                return done
 
             synth("plain")
             for effect, value in (("rate", "slow"), ("rate", "fast"), ("pitch", "low"), ("pitch", "high")):
@@ -143,6 +152,17 @@ def native_file_output():
             synth("native-pause", {"text": text, "spans": [{"start": 0, "end": 28, "after_ms": 700}]})
             synth("plain-after")
             synth("configured-rate-volume", rate=3, volume=35)
+            escaped_text = "A 😀 & <B>."
+            escaped = synth("escaped-document", {"text": escaped_text, "spans": [
+                {"start": 2, "end": 3, "rate": "slow", "pitch": "high"}]}, text=escaped_text)
+            assert "&amp;" in escaped["ssml_document"] and "&lt;B&gt;" in escaped["ssml_document"], escaped
+            root = ET.fromstring(escaped["ssml_document"])
+            scoped = root.find("{http://www.w3.org/2001/10/synthesis}prosody")
+            assert scoped is not None and scoped.text == "😀" and scoped.attrib == {"rate": "slow", "pitch": "high"}
+            clipped_text = "A & <B>." + " " * 3992 + "outside"
+            clipped = synth("clipped-document", {"text": clipped_text, "spans": [
+                {"start": 4000, "end": 4007, "rate": "slow"}]}, text=clipped_text)
+            assert "outside" not in clipped["ssml_document"] and "<prosody" not in clipped["ssml_document"], clipped
             if args.positive_control:
                 positive = selection(args.positive_control)
                 synth("positive-plain", voice=positive)
@@ -226,6 +246,7 @@ class Worker extends EventEmitter {
     this.stderr = new PassThrough();
     this.spoken = [];
     this.queue = [];
+    this.wordBoundary = true;
     this.active = null;
     this.catalogue = [{ id: 'Installed voice', name: 'Installed voice', identity: 'token:installed', isDefault: true }];
     this.listing = [];
@@ -268,14 +289,14 @@ class Worker extends EventEmitter {
     this.active = this.queue.shift();
     if (this.active.op !== 'warmup') {
       this.spoken.push(this.active.text);
-      this.emitMessage({ id: this.active.id, event: 'started', voice: 'Actual installed voice' });
+      this.emitMessage({ id: this.active.id, event: 'started', voice: 'Actual installed voice', word_boundary: this.wordBoundary });
     }
   }
-  finish() {
+  finish(fields = {}) {
     assert(this.active, 'test worker has no active speech');
     const done = this.active;
     this.active = null;
-    this.emitMessage({ id: done.id, event: done.op === 'warmup' ? 'warmed' : 'done', voice: 'Actual installed voice' });
+    this.emitMessage({ id: done.id, event: done.op === 'warmup' ? 'warmed' : 'done', voice: 'Actual installed voice', ...fields });
     this.play();
   }
   list() {
@@ -311,16 +332,17 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   assert.equal(coach.state, 'pending', 'started is not playback completion');
   await settled(catalogue);
   advance(120);
-  worker.finish();
+  worker.finish({ first_audio_ago_ms: 100, last_audio_ago_ms: 20 });
   await settled(coach);
-  assert.deepEqual(coach.value, { voice: 'Actual installed voice' });
+  assert.deepEqual(coach.value, { voice: 'Actual installed voice', completionMs: 155,
+    firstAudioMs: 55, lastAudioMs: 135 });
   assert(notes.some(line => line.includes('Actual installed voice')));
   const coachStatus = statusEvents.filter(ev => ev.id === 'coach');
   assert.deepEqual(coachStatus.map(ev => [ev.type, ev.elapsedMs ?? null]), [
     ['submitted', null],
     ['started', 35],
     ['done', 155],
-  ], 'onStatusChange must emit started synthesis latency distinct from done playback duration');
+  ], 'first-word latency and full native completion time must remain distinct');
   offStatus();
   const refreshed = watched(host.voices());
   worker.catalogue = [{ id: 'Newly installed', name: 'Newly installed', identity: 'token:new', isDefault: true }];
@@ -334,13 +356,22 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   const removed = watched(host.speak('removed', 'queued must never be spoken', settings));
   const tail = watched(host.speak('tail', 'tail survives', settings));
   const lookup = watched(host.voices());
+  const removedId = worker.queue.find(item => item.text === 'queued must never be spoken').id;
   host.stop('removed');
   await failed(removed, /cancel/i);
-  worker.finish();
+  worker.emitMessage({ id: removedId, event: 'done', voice: 'Cancelled voice',
+    first_audio_ago_ms: 0, last_audio_ago_ms: 0 });
+  advance(80);
+  worker.finish({ first_audio_ago_ms: 65, last_audio_ago_ms: 15 });
   await settled(active);
+  assert.deepEqual(active.value, { voice: 'Actual installed voice', completionMs: 80,
+    firstAudioMs: 15, lastAudioMs: 65 });
   assert.equal(tail.state, 'pending');
-  worker.finish();
+  advance(40);
+  worker.finish({ first_audio_ago_ms: 25, last_audio_ago_ms: 5 });
   await settled(tail);
+  assert.deepEqual(tail.value, { voice: 'Actual installed voice', completionMs: 120,
+    firstAudioMs: 95, lastAudioMs: 115 }, 'queued audio observations belong to their own submission clock');
   worker.list();
   await settled(lookup);
   assert.deepEqual(worker.spoken, ['coach survives', 'active survives', 'tail survives']);
@@ -361,6 +392,82 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   await settled(afterStop);
   host.dispose();
   assert(worker.killed, 'dispose must terminate its own worker');
+
+  // Some engines complete without reporting a word: retain completion, never fabricate first-word latency.
+  const noWordHost = new WindowsTts('silent-worker.ps1');
+  const noWordEvents = [];
+  noWordHost.onStatusChange(event => noWordEvents.push(event));
+  const noWord = watched(noWordHost.speak('no-word', 'Completion without word events', settings));
+  const noWordWorker = workers.at(-1);
+  noWordWorker.wordBoundary = false;
+  noWordWorker.ready();
+  advance(75);
+  noWordWorker.finish({ first_audio_ago_ms: 75, last_audio_ago_ms: 0 });
+  await settled(noWord);
+  assert.deepEqual(noWord.value, { voice: 'Actual installed voice', completionMs: 75,
+    firstAudioMs: 0, lastAudioMs: 75 }, 'zero endpoints are available observations, not missing data');
+  assert.deepEqual(noWordEvents.map(event => event.type), ['submitted', 'done']);
+  noWordHost.dispose();
+
+  // Worker ages are retrospective audio-delivery observations, independent of word events.
+  const timingHost = new WindowsTts('silent-worker.ps1');
+  for (const [id, duration, fields, expected] of [
+    ['rounded', 240, { first_audio_ago_ms: 177.6, last_audio_ago_ms: 18.2 },
+      { completionMs: 240, firstAudioMs: 62, lastAudioMs: 222 }],
+    ['simultaneous', 100, { first_audio_ago_ms: 0, last_audio_ago_ms: 0 },
+      { completionMs: 100, firstAudioMs: 100, lastAudioMs: 100 }],
+    ['zero-duration', 0, { first_audio_ago_ms: 0, last_audio_ago_ms: 0 },
+      { completionMs: 0, firstAudioMs: 0, lastAudioMs: 0 }],
+  ]) {
+    const speech = watched(timingHost.speak(id, 'timed speech', settings));
+    const timingWorker = workers.at(-1);
+    timingWorker.ready();
+    advance(duration);
+    timingWorker.finish(fields);
+    await settled(speech);
+    assert.deepEqual(speech.value, { voice: 'Actual installed voice', ...expected }, id);
+  }
+  const timingWorker = workers.at(-1);
+  for (const [id, fields] of [
+    ['unavailable', {}],
+    ['first-only', { first_audio_ago_ms: 80 }],
+    ['last-only', { last_audio_ago_ms: 10 }],
+    ['null-first', { first_audio_ago_ms: null, last_audio_ago_ms: 10 }],
+    ['null-last', { first_audio_ago_ms: 80, last_audio_ago_ms: null }],
+    ['string-first', { first_audio_ago_ms: '80', last_audio_ago_ms: 10 }],
+    ['string-last', { first_audio_ago_ms: 80, last_audio_ago_ms: '10' }],
+    ['boolean-first', { first_audio_ago_ms: true, last_audio_ago_ms: 0 }],
+    ['boolean-last', { first_audio_ago_ms: 80, last_audio_ago_ms: false }],
+    ['object-first', { first_audio_ago_ms: {}, last_audio_ago_ms: 10 }],
+    ['array-last', { first_audio_ago_ms: 80, last_audio_ago_ms: [] }],
+    ['negative-first', { first_audio_ago_ms: -1, last_audio_ago_ms: 0 }],
+    ['negative-last', { first_audio_ago_ms: 80, last_audio_ago_ms: -1 }],
+    ['reversed', { first_audio_ago_ms: 10, last_audio_ago_ms: 80 }],
+    ['before-submission', { first_audio_ago_ms: 101, last_audio_ago_ms: 10 }],
+    ['both-outside', { first_audio_ago_ms: 120, last_audio_ago_ms: 110 }],
+  ]) {
+    const speech = watched(timingHost.speak(id, 'successful without audio telemetry', settings));
+    advance(100);
+    timingWorker.finish(fields);
+    await settled(speech);
+    assert.deepEqual(speech.value, { voice: 'Actual installed voice', completionMs: 100 },
+      `${id}: invalid or unavailable telemetry must omit the whole pair without failing speech`);
+  }
+  // JSON numeric overflow reaches the consumer as nonfinite numbers (JSON.stringify would erase them).
+  for (const ages of [
+    '"first_audio_ago_ms":1e400,"last_audio_ago_ms":10',
+    '"first_audio_ago_ms":80,"last_audio_ago_ms":1e400',
+    '"first_audio_ago_ms":-1e400,"last_audio_ago_ms":0',
+  ]) {
+    const speech = watched(timingHost.speak('nonfinite', 'successful with invalid numeric ages', settings));
+    advance(100);
+    timingWorker.stdout.write(`{"event":"done","id":${timingWorker.active.id},"voice":"Actual installed voice",${ages}}\r\n`);
+    timingWorker.finish();
+    await settled(speech);
+    assert.deepEqual(speech.value, { voice: 'Actual installed voice', completionMs: 100 },
+      'nonfinite ages must not escape or fail successful speech');
+  }
+  timingHost.dispose();
 
   // The enqueue boundary freezes controls, features and the actual token together, even before ready.
   const frozen = new WindowsTts('silent-worker.ps1');
@@ -393,8 +500,34 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   await settled(preparedSample);
   assert.equal(preparedSample.value.text, 'Words & more.');
   assert.equal(frozenWorker.active, beforePrepare);
-  frozenWorker.finish();
+  const actualDocument = '<speak version="1.0" xml:lang="en-US" xmlns="http://www.w3.org/2001/10/synthesis">A <prosody rate="slow" pitch="high">😀</prosody> &amp; &lt;B&gt;.</speak>';
+  advance(90);
+  frozenWorker.finish({ ssml_document: actualDocument, first_audio_ago_ms: 70, last_audio_ago_ms: 5 });
   await settled(frozenLine);
+  assert.equal(frozenLine.value.ssmlDocument, actualDocument,
+    'completion exposes the exact worker document, not a renderer serialization');
+  assert.deepEqual([frozenLine.value.firstAudioMs, frozenLine.value.lastAudioMs], [20, 85],
+    'audio timing and the exact SSML document must coexist on the same completion');
+  const noDocument = watched(frozen.speak('no-document', markup.text, selected, markup, ['rate', 'pitch']));
+  frozenWorker.finish();
+  await settled(noDocument);
+  assert.equal(noDocument.value.ssmlDocument, undefined, 'typed controls cannot invent a completion document');
+  for (const invalidDocument of [null, 42, {}, '', 'x'.repeat(65537)]) {
+    const invalid = watched(frozen.speak('invalid-document', 'words', settings));
+    frozenWorker.finish({ ssml_document: invalidDocument });
+    await failed(invalid, /invalid completed SSML document/i);
+  }
+  const failedMarkup = watched(frozen.speak('failed-document', 'words', settings));
+  const failedId = frozenWorker.active.id;
+  frozenWorker.emitMessage({ id: failedId, event: 'error', error: 'native failure', ssml_document: actualDocument });
+  frozenWorker.finish({ ssml_document: actualDocument });
+  await failed(failedMarkup, /native failure/);
+  const stoppedMarkup = watched(frozen.speak('stopped-document', 'words', settings));
+  const stoppedId = frozenWorker.active.id;
+  frozen.stop('stopped-document');
+  frozenWorker.emitMessage({ id: stoppedId, event: 'done', voice: 'Stale voice', ssml_document: actualDocument,
+    first_audio_ago_ms: 0, last_audio_ago_ms: 0 });
+  await failed(stoppedMarkup, /cancel/i);
   const abandonedPreparation = watched(frozen.prepare('never returned', ['rate']));
   advance(60000);
   await failed(abandonedPreparation, /timed out/);
@@ -406,6 +539,7 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   const lostList = watched(recovering.voices());
   const old = workers.at(-1);
   old.ready();
+  const lostId = old.active.id;
   old.emit('error', new Error('simulated process loss'));
   const count = workers.length;
   await failed(interrupted, /process|worker|simulated/i);
@@ -416,10 +550,15 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   assert.notEqual(replacement, old);
   old.emit('exit', 1, null);
   old.emitMessage({ event: 'ready' });
+  old.emitMessage({ id: lostId, event: 'done', voice: 'Stale voice', ssml_document: '<speak>stale</speak>',
+    first_audio_ago_ms: 0, last_audio_ago_ms: 0 });
   replacement.ready();
   assert.deepEqual(replacement.spoken, ['replacement only']);
   replacement.finish();
   await settled(recovered);
+  assert.equal(recovered.value.ssmlDocument, undefined, 'a stale worker cannot supply the document');
+  assert.equal(recovered.value.firstAudioMs, undefined, 'a stale worker cannot supply first audio timing');
+  assert.equal(recovered.value.lastAudioMs, undefined, 'a stale worker cannot supply last audio timing');
   recovering.dispose();
 
   // Process exit while still starting must reject both operations, even without an 'error' event.

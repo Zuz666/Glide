@@ -8,6 +8,8 @@ import type { SpeechFeature, SpeechMarkup } from "../shared/speech-markup";
 
 const READY_TIMEOUT_MS = 15000;
 const VOICES_TIMEOUT_MS = 15000;
+// Covers 4000 escaped Unicode scalars and all 128 permitted span controls.
+const MAX_SSML_DOCUMENT_LENGTH = 65536;
 
 type SpeechOptions = Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
 type Command = { id: number; op: "voices" }
@@ -24,7 +26,8 @@ type Pending = {
   | { kind: "prepare"; resolve: (markup: SpeechMarkup) => void }
   | { kind: "warmup"; submittedAt: number; voice: string; resolve: () => void }
   | { kind: "speak"; callerId: string; submittedAt: number; actualVoice?: string;
-    resolve: (result: { voice: string }) => void });
+    resolve: (result: { voice: string; ssmlDocument?: string; completionMs?: number;
+      firstAudioMs?: number; lastAudioMs?: number }) => void });
 
 interface Worker {
   child: ChildProcessWithoutNullStreams;
@@ -109,7 +112,8 @@ export class WindowsTts {
   }
 
   speak(id: string, text: string, settings: SpeechOptions, markup?: SpeechMarkup,
-    features?: SpeechFeature[]): Promise<{ voice: string }> {
+    features?: SpeechFeature[]): Promise<{ voice: string; ssmlDocument?: string; completionMs?: number;
+      firstAudioMs?: number; lastAudioMs?: number }> {
     return new Promise((resolve, reject) => {
       const submittedAt = performance.now();
       const multiplier = typeof settings.rate === "number" && Number.isFinite(settings.rate) && settings.rate > 0
@@ -252,7 +256,9 @@ export class WindowsTts {
 
   private receive(worker: Worker, line: string): void {
     if (worker.closed || this.worker !== worker || !line.trim()) return;
-    let message: { event?: string; id?: number; voice?: string; voices?: Voice[]; markup?: SpeechMarkup; error?: string };
+    let message: { event?: string; id?: number; voice?: string; voices?: Voice[]; markup?: SpeechMarkup;
+      ssml_document?: unknown; word_boundary?: unknown; error?: string;
+      first_audio_ago_ms?: unknown; last_audio_ago_ms?: unknown };
     try {
       message = JSON.parse(line.replace(/^\uFEFF/, ""));
       if (!message || typeof message !== "object") throw new Error("Invalid response");
@@ -278,7 +284,7 @@ export class WindowsTts {
     if (!pending || !pending.sent) return;
     if (message.event === "started" && pending.kind === "speak") {
       if (typeof message.voice === "string") pending.actualVoice = message.voice;
-      this.noteSpeech(pending, "started");
+      if (message.word_boundary === true) this.noteSpeech(pending, "started");
       return;
     }
     if (message.event === "warmed" && pending.kind === "warmup") {
@@ -339,17 +345,32 @@ export class WindowsTts {
         const error = new Error("Windows TTS: missing completed voice name");
         this.noteSpeech(pending, "error", error.message);
         pending.reject(error);
+      } else if (message.ssml_document !== undefined && (typeof message.ssml_document !== "string"
+        || !message.ssml_document.length || message.ssml_document.length > MAX_SSML_DOCUMENT_LENGTH)) {
+        const error = new Error("Windows TTS: invalid completed SSML document");
+        this.noteSpeech(pending, "error", error.message);
+        pending.reject(error);
       } else {
         pending.actualVoice = message.voice;
         if (pending.command.op === "speak") worker.warmedVoices.add(pending.command.voice);
         worker.warmedVoices.add(message.voice);
-        this.noteSpeech(pending, "done");
-        pending.resolve({ voice: message.voice });
+        const completionMs = this.noteSpeech(pending, "done");
+        const firstAge = message.first_audio_ago_ms;
+        const lastAge = message.last_audio_ago_ms;
+        pending.resolve({ voice: message.voice, completionMs,
+          // Ages share the worker's completion anchor; publish only a complete, valid pair.
+          ...(typeof completionMs === "number"
+            && typeof firstAge === "number" && Number.isFinite(firstAge)
+            && typeof lastAge === "number" && Number.isFinite(lastAge)
+            && 0 <= lastAge && lastAge <= firstAge && firstAge <= completionMs
+            ? { firstAudioMs: Math.round(completionMs - firstAge), lastAudioMs: Math.round(completionMs - lastAge) }
+            : {}),
+          ...(typeof message.ssml_document === "string" ? { ssmlDocument: message.ssml_document } : {}) });
       }
     }
   }
 
-  private noteSpeech(pending: Pending, status: string, error?: string): void {
+  private noteSpeech(pending: Pending, status: string, error?: string): number | undefined {
     if (pending.kind !== "speak" || pending.command.op !== "speak") return;
     const command = pending.command;
     const elapsed = Math.round(performance.now() - pending.submittedAt);
@@ -371,6 +392,7 @@ export class WindowsTts {
         } catch { /* status only */ }
       }
     }
+    return elapsed;
   }
 
   private remove(worker: Worker, id: number): void {
