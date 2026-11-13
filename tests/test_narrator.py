@@ -431,6 +431,46 @@ speech.say(denseText);
 await sleep(DUR * 2);
 out.dense_request = nativeOpts.at(-1);
 out.markup_snapshot = nativeOpts.filter((line) => ["😀 left & <right>", "new snapshot"].includes(line.text));
+
+// An active native request keeps its identity after three independent engine observations evict it.
+for (const tiedClock of [false, true]) {
+  const wallClock = now;
+  if (tiedClock) Date.now = () => wallClock;
+  speech.configure(false, WIN);
+  speech.say("Keep every word.", false, "", "", { native: {
+    voiceName: "token:b", features: ["rate"], mode: "ai",
+    markup: { text: "Keep every word.", spans: [{ start: 0, end: 4, rate: "slow" }] },
+  } });
+  await sleep(20);
+  const started = speech.recentLines[0];
+  out["evicted_started_" + tiedClock] = { text: started.text, ssml: started.ssml, document: started.ssmlDocument };
+  for (const word of ["one", "two", "three"]) {
+    speech.noteVoice("Independent engine (SAPI5)", "Independent engine " + word + ".", Date.now(), 123, "",
+      true, "<speak>Independent engine " + word + ".</speak>", { completionMs: 700 });
+  }
+  const before = JSON.stringify(speech.recentLines);
+  await sleep(DUR);
+  out["evicted_native_" + tiedClock] = {
+    texts: speech.recentLines.map(line => line.text), unchanged: before === JSON.stringify(speech.recentLines),
+    text: speech.lastText, document: speech.lastSsmlDocument,
+  };
+  Date.now = () => now;
+}
+take("native_history_eviction");
+
+// Later Edge fragments must not recreate an evicted prefix, either.
+speech.configure(false, { provider: "edge" });
+speech.say("First. Second.");
+await sleep(60);
+for (const word of ["one", "two", "three"]) {
+  speech.noteVoice("Independent engine (SAPI5)", "Independent engine " + word + ".", Date.now(), 456, "",
+    false, "", { completionMs: 900 });
+}
+const beforeEdgeEviction = JSON.stringify(speech.recentLines);
+await sleep(DUR * 3);
+out.evicted_edge = { texts: speech.recentLines.map(line => line.text),
+  unchanged: beforeEdgeEviction === JSON.stringify(speech.recentLines), text: speech.lastText,
+  document: speech.lastSsmlDocument };
 console.log(JSON.stringify(out));
 """
 
@@ -563,4 +603,15 @@ assert got["fallback_snapshot"]["voice"] == "Installed native voice (SAPI5)", go
 assert got["fallback_snapshot"]["text"] == "identity-fallback" and got["fallback_snapshot"]["ms"] == 12, got["fallback_snapshot"]
 assert got["fallback_snapshot"]["requested"] == "Fallback requested before settings changed", got["fallback_snapshot"]
 assert got["before_native_failure"] == got["after_native_failure"], got
+for tied_clock in ("false", "true"):
+    assert got["evicted_started_" + tied_clock] == {"text": "Keep every word.", "ssml": True, "document": ""}
+    assert got["evicted_native_" + tied_clock] == {
+        "texts": ["Independent engine three.", "Independent engine two.", "Independent engine one."],
+        "unchanged": True, "text": "Independent engine three.",
+        "document": "<speak>Independent engine three.</speak>",
+    }, got["evicted_native_" + tied_clock]
+assert got["evicted_edge"] == {
+    "texts": ["Independent engine three.", "Independent engine two.", "Independent engine one."],
+    "unchanged": True, "text": "Independent engine three.", "document": "",
+}, got["evicted_edge"]
 print("OK")

@@ -69,6 +69,7 @@ interface Line {
   cancelled?: boolean;
   reportedPlaying?: boolean;
   reportedFallback?: boolean;
+  observations?: SpokenLine[];
 }
 
 /** Full request identity for the last-spoken record; speakLabel deliberately stays compact for the status bar. */
@@ -127,15 +128,24 @@ class Narrator {
   noteVoice(name: string, text: string, at = Date.now(), synthMs: number | null = null, requestId = "",
     ssml: boolean | null = null, ssmlDocument = "", nativeTiming: NativeTiming | null = null): void {
     text = spokenWords(text);
+    const owner = requestId && this.current?.requestId === requestId ? this.current : undefined;
     const index = this.spokenLines.findIndex(line => line.voice === name && (requestId
       ? line.requestId === requestId
       : !line.requestId && line.at === at && line.text === text));
-    const previous = this.spokenLines[index];
-    if (at < (previous?.at ?? this.lastVoiceAt)) return;
-    const line: SpokenLine = { id: previous?.id ?? ++this.spokenSequence, voice: name, text, at, synthMs,
-      requestId, ssml, ssmlDocument: ssml === true ? ssmlDocument : "", nativeTiming };
-    if (previous) this.spokenLines[index] = line;
-    else {
+    // The active request owns its observations beyond display eviction, then releases them at completion/cancel.
+    const previous = this.spokenLines[index] ?? owner?.observations?.find(line => line.voice === name);
+    if ((previous && index < 0) || at < (previous?.at ?? this.lastVoiceAt)) return;
+    if (previous) {
+      previous.text = text;
+      previous.at = at;
+      previous.synthMs = synthMs;
+      previous.ssml = ssml;
+      previous.ssmlDocument = ssml === true ? ssmlDocument : "";
+      previous.nativeTiming = nativeTiming;
+    } else {
+      const line: SpokenLine = { id: ++this.spokenSequence, voice: name, text, at, synthMs,
+        requestId, ssml, ssmlDocument: ssml === true ? ssmlDocument : "", nativeTiming };
+      if (owner) (owner.observations ??= []).push(line);
       this.spokenLines.unshift(line);
       if (this.spokenLines.length > 3) this.spokenLines.pop();
     }
@@ -204,6 +214,7 @@ class Narrator {
   private finish(line: Line): void {
     const done = line.done;
     line.done = undefined;
+    line.observations = undefined;
     done?.();
   }
 
