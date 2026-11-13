@@ -16,10 +16,7 @@ const ATTEMPT_ID = /^(?:a\d{1,9}|[AB]-[12])$/;
 const VOICE = /^[A-Za-z0-9-]{1,128}$/;
 type Fragment = { index: number; start: number; end: number };
 type Attempt = { index: number; verdict?: boolean };
-const TRANSPORT_FIELDS = ["connections", "renewals", "connect_failures", "retired"] as const;
-const TRANSPORT_EVENTS: Readonly<Record<string, true>> = {
-  connection_ready: true, config_renewed: true, connect_failed: true, connection_retired: true,
-};
+const TRANSPORT_FIELDS = ["connections", "renewals", "reconnects", "connect_failures", "retired"] as const;
 const TURN_FAILURE_CODES = [
   "zero_audio_reset",
   "partial_audio_reset",
@@ -30,15 +27,7 @@ const TURN_FAILURE_CODES = [
   "decode_rejected",
 ] as const;
 type TurnFailureCode = typeof TURN_FAILURE_CODES[number];
-const TURN_FAILURE_SET: Readonly<Record<string, true>> = {
-  zero_audio_reset: true,
-  partial_audio_reset: true,
-  first_audio_timeout: true,
-  stream_stall: true,
-  empty_audio: true,
-  protocol_error: true,
-  decode_rejected: true,
-};
+const TURN_FAILURE_SET = new Set<string>(TURN_FAILURE_CODES);
 const MAX_SETTLED = 64;
 type TransportCounters = Record<typeof TRANSPORT_FIELDS[number], number>;
 type Pending = {
@@ -100,15 +89,10 @@ export async function edgeVoices(signal: AbortSignal): Promise<Voice[]> {
 /** The authoritative deadline includes worker startup, transport, synthesis and Chromium decoding, not playback. */
 export class EdgeTts {
   private worker?: Worker;
-  private readonly transport: Record<"A" | "B", TransportCounters> = {
-    A: { connections: 0, renewals: 0, connect_failures: 0, retired: 0 },
-    B: { connections: 0, renewals: 0, connect_failures: 0, retired: 0 },
+  private readonly transport: TransportCounters = {
+    connections: 0, renewals: 0, reconnects: 0, connect_failures: 0, retired: 0,
   };
-  private readonly slots: Record<"A" | "B", [boolean, boolean, boolean]> = {
-    A: [false, false, false],
-    B: [false, false, false],
-  };
-  private reconnects = 0;
+  private readySlots = 0;
   private lastWorkerFailure?: string;
   private lastFailureDetail?: string;
   private readonly requestDetails = new Map<string, string>();
@@ -132,8 +116,7 @@ export class EdgeTts {
     totalSlots: number;
     detail?: string;
   } {
-    const readySlots = Number(this.slots.A[0]) + Number(this.slots.A[1]) + Number(this.slots.A[2])
-      + Number(this.slots.B[0]) + Number(this.slots.B[1]) + Number(this.slots.B[2]);
+    const readySlots = this.readySlots;
     let workerState: "stopped" | "starting" | "ready" | "reconnecting" | "error";
     if (!this.worker) {
       workerState = this.lastWorkerFailure ? "error" : "stopped";
@@ -141,8 +124,7 @@ export class EdgeTts {
       workerState = "starting";
     } else if (readySlots > 0) {
       workerState = "ready";
-    } else if (this.transport.A.connect_failures + this.transport.B.connect_failures > 0
-      || this.transport.A.retired + this.transport.B.retired > 0) {
+    } else if (this.transport.connect_failures > 0 || this.transport.retired > 0) {
       workerState = "reconnecting";
     } else {
       workerState = "starting";
@@ -219,8 +201,7 @@ export class EdgeTts {
     this.worker = undefined;
     this.issuedIds.clear();
     this.settled.clear();
-    this.slots.A = [false, false, false];
-    this.slots.B = [false, false, false];
+    this.readySlots = 0;
     if (worker) {
       worker.closed = true;
       clearTimeout(worker.readyTimer);
@@ -237,12 +218,8 @@ export class EdgeTts {
 
   private ensureWorker(): Worker | undefined {
     if (this.worker) return this.worker;
-    for (const counters of Object.values(this.transport)) {
-      for (const key of TRANSPORT_FIELDS) counters[key] = 0;
-    }
-    this.slots.A = [false, false, false];
-    this.slots.B = [false, false, false];
-    this.reconnects = 0;
+    for (const key of TRANSPORT_FIELDS) this.transport[key] = 0;
+    this.readySlots = 0;
     this.lastWorkerFailure = undefined;
     try {
       const { py, env } = pythonContext();
@@ -333,23 +310,20 @@ export class EdgeTts {
         this.recordTurnFailure(event, pending);
         return;
       }
-      if ("event" in event && typeof event.event === "string" && Object.hasOwn(TRANSPORT_EVENTS, event.event)
-        && "pool" in event && (event.pool === "A" || event.pool === "B")) {
-        const counters = this.transport[event.pool];
+      if ("event" in event && event.event === "transport_status") {
+        const readySlots: unknown = Reflect.get(event, "ready_slots");
+        if (typeof readySlots !== "number" || !Number.isInteger(readySlots) || readySlots < 0 || readySlots > 6
+          || Reflect.get(event, "total_slots") !== 6) return;
+        const counters: TransportCounters = { ...this.transport };
         for (const key of TRANSPORT_FIELDS) {
           const value: unknown = Reflect.get(event, key);
-          if (typeof value === "number" && Number.isSafeInteger(value) && value >= counters[key] && value <= 1000000000) {
-            counters[key] = value;
-          }
+          const maximum = key === "reconnects" ? 1000000000 : 2000000000;
+          if (typeof value !== "number" || !Number.isSafeInteger(value) || value < this.transport[key]
+            || value > maximum) return;
+          counters[key] = value;
         }
-        const slot: unknown = Reflect.get(event, "slot");
-        if (typeof slot === "number" && (slot === 0 || slot === 1 || slot === 2)) {
-          if (event.event === "connection_ready") this.slots[event.pool][slot] = true;
-          else if (event.event === "connection_retired") this.slots[event.pool][slot] = false;
-        }
-        if (event.event === "connection_ready" && "reconnect" in event && event.reconnect === true) {
-          this.reconnects = Math.min(1000000000, this.reconnects + 1);
-        }
+        for (const key of TRANSPORT_FIELDS) this.transport[key] = counters[key];
+        this.readySlots = readySlots;
         this.notifyStatus();
       }
       return;
@@ -524,7 +498,7 @@ export class EdgeTts {
       || typeof index !== "number" || !Number.isSafeInteger(index) || index < 0 || index > 4000
       || typeof attempt !== "string" || !ATTEMPT_ID.test(attempt)
       || (pool !== "A" && pool !== "B")
-      || typeof code !== "string" || !Object.hasOwn(TURN_FAILURE_SET, code)
+      || typeof code !== "string" || !TURN_FAILURE_SET.has(code)
       || typeof audioBytes !== "number" || !Number.isSafeInteger(audioBytes) || audioBytes < 0 || audioBytes > MAX_FRAME_BYTES
       || typeof draining !== "boolean") {
       return;
@@ -565,10 +539,10 @@ export class EdgeTts {
     try {
       this.note?.(`[voice] Edge ${status} request=${JSON.stringify(pending.id)} elapsed_ms=${elapsed} chars=${pending.text.length}`
         + ` candidates=${pending.attempts.size} accepted=${pending.accepted.size} audio_bytes=${pending.audioBytes}`
-        + ` connections=${this.transport.A.connections + this.transport.B.connections}`
-        + ` renewals=${this.transport.A.renewals + this.transport.B.renewals} reconnects=${this.reconnects}`
-        + ` connect_failures=${this.transport.A.connect_failures + this.transport.B.connect_failures}`
-        + ` retired=${this.transport.A.retired + this.transport.B.retired}`
+        + ` connections=${this.transport.connections}`
+        + ` renewals=${this.transport.renewals} reconnects=${this.transport.reconnects}`
+        + ` connect_failures=${this.transport.connect_failures}`
+        + ` retired=${this.transport.retired}`
         + ` diagnostics=${pending.diagnostics}${failedInfo}${error ? ` reason=${JSON.stringify(error)}` : ""}`,
       this.attribution(pending, status));
     } catch { /* diagnostics must not interrupt speech */ }
@@ -581,8 +555,7 @@ export class EdgeTts {
       this.worker = undefined;
       this.issuedIds.clear();
       this.settled.clear();
-      this.slots.A = [false, false, false];
-      this.slots.B = [false, false, false];
+      this.readySlots = 0;
       this.lastWorkerFailure = detail;
     }
     clearTimeout(worker.readyTimer);

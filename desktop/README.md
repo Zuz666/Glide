@@ -166,7 +166,7 @@ If you run Glide from source with `start-glide.cmd`, without the desktop app, th
 
   Keys go under Settings > API keys. Other online services fall back to the Windows voice for a failed line. Edge-TTS falls back only for the text that has not started playing; an already playing fragment finishes without repeating its beginning.
 
-  Edge-TTS uses one persistent speech worker with two pools of three connections. Short sentences stay whole; long sentences split near natural punctuation or word boundaries. Two copies of each fragment run in parallel, and Chromium must decode a completed copy before it can win. Fragments play in text order as soon as they are ready. If both copies fail, that fragment gets at most one additional pair within the same 15-second online-synthesis deadline, including worker startup, queueing and decoding. Playback time is not part of that deadline.
+  Edge-TTS uses one persistent speech worker with two pools of three connections. Short sentences stay whole; long sentences split near natural punctuation or word boundaries. Two copies of each fragment run in parallel, and Chromium must decode a completed copy before it can win. Fragments play in text order as soon as they are ready. Each pool independently makes at most two attempts per fragment, with a short retry delay when the remaining budget permits; a silent copy in one pool does not block the other's retry. All attempts share the same 15-second online-synthesis deadline, including worker startup, queueing and decoding. Playback time is not part of that deadline.
 
   Idle connections receive configuration messages approximately every 20 seconds; broken connections reconnect with backoff. Losing copies may finish in the background to preserve their connections, but yield to queued work and the original deadline. Push-to-talk, urgent speech and tag cancellation also cancel synthesis. Muting, switching away from Edge-TTS or quitting closes the worker. No external FFmpeg executable is required. This is an unofficial service: connection renewal and duplicate requests cannot guarantee availability.
 - **Push-to-talk recognition:**
@@ -175,6 +175,14 @@ If you run Glide from source with `start-glide.cmd`, without the desktop app, th
 
   An online engine that fails falls back to the offline one for that question.
 - **Whisper set-up:** the model isn't in the installer. The app checks Whisper at every start, downloads the picked model into `%APPDATA%\Glide to 60\models` (kept across updates and reinstalls), and restarts the coach to use it. Progress shows in the footer. Settings > Push-to-talk lists every model with its size, to download ahead of time or delete.
+
+### Edge speech ownership
+
+`companion/edge_tts_worker.py` owns request scheduling, fragment acceptance and retry policy. Its private transport in `companion/edge_tts_pool.py` accepts immutable attempt context and owns connections, slot acquisition/release, turn timeouts and draining losers. Connections are released before waiting for Chromium's decoder verdict; a completed request can still have a losing turn draining within its original deadline.
+
+The transport publishes aggregate connected capacity and transport counters, not individual slot events. Connected capacity includes busy and draining connections. `desktop/src/main/edge-tts.ts` validates these snapshots and the complete fragment protocol, retains the independent pre-spawn watchdog, and records safe request failure tallies and late drain failures. It does not reconstruct pool state.
+
+The renderer trusts main's validated fragment plan, but still owns local decoding, accepted-candidate identity, ordered playback and the exact unstarted text suffix used by SAPI5 fallback. Cross-provider status composition remains in main: audible playback outranks background synthesis, and readiness updates do not extend fallback/error holds. Public speech IPC and player settings are unchanged.
 
 ## Dates and times
 

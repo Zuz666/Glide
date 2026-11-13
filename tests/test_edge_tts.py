@@ -28,12 +28,20 @@ const child = `
   fs.appendFileSync(audit, JSON.stringify({op:'spawn', pid:process.pid})+'\\n');
   const emit = x => process.stdout.write(JSON.stringify(x)+'\\n');
   const requests = new Map();
-  const ready = () => emit({type:'ready'});
+  const transport = fields => emit({type:'diagnostic',event:'transport_status',ready_slots:0,total_slots:6,
+    connections:0,renewals:0,reconnects:0,connect_failures:0,retired:0,...fields});
+  const ready = () => { emit({type:'ready'}); transport({}); };
   if (scenario === 'startup' || scenario === 'startup-deadline') setTimeout(ready, scenario === 'startup' ? 160 : 15500);
   else ready();
   readline.createInterface({input:process.stdin}).on('line', line => {
     const c = JSON.parse(line); fs.appendFileSync(audit, JSON.stringify(c)+'\\n');
-    if (c.op === 'shutdown') { process.exit(); return; }
+    if (c.op === 'shutdown') {
+      if (scenario === 'transport-status') {
+        transport({ready_slots:6,connections:99});
+        fs.appendFileSync(audit, JSON.stringify({op:'stale-generation-snapshot'})+'\\n');
+      }
+      process.exit(); return;
+    }
     if (c.op === 'start') {
       requests.set(c.id,c);
       if (scenario === 'crash') {
@@ -42,7 +50,43 @@ const child = `
       }
       if (scenario === 'malformed') { process.stdout.write('not-json PRIVATE-TOKEN-DO-NOT-LOG\\n'); return; }
       if (scenario === 'oversize') { process.stdout.write('x'.repeat(17*1024*1024)); return; }
+      if (scenario === 'failure-crash') {
+        emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-1',pool:'A',
+          code:'partial_audio_reset',audio_bytes:12,draining:false});
+        process.exit(9); return;
+      }
+      if (scenario.startsWith('plan-')) {
+        const plans = {
+          'plan-gap':[{index:0,start:0,end:1},{index:1,start:2,end:c.text.length}],
+          'plan-overlap':[{index:0,start:0,end:3},{index:1,start:2,end:c.text.length}],
+          'plan-surrogate':[{index:0,start:0,end:2},{index:1,start:2,end:c.text.length}],
+          'plan-tail':[{index:0,start:0,end:c.text.length-1}],
+          'plan-index':[{index:1,start:0,end:c.text.length}],
+          'plan-empty':[],
+        };
+        emit({type:'plan',id:c.id,fragments:plans[scenario]}); return;
+      }
       if (scenario === 'hang') return;
+      if (scenario === 'transport-status') {
+        const baseline = {ready_slots:6,connections:10,renewals:2,reconnects:3,connect_failures:4,retired:5};
+        const changes = {
+          baseline, missing:{...baseline,retired:undefined},
+          negative:{...baseline,ready_slots:0,connections:11,retired:-1},
+          regression:{...baseline,ready_slots:0,connections:11,renewals:1},
+          reconnectregression:{...baseline,ready_slots:0,connections:11,reconnects:2},
+          string:{...baseline,ready_slots:0,connections:11,retired:${JSON.stringify(secret)}},
+          fraction:{...baseline,ready_slots:0,connections:11,renewals:2.5},
+          capacity:{...baseline,ready_slots:7}, total:{...baseline,total_slots:7},
+          negativecapacity:{...baseline,ready_slots:-1}, boolean:{...baseline,connections:true},
+          bound:{...baseline,ready_slots:0,connections:2000000001},
+          reconnectbound:{...baseline,ready_slots:0,reconnects:1000000001},
+          safeextras:{...baseline,ready_slots:5,connections:11,error:${JSON.stringify(secret)},url:'wss://secret/',text:c.text},
+          maximum:{ready_slots:0,connections:2000000000,renewals:2000000000,reconnects:1000000000,
+            connect_failures:2000000000,retired:2000000000},
+        };
+        transport(changes[c.id]);
+        emit({type:'end',id:c.id,reason:'failed'}); return;
+      }
       if (scenario === 'unsafe-error') {
         emit({type:'diagnostic',id:c.id,event:'failed',url:'wss://secret/',error:c.text,token:'SECRET'});
         emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-1',pool:'A',
@@ -50,8 +94,7 @@ const child = `
         emit({type:'end',id:c.id,reason:'failed',error:'wss://service/?token=PRIVATE-TOKEN-DO-NOT-LOG '+c.text}); return;
       }
       if (scenario === 'turn-failures') {
-        emit({type:'diagnostic',event:'connection_ready',pool:'A',slot:0,connections:3,renewals:0,connect_failures:0,retired:0});
-        emit({type:'diagnostic',event:'connection_ready',pool:'B',slot:0,connections:3,renewals:0,connect_failures:0,retired:0});
+        transport({ready_slots:2,connections:6});
         emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-1',pool:'A',code:'zero_audio_reset',audio_bytes:0,draining:false});
         emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'B-1',pool:'B',code:'first_audio_timeout',audio_bytes:0,draining:false});
         emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-2',pool:'A',code:'zero_audio_reset',audio_bytes:0,draining:false});
@@ -59,11 +102,12 @@ const child = `
         emit({type:'end',id:c.id,reason:'failed'}); return;
       }
       if (scenario === 'hedged-drain') {
-        for (let s=0;s<3;s++) {
-          emit({type:'diagnostic',event:'connection_ready',pool:'A',slot:s,connections:s+1,renewals:0,connect_failures:0,retired:0});
-          emit({type:'diagnostic',event:'connection_ready',pool:'B',slot:s,connections:s+1,renewals:0,connect_failures:0,retired:0});
-        }
+        transport({ready_slots:6,connections:6});
         emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-1',pool:'A',code:'zero_audio_reset',audio_bytes:0,draining:false});
+      }
+      if (c.id === 'decode-deadline') {
+        emit({type:'diagnostic',id:c.id,event:'turn_failed',index:0,attempt:'A-1',pool:'A',
+          code:'first_audio_timeout',audio_bytes:0,draining:false});
       }
       if (c.id === 'mid-stream-fail') {
         emit({type:'plan',id:c.id,fragments:[{index:0,start:0,end:3},{index:1,start:3,end:c.text.length}]});
@@ -90,7 +134,7 @@ const child = `
           emit({type:'end',id:c.id,reason:'failed'});
           if (c.id === 'owned') {
             setTimeout(() => {
-              emit({type:'diagnostic',event:'connection_ready',pool:'A',slot:1,connections:2,renewals:0,connect_failures:0,retired:0});
+              transport({ready_slots:1,connections:2});
             }, 60);
           }
         }
@@ -179,6 +223,63 @@ function request(h,id,body=text,decode=true) {
     h.close();
   }
 
+  for (const name of ['plan-gap','plan-overlap','plan-surrogate','plan-tail','plan-index','plan-empty']) {
+    scenario=name; h=host(); first=request(h,'invalid-'+name,'A😀 B');
+    assert.equal((await first.ended).reason,'failed',name);
+    assert.deepEqual(first.events.map(e=>e.type),['end'],name+' must not forward a malformed plan');
+    scenario='normal';
+    assert.equal((await request(h,'replacement-'+name).ended).reason,'complete',
+      name+' must terminate the faulty worker generation');
+    h.close();
+  }
+
+  logs.length=0; scenario='failure-crash'; h=host();
+  first=request(h,'failure-before-crash');
+  assert.equal((await first.ended).reason,'failed');
+  const crashLog=logs.find(([line])=>line.includes('Edge failed')&&line.includes('"failure-before-crash"'));
+  assert(crashLog[0].includes('failed_turns=1 failure_codes="partial_audio_reset:1"'),crashLog[0]);
+  assert.equal(h.lastRequestDetail('failure-before-crash'),'partial_audio_reset:1');
+  h.close();
+
+  // Aggregate snapshots are atomic, bounded, monotonic and privacy-safe.
+  logs.length=0; scenario='transport-status'; h=host();
+  first=request(h,'baseline'); await first.ended;
+  assert.equal(h.statusSnapshot().readySlots,6);
+  assert.equal(h.statusSnapshot().workerState,'ready');
+  for (const id of ['missing','negative','regression','reconnectregression','string','fraction','capacity',
+    'negativecapacity','boolean','total','bound','reconnectbound','safeextras']) {
+    first=request(h,id); await first.ended;
+    assert.equal(h.statusSnapshot().readySlots,id==='safeextras'?5:6,id+' readiness');
+    const terminal=logs.find(([line])=>line.includes('Edge failed')&&line.includes('"'+id+'"'))[0];
+    const expectedCounters=id==='safeextras'?'connections=11 renewals=2 reconnects=3 connect_failures=4 retired=5'
+      :'connections=10 renewals=2 reconnects=3 connect_failures=4 retired=5';
+    assert(terminal.includes(expectedCounters),terminal);
+    for (const value of [JSON.stringify(first.events),JSON.stringify(logs),JSON.stringify(h.statusSnapshot())]) {
+      for (const forbidden of [secret,text,'wss://secret']) assert(!value.includes(forbidden),id+' privacy');
+    }
+  }
+  first=request(h,'maximum'); await first.ended;
+  assert.equal(h.statusSnapshot().workerState,'reconnecting');
+  const maximumLog=logs.find(([line])=>line.includes('Edge failed')&&line.includes('"maximum"'))[0];
+  assert(maximumLog.includes('connections=2000000000 renewals=2000000000 reconnects=1000000000'
+    +' connect_failures=2000000000 retired=2000000000'),maximumLog);
+  h.close();
+  const replacementStatuses=[];
+  const stopReplacementStatuses=h.onStatusChange(()=>replacementStatuses.push(h.statusSnapshot()));
+  scenario='normal'; h.configure(true);
+  first=request(h,'new-generation',text,false);
+  await until(()=>first.events.some(e=>e.type==='candidate'));
+  assert.equal(h.statusSnapshot().readySlots,0,'replacement generation clears connected capacity');
+  assert.equal(h.statusSnapshot().workerState,'starting','replacement generation clears failure counters');
+  assert(logs.find(([line])=>line.includes('Edge started')&&line.includes('"new-generation"'))[0]
+    .includes('connections=0 renewals=0 reconnects=0 connect_failures=0 retired=0'));
+  await until(()=>readAudit().some(c=>c.op==='stale-generation-snapshot'));
+  await pause(30);
+  assert.equal(h.statusSnapshot().readySlots,0,'closed generation snapshots cannot restore old capacity');
+  assert(!replacementStatuses.some(s=>s.readySlots!==0),'closed generation must never publish stale readiness');
+  stopReplacementStatuses();
+  h.close();
+
   // Active turn_failed codes appear on Edge failed & Edge complete, and post-completion draining failures log separately.
   logs.length=0; scenario='turn-failures'; h=host();
   first=request(h,'all-failed'); assert.equal((await first.ended).reason,'failed');
@@ -190,7 +291,11 @@ function request(h,id,body=text,decode=true) {
   h.close();
 
   logs.length=0; scenario='hedged-drain'; h=host();
-  first=request(h,'hedged-win'); assert.equal((await first.ended).reason,'complete');
+  first=request(h,'hedged-win',text,false);
+  await until(()=>first.events.some(e=>e.type==='candidate'));
+  assert.equal(h.statusSnapshot().readySlots,6,'connected capacity remains ready during active synthesis');
+  h.decoded('hedged-win','A-1',true);
+  assert.equal((await first.ended).reason,'complete');
   const completeLog=logs.find(([l])=>l.includes('Edge complete')&&l.includes('"hedged-win"'));
   assert(completeLog && completeLog[0].includes('failed_turns=1') && completeLog[0].includes('failure_codes="zero_audio_reset:1"'),
     'hedged Edge complete must preserve pre-completion failed_turns');
@@ -261,6 +366,11 @@ function request(h,id,body=text,decode=true) {
   assert.throws(()=>handlers.get('tts:edgeStart')(spoof,'frame','speech'),/own pages/);
   const outside=new Window(); outside.mainFrame.url='https://untrusted.invalid/';
   assert.throws(()=>invoke(outside,'tts:edgeStart','outside','speech'),/own pages/);
+  for (const [id, oversized] of [['overlong','x'.repeat(4001)],['surrogate-limit','x'.repeat(3999)+String.fromCodePoint(0x1f600)]]) {
+    assert.throws(()=>invoke(a,'tts:edgeStart',id,oversized),/4000|limit/i,
+      'IPC must reject the original line, not synthesize a silently truncated prefix');
+    assert.equal(a.listenerCount('did-start-navigation'),0,'rejected requests release sender ownership');
+  }
   invoke(a,'tts:edgeStart','owned','speech');
   assert.throws(()=>invoke(b,'tts:edgeStart','owned','different'),/duplicate/i);
   assert.throws(()=>invoke(b,'tts:edgeDecoded','owned','A-1',true),/another window/i);
@@ -292,14 +402,14 @@ function request(h,id,body=text,decode=true) {
   assert.equal(heldFb.readySlots, 0);
 
   const heldAt = heldFb.updatedAt;
-  // 1) Real pool-slot diagnostic arriving mid-hold must republish readySlots while preserving the original hold updatedAt.
+  // 1) Transport readiness arriving mid-hold must republish readySlots without changing the hold updatedAt.
   await until(async () => (await invoke(b, 'tts:status:get')).readySlots === 1);
   const heldAfterSlot = await invoke(b, 'tts:status:get');
   assert.equal(heldAfterSlot.readySlots, 1);
   assert.equal(b.statuses.at(-1).readySlots, 1);
   assert.equal(heldAfterSlot.phase, 'fallback');
   assert.equal(heldAfterSlot.holding, true);
-  assert.equal(heldAfterSlot.updatedAt, heldAt, 'pool slot diagnostic during hold must not reset hold updatedAt');
+  assert.equal(heldAfterSlot.updatedAt, heldAt, 'transport snapshot during hold must not reset hold updatedAt');
   assert.equal(b.statuses.at(-1).updatedAt, heldAt);
 
   // 2) Start playback A FIRST, then queue prefetch B SECOND: audible speaking A must still outrank later-inserted generating B.
@@ -391,6 +501,8 @@ function request(h,id,body=text,decode=true) {
   finally { Object.defineProperty(globalThis,'performance',descriptor); }
   const deadlineLog=logs.find(([l])=>l.includes('Edge deadline')&&l.includes('"decode-deadline"'));
   assert(deadlineLog,'expected Edge deadline log');
+  assert(deadlineLog[0].includes('failed_turns=1 failure_codes="first_audio_timeout:1"'),deadlineLog[0]);
+  assert.equal(h.lastRequestDetail('decode-deadline'),'first_audio_timeout:1');
   assert.equal((await first.ended).reason,'deadline');
   h.decoded('decode-deadline','A-1',true); await pause(25);
   assert(!first.events.some(e=>e.type==='accepted'),'a late decode verdict cannot produce success');

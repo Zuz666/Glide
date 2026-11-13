@@ -214,6 +214,36 @@ for (const cancelledId of [old, urgent, muted]) {
   assert(!statesFor(cancelledId).some(s => s.state === 'fallback' || s.state === 'error'),
     'cancellation/barge-in/mute must never report fallback or error');
 }
+
+// Candidate identity and the local decoder verdict remain mandatory even with main-validated structure.
+speech.configure(false, settings);
+waiting = speech.speakAndWait('Decoded only.', 'guide'); id = starts.at(-1).id;
+plan(id, [[0, 13]]);
+const beforeIdentityPlayers = players.length, beforeIdentityDecodes = decodeCalls.length;
+candidate(id, 0, 'identity', 0, 13, 'delayed-identity');
+candidate(id, 0, 'identity', 0, 13, 'duplicate');
+accepted(id, 0, 'identity'); await tick();
+assert.equal(players.length, beforeIdentityPlayers, 'acceptance cannot play before the local decode finishes');
+assert.equal(decodeCalls.length, beforeIdentityDecodes + 1, 'duplicate attempt cannot replace a decoding candidate');
+delayedDecode.get('delayed-identity')({ duration: 1, length: 1, numberOfChannels: 1 }); await tick();
+accepted(id, 1, 'identity'); await tick();
+assert.equal(players.length, beforeIdentityPlayers, 'acceptance must name the decoded fragment');
+accepted(id, 0, 'identity'); end(id, 'complete'); await tick();
+assert.equal(players.length, beforeIdentityPlayers + 1);
+players.at(-1).end(); await waiting;
+
+// Main completion cannot substitute for renderer-local acceptance; a late decoder cannot revive fallback.
+waiting = speech.speakAndWait('Pending.', 'guide'); id = starts.at(-1).id;
+plan(id, [[0, 8]]); candidate(id, 0, 'pending', 0, 8, 'delayed-pending');
+const beforePendingVerdicts = verdicts.length, beforePendingPlayers = players.length, beforePendingNative = native.length;
+end(id, 'complete'); await waiting;
+assert.equal(native.length, beforePendingNative + 1);
+assert.equal(native.at(-1).text, 'Pending.');
+delayedDecode.get('delayed-pending')({ duration: 1, length: 1, numberOfChannels: 1 });
+accepted(id, 0, 'pending'); await tick();
+assert.equal(verdicts.length, beforePendingVerdicts);
+assert.equal(players.length, beforePendingPlayers);
+assert.equal(liveListeners, 0);
 console.log('OK');
 """
 

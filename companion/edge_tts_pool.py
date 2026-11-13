@@ -1,4 +1,4 @@
-"""Bounded, single-turn Edge WebSocket pools used by the stdio worker."""
+"""Private structured transport for the Edge stdio worker."""
 import asyncio
 import heapq
 from dataclasses import dataclass, field
@@ -40,6 +40,16 @@ class WorkerConfig:
     stall_timeout: float = 4.0
     retry_delay: float = 0.25
 
+@dataclass(frozen=True)
+class SynthesisJob:
+    request_id: str
+    request_order: int
+    fragment_index: int
+    attempt_id: str
+    pool: str
+    deadline: float
+
+
 
 @dataclass(eq=False)
 class Connection:
@@ -51,7 +61,7 @@ class Connection:
     receiver: asyncio.Task[None] | None = None
     successful_turn: bool = False
     renewer: asyncio.Task[None] | None = None
-    drain: asyncio.Task[bool] | None = None
+    drain: asyncio.Task | None = None
 
 
 @dataclass
@@ -65,6 +75,14 @@ class Turn:
     has_audio: bool = False
     preempted: bool = False
     failure_code: str | None = None
+
+
+@dataclass
+class _Attempt:
+    job: SynthesisJob
+    task: asyncio.Task
+    connection: Connection | None = None
+    draining: bool = False
 
 
 def classify_turn_error(error: Exception, has_audio: bool) -> str:
@@ -113,19 +131,20 @@ async def speech_config(ws):
             "outputFormat": "audio-24khz-48kbitrate-mono-mp3"}}}}, separators=(",", ":")) + "\r\n")
 
 
-class Pool:
-    def __init__(self, name, session, config, diagnostic):
+class _Pool:
+    def __init__(self, name, session, config, diagnostic, changed):
         self.name = name
         self.session = session
         self.config = config
         self.diagnostic = diagnostic
+        self.changed = changed
         self.slots: list[Connection | None] = [None] * 3
         self.waiters = []
         self.queue_sequence = 0
         self.tasks = set()
         self.closed = False
         self.generations = [0] * 3
-        self.counts = dict(connections=0, renewals=0, connect_failures=0, retired=0)
+        self.counts = dict(connections=0, renewals=0, reconnects=0, connect_failures=0, retired=0)
 
     def track(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -162,9 +181,10 @@ class Pool:
                 connection = Connection(slot, ws)
                 self.slots[slot] = connection
                 self.counts["connections"] += 1
-                self.diagnostic("connection_ready", pool=self.name, slot=slot,
-                                reconnect=self.generations[slot] > 0, **self.counts)
+                if self.generations[slot] > 0:
+                    self.counts["reconnects"] += 1
                 self.generations[slot] += 1
+                self.changed()
                 connection.receiver = self.track(self.receive(connection))
                 connection.renewer = self.track(self.renew(connection))
                 connected_at = time.monotonic()
@@ -174,10 +194,9 @@ class Pool:
                     delay = self.config.backoff_initial
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
+            except Exception:
                 self.counts["connect_failures"] += 1
-                self.diagnostic("connect_failed", pool=self.name, slot=slot,
-                                error_type=type(error).__name__, **self.counts)
+                self.changed()
             finally:
                 if connection is not None:
                     self.retire(connection)
@@ -194,7 +213,7 @@ class Pool:
             self.slots[connection.slot] = None
         connection.stopped.set()
         self.counts["retired"] += 1
-        self.diagnostic("connection_retired", pool=self.name, slot=connection.slot, **self.counts)
+        self.changed()
         if connection.turn is not None and not connection.turn.done.done():
             connection.turn.done.set_result(False)
             connection.turn.activity.set()
@@ -228,12 +247,12 @@ class Pool:
                     connection.drain.cancel()
                     self.retire(connection)
 
-    async def acquire(self, copy):
+    async def acquire(self, job):
         if self.closed:
-            raise TransportFailure("shutdown")
+            raise asyncio.CancelledError
         future = asyncio.get_running_loop().create_future()
         self.queue_sequence += 1
-        entry = (copy.request.order, copy.fragment.span["index"], self.queue_sequence, future)
+        entry = (job.request_order, job.fragment_index, self.queue_sequence, future)
         heapq.heappush(self.waiters, entry)
         self.dispatch()
         try:
@@ -258,11 +277,6 @@ class Pool:
         connection.busy = False
         self.dispatch()
 
-    def allow_drain(self, connection, task):
-        if connection is None or self.waiters or connection.stopped.is_set():
-            return False
-        connection.drain = task
-        return True
 
     async def renew(self, connection):
         try:
@@ -275,15 +289,13 @@ class Pool:
                     async with asyncio.timeout(self.config.connect_timeout):
                         await speech_config(connection.ws)
                     self.counts["renewals"] += 1
-                    self.diagnostic("config_renewed", pool=self.name, slot=connection.slot, **self.counts)
+                    self.changed()
                 finally:
                     connection.busy = False
                 self.dispatch()
         except asyncio.CancelledError:
             raise
-        except Exception as error:
-            self.diagnostic("renewal_failed", pool=self.name, slot=connection.slot,
-                            error_type=type(error).__name__)
+        except Exception:
             self.retire(connection)
 
     async def receive(self, connection):
@@ -353,13 +365,12 @@ class Pool:
             turn = connection.turn
             if turn is not None and not turn.ended and turn.failure_code is None:
                 turn.failure_code = classify_turn_error(error, bool(turn.audio))
-            self.diagnostic("socket_retired", pool=self.name, slot=connection.slot,
-                            error_type=type(error).__name__)
             self.retire(connection)
 
-    async def synthesize(self, ssml, copy):
-        connection = await self.acquire(copy)
-        copy.connection = connection
+    async def synthesize(self, ssml, attempt):
+        job = attempt.job
+        connection = await self.acquire(job)
+        attempt.connection = connection
         turn = Turn(connect_id(), asyncio.get_running_loop().create_future())
         connection.turn = turn
         try:
@@ -397,19 +408,20 @@ class Pool:
                 code = turn.failure_code or ("partial_audio_reset" if turn.audio else "zero_audio_reset")
                 turn.failure_code = code
                 raise TransportFailure(code)
-            return bytes(turn.audio)
+            return None if attempt.draining else bytes(turn.audio)
         except TransportFailure as error:
-            if (not turn.preempted and not self.closed and not copy.request.cancelled
+            if (not turn.preempted and not self.closed and not attempt.task.cancelling()
+                    and time.monotonic() < job.deadline
                     and error.args and error.args[0] in FAILURE_CODES):
                 self.diagnostic(
                     "turn_failed",
-                    id=copy.request.id,
-                    index=copy.fragment.span["index"],
-                    attempt=copy.attempt,
-                    pool=self.name,
+                    id=job.request_id,
+                    index=job.fragment_index,
+                    attempt=job.attempt_id,
+                    pool=job.pool,
                     code=error.args[0],
                     audio_bytes=len(turn.audio),
-                    draining=bool(copy.draining),
+                    draining=attempt.draining,
                 )
             if not turn.ended:
                 self.retire(connection)
@@ -421,7 +433,7 @@ class Pool:
         finally:
             # Exactly the acquiring coroutine releases the lease, including when
             # acquire's future resolved on the same turn as task cancellation.
-            copy.connection = None
+            attempt.connection = None
             self.release(connection)
 
     async def close(self):
@@ -436,4 +448,75 @@ class Pool:
         for task in tuple(self.tasks):
             task.cancel()
         while self.tasks:
-            await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
+            tasks = tuple(self.tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Gathering completed tasks need not yield to their discard callbacks.
+            self.tasks.difference_update(tasks)
+
+
+class Transport:
+    """Own connection lifetimes; callers own the tasks awaiting synthesis."""
+
+    def __init__(self, config, diagnostic):
+        self.config = config
+        self.diagnostic = diagnostic
+        self._pools = {}
+        self._attempts = {}
+        self._session = None
+        self._closed = False
+
+    async def open(self):
+        self._session = aiohttp.ClientSession(
+            trust_env=True, timeout=aiohttp.ClientTimeout(total=None, sock_connect=self.config.connect_timeout))
+        self._pools = {
+            name: _Pool(name, self._session, self.config, self.diagnostic, self._status)
+            for name in ("A", "B")
+        }
+        self._status()
+        for pool in self._pools.values():
+            pool.open()
+
+    def _status(self):
+        counts = {key: sum(pool.counts[key] for pool in self._pools.values())
+                  for key in ("connections", "renewals", "reconnects", "connect_failures", "retired")}
+        ready = sum(connection is not None and not connection.stopped.is_set() and not connection.ws.closed
+                    for pool in self._pools.values() for connection in pool.slots)
+        self.diagnostic("transport_status", ready_slots=ready, total_slots=6, **counts)
+
+    async def synthesize(self, job: SynthesisJob, ssml: str) -> bytes | None:
+        if self._closed:
+            raise asyncio.CancelledError
+        task = asyncio.current_task()
+        assert task is not None
+        attempt = _Attempt(job, task)
+        self._attempts[job.attempt_id] = attempt
+        try:
+            async with asyncio.timeout_at(job.deadline):
+                return await self._pools[job.pool].synthesize(ssml, attempt)
+        finally:
+            # The pool has already reconciled any granted lease and released it.
+            del self._attempts[job.attempt_id]
+
+    def allow_drain(self, attempt_id: str) -> bool:
+        attempt = self._attempts.get(attempt_id)
+        if attempt is None or attempt.task.done() or attempt.task.cancelling():
+            return False
+        connection = attempt.connection
+        if (connection is None or connection.stopped.is_set() or connection.ws.closed
+                or connection.turn is None or connection.turn.done.done()
+                or self._pools[attempt.job.pool].waiters
+                or time.monotonic() >= attempt.job.deadline):
+            return False
+        attempt.draining = True
+        connection.drain = attempt.task
+        return True
+
+    async def close(self):
+        self._closed = True
+        tasks = [attempt.task for attempt in self._attempts.values()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(pool.close() for pool in self._pools.values()))
+        if self._session is not None:
+            await self._session.close()

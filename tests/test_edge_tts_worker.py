@@ -31,6 +31,7 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         self.transports = {}
         self.turns = []
         self.configs = []
+        self.config_events = asyncio.Queue()
         self.active = 0
         self.peak = 0
         self.behavior = self.reply
@@ -81,6 +82,7 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
                 fields = dict(line.split(":", 1) for line in headers.split("\r\n"))
                 if fields["Path"] == "speech.config":
                     self.configs.append((ws, json.loads(body)))
+                    self.config_events.put_nowait(ws)
                 elif fields["Path"] == "ssml":
                     self.turns.append((ws, fields["X-RequestId"], body))
                     self.active += 1
@@ -122,6 +124,133 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(base64.b64decode(candidate["audio"]), b"complete-mp3")
         self.command(op="decoded", id=id, attempt=candidate["attempt"], ok=True)
         return candidate, await self.event("accepted", id)
+
+    async def status(self, *, ready_slots=None, renewals=None, connect_failures=None, timeout=2):
+        async with asyncio.timeout(timeout):
+            while True:
+                event = await self.event("diagnostic", None, timeout)
+                if event.get("event") != "transport_status":
+                    continue
+                if ready_slots is not None and event["ready_slots"] != ready_slots:
+                    continue
+                if renewals is not None and event["renewals"] < renewals:
+                    continue
+                if connect_failures is not None and event["connect_failures"] < connect_failures:
+                    continue
+                return event
+
+    async def test_command_readiness_precedes_initial_disconnected_transport_snapshot(self):
+        await self.worker.close()
+        self.block_connect = asyncio.Event()
+        while not self.events.empty():
+            self.events.get_nowait()
+        self.worker = EdgeWorker(self.events.put_nowait, WorkerConfig(endpoint=self.endpoint))
+        await self.worker.open()
+        self.assertEqual(await self.event("ready", None), {"type": "ready"})
+        initial = await self.status(ready_slots=0)
+        self.assertEqual(initial, {
+            "type": "diagnostic", "event": "transport_status",
+            "ready_slots": 0, "total_slots": 6, "connections": 0,
+            "renewals": 0, "reconnects": 0, "connect_failures": 0, "retired": 0,
+        })
+        self.start(id="queued")
+        self.command(op="cancel", id="queued")
+        self.assertEqual((await self.event("end", "queued"))["reason"], "cancelled")
+        self.block_connect.set()
+        connected = await self.status(ready_slots=6)
+        self.assertEqual(connected["connections"], 6)
+        self.assertEqual(connected["reconnects"], 0)
+
+    async def test_busy_and_completed_draining_turns_remain_connected_capacity(self):
+        connected = await self.status(ready_slots=6)
+        both_started = asyncio.Event()
+        send_winner = asyncio.Event()
+        drop_loser = asyncio.Event()
+        count = 0
+
+        async def held_hedge(ws, request_id, body):
+            nonlocal count
+            count += 1
+            if count == 1:
+                await both_started.wait()
+                await send_winner.wait()
+                await self.audio(ws, request_id)
+            else:
+                both_started.set()
+                await drop_loser.wait()
+                await ws.close()
+
+        self.behavior = held_hedge
+        self.start()
+        try:
+            await asyncio.wait_for(both_started.wait(), 1)
+            busy = await self.status(renewals=connected["renewals"] + 1)
+            self.assertEqual(busy["ready_slots"], 6, "Busy turns still count as connected")
+            send_winner.set()
+            await self.accept()
+            self.assertEqual((await self.event("end"))["reason"], "complete")
+            draining = await self.status(renewals=busy["renewals"] + 1)
+            self.assertEqual(draining["ready_slots"], 6, "A background drain remains connected")
+            self.command(op="cancel", id="r")  # Completed requests cannot cancel their drains.
+            self.block_connect = asyncio.Event()
+            drop_loser.set()
+            retired = await self.status(ready_slots=5)
+            self.assertEqual(retired["retired"], draining["retired"] + 1)
+            failure = await self.event("diagnostic", "r")
+            self.assertEqual(failure["event"], "turn_failed")
+            self.assertEqual(failure["code"], "zero_audio_reset")
+            self.assertIs(failure["draining"], True)
+            self.block_connect.set()
+            recovered = await self.status(ready_slots=6)
+            self.assertEqual(recovered["connections"], connected["connections"] + 1)
+            self.assertEqual(recovered["reconnects"], 1)
+        finally:
+            send_winner.set()
+            drop_loser.set()
+            if self.block_connect is not None:
+                self.block_connect.set()
+
+    async def test_completed_network_turn_releases_capacity_before_decoder_verdict(self):
+        await self.status(ready_slots=6)
+        candidates = []
+        for index in range(4):
+            request_id = "decode%d" % index
+            self.start(id=request_id)
+            candidates.append((request_id, await self.event("candidate", request_id)))
+        # Eight turns exceed the six sockets, yet all four requests can reach
+        # Chromium while earlier candidates are still awaiting their verdicts.
+        self.assertGreaterEqual(len(self.turns), 7)
+        self.assertEqual(len(self.connections), 6)
+        for request_id, candidate in candidates:
+            self.command(op="decoded", id=request_id, attempt=candidate["attempt"], ok=True)
+            self.assertEqual((await self.event("end", request_id))["reason"], "complete")
+
+    async def test_decoder_verdict_before_candidate_cannot_commit_fragment(self):
+        started = asyncio.Queue()
+        release = asyncio.Event()
+
+        async def held(ws, request_id, body):
+            started.put_nowait(None)
+            await release.wait()
+            await self.audio(ws, request_id)
+
+        self.behavior = held
+        self.start()
+        try:
+            for _ in range(2):
+                await asyncio.wait_for(started.get(), 1)
+            # Probe valid wire identifiers before any candidate has been offered.
+            for attempt in ("a1", "a2", "a3", "a4"):
+                self.command(op="decoded", id="r", attempt=attempt, ok=True)
+            while not self.events.empty():
+                self.history.append(self.events.get_nowait())
+            self.assertFalse(any(event["type"] == "accepted" for event in self.history))
+            release.set()
+            candidate, accepted = await self.accept()
+            self.assertEqual(accepted["attempt"], candidate["attempt"])
+            self.assertEqual((await self.event("end"))["reason"], "complete")
+        finally:
+            release.set()
 
     async def test_decode_is_commit_and_ready_does_not_wait_for_connections(self):
         self.assertEqual((await self.event("ready", None))["type"], "ready")
@@ -322,11 +451,171 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(not ws.closed for ws in idle_before))
         self.assertEqual(sum(e["type"] == "end" and e.get("id") == "r" for e in self.history), 1)
 
+    async def test_active_cancel_wins_over_provider_reset_without_failure_diagnostic(self):
+        await self.status(ready_slots=6)
+        both_started = asyncio.Event()
+        reset = asyncio.Event()
+        reset_finished = asyncio.Queue()
+        count = 0
+
+        async def reset_after_cancel(ws, request_id, body):
+            nonlocal count
+            count += 1
+            if count == 2:
+                both_started.set()
+            await reset.wait()
+            await ws.close()
+            reset_finished.put_nowait(None)
+
+        self.behavior = reset_after_cancel
+        self.start()
+        try:
+            await asyncio.wait_for(both_started.wait(), 1)
+            self.command(op="cancel", id="r")
+            reset.set()
+            self.assertEqual((await self.event("end"))["reason"], "cancelled")
+            for _ in range(2):
+                await asyncio.wait_for(reset_finished.get(), 1)
+            async with asyncio.timeout(2):
+                while (await self.status(ready_slots=6))["retired"] < 2:
+                    pass
+            self.behavior = self.reply
+            self.start(id="after-cancel")
+            await self.accept("after-cancel")
+            self.assertEqual((await self.event("end", "after-cancel"))["reason"], "complete")
+            while not self.events.empty():
+                self.history.append(self.events.get_nowait())
+            self.assertFalse(any(
+                event.get("event") == "turn_failed" and event.get("id") == "r"
+                for event in self.history
+            ))
+            self.assertFalse(any(
+                event["type"] == "candidate" and event.get("id") == "r" for event in self.history
+            ))
+        finally:
+            reset.set()
+
+    async def test_shutdown_cancels_completed_request_drains_without_failure(self):
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        loser_transport = []
+        count = 0
+
+        async def complete_with_drain(ws, request_id, body):
+            nonlocal count
+            count += 1
+            if count == 1:
+                await both_started.wait()
+                await self.audio(ws, request_id)
+            else:
+                loser_transport.append(self.transports[ws])
+                both_started.set()
+                await release.wait()
+
+        self.behavior = complete_with_drain
+        self.start()
+        try:
+            await self.accept()
+            self.assertEqual((await self.event("end"))["reason"], "complete")
+            self.assertFalse(loser_transport[0].is_closing())
+            await self.worker.close()
+            self.assertTrue(loser_transport[0].is_closing())
+            while not self.events.empty():
+                self.history.append(self.events.get_nowait())
+            self.assertEqual(sum(
+                event["type"] == "end" and event.get("id") == "r" for event in self.history
+            ), 1)
+            self.assertFalse(any(
+                event.get("event") == "turn_failed" and event.get("id") == "r"
+                for event in self.history
+            ))
+        finally:
+            release.set()
+
+    async def test_completed_drain_keeps_original_deadline_without_another_terminal_event(self):
+        await self.status(ready_slots=6)
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        count = 0
+
+        async def silent_loser(ws, request_id, body):
+            nonlocal count
+            count += 1
+            if count == 1:
+                await both_started.wait()
+                await self.audio(ws, request_id)
+            else:
+                both_started.set()
+                await release.wait()
+
+        self.behavior = silent_loser
+        self.start(budget_ms=300)
+        try:
+            await self.accept()
+            self.assertEqual((await self.event("end"))["reason"], "complete")
+            self.command(op="cancel", id="r")
+            # Original-budget expiry retires the silent drain, not a fresh
+            # deadline measured from winner acceptance.
+            await self.status(ready_slots=5)
+            await self.worker.close()
+            while not self.events.empty():
+                self.history.append(self.events.get_nowait())
+            self.assertFalse(any(
+                event.get("event") == "turn_failed" and event.get("id") == "r"
+                for event in self.history
+            ))
+            self.assertEqual(sum(
+                event["type"] == "end" and event.get("id") == "r" for event in self.history
+            ), 1)
+        finally:
+            release.set()
+
+    async def test_request_failure_cancels_drains_of_already_accepted_fragments(self):
+        await self.status(ready_slots=6)
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        first_turns = 0
+
+        async def first_wins_second_rejected(ws, request_id, body):
+            nonlocal first_turns
+            if "First fragment" not in body:
+                await self.audio(ws, request_id)
+                return
+            first_turns += 1
+            if first_turns == 1:
+                await both_started.wait()
+                await self.audio(ws, request_id)
+            else:
+                both_started.set()
+                await release.wait()
+
+        self.behavior = first_wins_second_rejected
+        self.start("First fragment has enough words. Second fragment has enough words.")
+        try:
+            async with asyncio.timeout(2):
+                while True:
+                    event = await self.events.get()
+                    self.history.append(event)
+                    if event["type"] == "candidate":
+                        self.command(op="decoded", id="r", attempt=event["attempt"], ok=event["index"] == 0)
+                    elif event["type"] == "end":
+                        self.assertEqual(event["reason"], "failed")
+                        break
+            await self.status(ready_slots=5)
+            failures = [event for event in self.history if event.get("event") == "turn_failed"]
+            self.assertEqual(len(failures), 4)
+            self.assertTrue(all(event["code"] == "decode_rejected" for event in failures))
+            self.assertEqual(sum(event["type"] == "accepted" for event in self.history), 1)
+        finally:
+            release.set()
+
     async def test_idle_config_renewal_is_real_config_and_reuses_connections(self):
         async with asyncio.timeout(2):
-            while len(self.configs) < 12:
-                await asyncio.sleep(0.01)
-        self.assertGreaterEqual(len(self.configs), 12)
+            for _ in range(12):
+                await self.config_events.get()
+        renewed = await self.status(ready_slots=6, renewals=6)
+        self.assertEqual(renewed["connections"], 6)
+        self.assertEqual(renewed["reconnects"], 0)
         self.assertEqual(len(self.turns), 0)
         self.assertEqual(len(self.connections), 6)
         for _, config in self.configs:
@@ -341,17 +630,34 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
         await self.worker.close()
         self.reject_connect = True
         before = self.connection_attempts
+        while not self.events.empty():
+            self.events.get_nowait()
+        self.history.clear()
         self.worker = EdgeWorker(self.events.put_nowait, WorkerConfig(
             endpoint=self.endpoint, backoff_initial=0.04, backoff_max=0.16))
         await self.worker.open()
-        await asyncio.sleep(0.23)
-        attempts = self.connection_attempts - before
-        self.assertGreaterEqual(attempts, 6)
-        self.assertLessEqual(attempts, 18, "Failed sockets must not reconnect in a spin")
+        first_failure = await self.status(ready_slots=0, connect_failures=6)
+        started = time.monotonic()
+        next_failure = await self.status(ready_slots=0, connect_failures=12)
+        self.assertGreaterEqual(time.monotonic() - started, 0.025)
+        self.assertEqual(first_failure["connections"], 0)
+        self.assertEqual(next_failure["connections"], 0)
+        self.assertEqual(self.connection_attempts, before + 12)
         self.reject_connect = False
+        recovered = await self.status(ready_slots=6)
+        self.assertEqual(recovered["connections"], 6)
+        self.assertEqual(recovered["reconnects"], 0)
         self.start()
         await self.accept()
         self.assertEqual((await self.event("end"))["reason"], "complete")
+        snapshots = [event for event in self.history if event.get("event") == "transport_status"]
+        for previous, current in zip(snapshots, snapshots[1:]):
+            self.assertEqual(set(current), {
+                "type", "event", "ready_slots", "total_slots", "connections",
+                "renewals", "reconnects", "connect_failures", "retired",
+            })
+            for counter in ("connections", "renewals", "reconnects", "connect_failures", "retired"):
+                self.assertGreaterEqual(current[counter], previous[counter])
 
     async def test_failed_head_retries_once_without_regenerating_accepted_fragments(self):
         text = ("First fragment has enough words. Second fragment has enough words. "
@@ -484,9 +790,10 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(item["audio_bytes"], 0)
                 self.assertIs(item["draining"], False)
 
-            # Startup/queueing delay already consumed most of the 250 ms budget:
-            # remaining ~60 ms (< first_audio_timeout) must still end at the shared deadline.
+            # Startup/queueing consumed most of the 300 ms budget. Its remaining
+            # 60 ms must expire before first-audio timeout can start another retry.
             short_start = time.monotonic()
+            turns_before_tight = len(self.turns)
             self.worker.handle(
                 {"op": "start", "id": "tight", "text": "Tight budget.",
                  "voice": "en-US-AriaNeural", "budget_ms": 300},
@@ -494,7 +801,11 @@ class WorkerBehavior(unittest.IsolatedAsyncioTestCase):
             )
             tight_end = await self.event("end", "tight")
             self.assertEqual(tight_end["reason"], "deadline")
-            self.assertLess(time.monotonic() - short_start, 0.16)
+            self.assertLessEqual(len(self.turns) - turns_before_tight, 2)
+            self.assertFalse(any(
+                event.get("event") == "turn_failed" and event.get("id") == "tight"
+                for event in self.history
+            ))
         finally:
             release.set()
 

@@ -16,11 +16,10 @@ import threading
 import time
 from xml.sax.saxutils import escape
 
-import aiohttp
 from edge_tts.communicate import mkssml, remove_incompatible_characters
 from edge_tts.data_classes import TTSConfig
 
-from edge_tts_pool import Pool, TransportFailure, WorkerConfig
+from edge_tts_pool import SynthesisJob, Transport, TransportFailure, WorkerConfig
 
 MAX_LINE_BYTES = 65536
 MAX_REQUESTS = 16
@@ -81,11 +80,10 @@ def fragments(text):
 class Copy:
     request: object
     fragment: object
-    pool: object
+    pool: str
     attempt: str
     verdict: asyncio.Future[bool]
     task: object = None
-    connection: object = None
     draining: bool = False
     audio_bytes: int = 0
 
@@ -107,7 +105,7 @@ class Request:
     task: object = None
     copies: set = field(default_factory=set)
     ended: bool = False
-    cancelled: bool = False
+    completed: bool = False
 
 
 class EdgeWorker:
@@ -118,8 +116,7 @@ class EdgeWorker:
         self.requests = {}
         self.attempts = {}
         self.jobs = set()
-        self.pools = []
-        self.session = None
+        self.transport = Transport(self.config, self.diagnostic)
         self.closed = False
         self.sequence = 0
 
@@ -127,13 +124,10 @@ class EdgeWorker:
         self.emit({"type": "diagnostic", "event": event, **fields})
 
     async def open(self):
-        self.session = aiohttp.ClientSession(
-            trust_env=True, timeout=aiohttp.ClientTimeout(total=None, sock_connect=self.config.connect_timeout))
-        self.pools = [Pool(name, self.session, self.config, self.diagnostic) for name in ("A", "B")]
-        for pool in self.pools:
-            pool.open()
+        # Socket ownership is entirely private to the transport.
         # Never await socket startup: cancellation and shutdown must already work.
         self.emit({"type": "ready"})
+        await self.transport.open()
 
     def track(self, coroutine):
         task = asyncio.create_task(coroutine)
@@ -145,6 +139,11 @@ class EdgeWorker:
         if request.ended:
             return
         request.ended = True
+        request.completed = reason == "complete"
+        if not request.completed:
+            # Mark intentional stops before any network task can report failure.
+            for copy in request.copies:
+                copy.task.cancel()
         if self.requests.get(request.id) is request:
             del self.requests[request.id]
         for copy in request.copies:
@@ -167,7 +166,6 @@ class EdgeWorker:
         if operation == "cancel":
             request = self.requests.get(request_id)
             if request is not None:
-                request.cancelled = True
                 self.finish(request, "cancelled")
                 request.task.cancel()
             return
@@ -176,7 +174,9 @@ class EdgeWorker:
             if not isinstance(attempt, str) or len(attempt) > 80 or type(command.get("ok")) is not bool:
                 return
             copy = self.attempts.get(attempt)
-            if copy is None or copy.request.id != request_id or copy.verdict.done():
+            # Execution is registered before its decoder-visible candidate exists.
+            if (copy is None or copy.request.id != request_id or copy.verdict.done()
+                    or copy.audio_bytes == 0):
                 return
             request, fragment = copy.request, copy.fragment
             if request.ended or fragment.accepted is not None:
@@ -191,13 +191,15 @@ class EdgeWorker:
                 # the exact earliest decoded-valid winner, not first network EOF.
                 self.emit({"type": "accepted", "id": request_id,
                            "index": fragment.span["index"], "attempt": attempt})
+                self.dispose_losers(
+                    loser for loser in request.copies if loser.fragment is fragment and loser is not copy)
             else:
                 self.diagnostic(
                     "turn_failed",
                     id=request_id,
                     index=fragment.span["index"],
                     attempt=attempt,
-                    pool=copy.pool.name,
+                    pool=copy.pool,
                     code="decode_rejected",
                     audio_bytes=copy.audio_bytes,
                     draining=False,
@@ -235,19 +237,23 @@ class EdgeWorker:
             {key: fragment.span[key] for key in ("index", "start", "end")} for fragment in request.fragments]})
         request.task = self.track(self.run_request(request))
 
-    async def run_copy(self, copy, ssml):
-        request, fragment = copy.request, copy.fragment
+    async def run_copy(self, job, ssml):
         try:
-            async with asyncio.timeout_at(request.deadline):
-                audio = await copy.pool.synthesize(ssml, copy)
-                if copy.draining or request.ended or fragment.accepted is not None:
+            async with asyncio.timeout_at(job.deadline):
+                audio = await self.transport.synthesize(job, ssml)
+                if audio is None:
                     return False
-                if time.monotonic() >= request.deadline:
+                # Do not retain a request across network I/O. Completed drains
+                # have only immutable transport identity and cannot publish.
+                copy = self.attempts.get(job.attempt_id)
+                if copy is None:
+                    return False
+                request, fragment = copy.request, copy.fragment
+                if request.ended or fragment.accepted is not None or time.monotonic() >= job.deadline:
                     return False
                 copy.audio_bytes = len(audio)
-                self.attempts[copy.attempt] = copy
-                self.emit({"type": "candidate", "id": request.id, "index": fragment.span["index"],
-                           "attempt": copy.attempt, "start": fragment.span["start"], "end": fragment.span["end"],
+                self.emit({"type": "candidate", "id": job.request_id, "index": job.fragment_index,
+                           "attempt": job.attempt_id, "start": fragment.span["start"], "end": fragment.span["end"],
                            "audio": base64.b64encode(audio).decode("ascii")})
                 del audio
                 return await copy.verdict
@@ -255,24 +261,23 @@ class EdgeWorker:
             return False
         except asyncio.CancelledError:
             raise
-        except Exception as error:
-            self.diagnostic("attempt_failed", id=request.id, error_type=type(error).__name__)
+        except Exception:
+            self.diagnostic("attempt_failed", id=job.request_id)
             return False
         finally:
-            self.attempts.pop(copy.attempt, None)
+            self.attempts.pop(job.attempt_id, None)
 
     def dispose_losers(self, copies):
         for copy in copies:
             self.attempts.pop(copy.attempt, None)
             if copy.task.done():
                 continue
-            if (copy.connection is not None and time.monotonic() < copy.request.deadline
-                    and copy.pool.allow_drain(copy.connection, copy.task)):
+            if self.transport.allow_drain(copy.attempt):
                 copy.draining = True
             else:
                 copy.task.cancel()
 
-    async def run_pool_attempts(self, request, fragment, pool, ssml, copies):
+    async def run_pool_attempts(self, request, fragment, pool, ssml):
         for attempt_index in range(2):
             if fragment.accepted is not None or request.ended or time.monotonic() >= request.deadline:
                 return
@@ -284,9 +289,11 @@ class EdgeWorker:
             self.sequence += 1
             copy = Copy(request, fragment, pool, "a%d" % self.sequence,
                         asyncio.get_running_loop().create_future())
-            copy.task = self.track(self.run_copy(copy, ssml))
+            job = SynthesisJob(request.id, request.order, fragment.span["index"],
+                               copy.attempt, pool, request.deadline)
+            self.attempts[copy.attempt] = copy
+            copy.task = self.track(self.run_copy(job, ssml))
             request.copies.add(copy)
-            copies.append(copy)
             try:
                 if await asyncio.shield(copy.task):
                     return
@@ -300,15 +307,13 @@ class EdgeWorker:
         config = TTSConfig(voice=request.voice, rate="+0%", volume="+0%", pitch="+0Hz",
                            boundary="SentenceBoundary")
         ssml = mkssml(config, escape(remove_incompatible_characters(text)))
-        copies = []
-        chains = [asyncio.create_task(self.run_pool_attempts(request, fragment, pool, ssml, copies))
-                  for pool in self.pools]
+        chains = [asyncio.create_task(self.run_pool_attempts(request, fragment, pool, ssml))
+                  for pool in ("A", "B")]
         pending = set(chains)
         try:
             while pending:
                 _, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 if fragment.accepted is not None:
-                    self.dispose_losers(copies)
                     return
         finally:
             for chain in chains:
@@ -333,8 +338,8 @@ class EdgeWorker:
             self.finish(request, "deadline")
         except asyncio.CancelledError:
             self.finish(request, "cancelled")
-        except Exception as error:
-            self.diagnostic("request_failed", id=request.id, error_type=type(error).__name__)
+        except Exception:
+            self.diagnostic("request_failed", id=request.id)
             self.finish(request, "failed", "synthesis_failed")
         finally:
             for task in tasks:
@@ -344,7 +349,7 @@ class EdgeWorker:
             remaining = []
             for copy in request.copies:
                 self.attempts.pop(copy.attempt, None)
-                if copy.draining and request.ended and all(f.accepted is not None for f in request.fragments):
+                if copy.draining and request.completed:
                     continue
                 copy.task.cancel()
                 remaining.append(copy.task)
@@ -356,15 +361,15 @@ class EdgeWorker:
             return
         self.closed = True
         for request in tuple(self.requests.values()):
-            request.cancelled = True
             self.finish(request, "cancelled")
         for task in tuple(self.jobs):
             task.cancel()
         while self.jobs:
-            await asyncio.gather(*tuple(self.jobs), return_exceptions=True)
-        await asyncio.gather(*(pool.close() for pool in self.pools))
-        if self.session is not None:
-            await self.session.close()
+            jobs = tuple(self.jobs)
+            await asyncio.gather(*jobs, return_exceptions=True)
+            # Gathering completed tasks need not yield to their discard callbacks.
+            self.jobs.difference_update(jobs)
+        await self.transport.close()
         self.attempts.clear()
         self.requests.clear()
 
