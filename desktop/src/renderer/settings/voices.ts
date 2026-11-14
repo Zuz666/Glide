@@ -32,6 +32,7 @@ let sampleObserver: MutationObserver | null = null;
 let sampleMode: "plain" | "ssml" = "plain";
 let ssmlSource: "last" | "custom" = "custom";
 let ssmlSample = "";
+let replayAsPlain = false;
 let nativeCatalogue: Voice[] = [];
 let permissionIdentity = "";
 let permissionDestination = "";
@@ -176,6 +177,7 @@ function bindSample(host: HTMLElement): void {
       : ssmlSource === "last" ? (text ? "Reuses the last spoken line's saved SSML. Editing creates a custom draft. Play validates it against the selected voice and current permissions."
         : "The last spoken line has no saved SSML. It is available only after successful SAPI5 playback with markup.")
       : "Built-in examples use the saved speech language and work offline. Examples require the voice permissions listed above. Effects remain unverified; native pauses may be ignored. Selection and editing are silent. Play validates SSML before interrupting speech.";
+    if (!ssml && !native && replayAsPlain) help.textContent = "This history entry used SSML. Replaying as plain text with the selected online voice. " + help.textContent;
     button.disabled = !text.trim() || !!host.dataset.voiceSaving || (sampleMode === "ssml" && !native);
     button.querySelector("span")!.textContent = ssml ? (ssmlSource === "last" ? "Play last SSML" : "Play SSML")
       : sampleSource === "last" ? "Play last line" : "Play sample";
@@ -195,6 +197,7 @@ function bindSample(host: HTMLElement): void {
     else sampleSource = source.value === "last" ? "last" : source.value === "custom" ? "custom" : "template";
     revision++;
     error.textContent = "";
+    replayAsPlain = false;
     prepare();
     draw();
   };
@@ -207,12 +210,14 @@ function bindSample(host: HTMLElement): void {
       sampleSource = "custom";
     }
     revision++;
+    replayAsPlain = false;
     error.textContent = "";
     draw();
   };
   if (mode) mode.onchange = () => {
     sampleMode = mode.value === "ssml" ? "ssml" : "plain";
     revision++;
+    replayAsPlain = false;
     error.textContent = "";
     prepare();
     draw();
@@ -230,9 +235,36 @@ function bindSample(host: HTMLElement): void {
       sampleSource = "custom";
     }
     revision++;
+    replayAsPlain = false;
     error.textContent = "";
     draw();
   };
+  history.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>("button[data-replay-spoken]") : null;
+    if (!target || !history.contains(target)) return;
+    if (host.dataset.voiceSaving) {
+      error.textContent = "The voice destination is changing. Try Play again after it finishes.";
+      return;
+    }
+    const line = speech.recentLines.find((entry) => String(entry.id) === target.dataset.replaySpoken);
+    if (!line) return;
+    const native = (live.appSettings.speech?.provider || "windows") === "windows";
+    sampleMode = native && line.ssmlDocument ? "ssml" : "plain";
+    replayAsPlain = !native && line.ssml === true;
+    if (sampleMode === "ssml") {
+      ssmlSource = "custom";
+      ssmlSample = line.ssmlDocument;
+    } else {
+      sampleSource = "custom";
+      customSample = line.text;
+    }
+    revision++;
+    error.textContent = "";
+    draw();
+    preview.scrollIntoView({ block: "center" });
+    preview.focus({ preventScroll: true });
+    button.click();
+  }, { signal: voiceBindings!.signal });
   button.onclick = async () => {
     const text = preview.value;
     if (!text.trim()) return;
@@ -398,7 +430,7 @@ export function renderVoices(g: Group, host: HTMLElement): void {
       <label class="voice-preview-control"><span id="sv-example-label">Plain-text example</span><select id="sv-sample-example" aria-label="Plain-text examples"></select></label>
       <label class="voice-preview-control"><span id="sv-editor-label">Text to speak</span><textarea id="sv-sample" class="voice-text" aria-label="Voice test text" rows="4" placeholder="Preparing template…"></textarea></label>
       <p id="sv-sample-help" class="help"></p><p id="sv-sample-error" role="alert"></p>
-      <div class="voice-preview-controls"><button type="button" class="btn" id="sv-test" disabled>${icon("volume-2")}<span>Play sample</span></button></div>
+      <div class="voice-preview-controls"><button type="button" class="btn" id="sv-test" disabled>${icon("play")}<span>Play sample</span></button></div>
     </div>`)
     + field("Last 3 spoken lines", "Newest first. Native first/last audio estimates observe delivery to SAPI's playback buffer, not model computation or audible onset. Both appear after successful completion; ≈ includes polling and delivery delay. Speech completion includes playback. If audio timing is unavailable, any first-word report stays separately labelled. Submitted SSML does not prove audible effects.", `<div id="sv-history" class="voice-last" aria-live="polite">${voiceHistoryHtml()}</div>`);
 

@@ -25,7 +25,7 @@ export const glide: { invoke(ch: string, ...a: unknown[]): Promise<any>;
 export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
-    "renderer/dom.ts": 'export { esc } from "./real-dom.js";\nexport const toast = (...a: unknown[]) => (globalThis as any).notices.push(a);\n',
+    "renderer/dom.ts": 'export { esc, icon } from "./real-dom.js";\nexport const toast = (...a: unknown[]) => (globalThis as any).notices.push(a);\n',
 }
 
 RUN = r"""
