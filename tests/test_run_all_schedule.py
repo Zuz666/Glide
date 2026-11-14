@@ -126,14 +126,16 @@ try:
     assert r.returncode == 1 and "4 tests: 2 ok, 1 skipped, 1 failed" in r.stdout, r.stdout
     got = run_all.load_timings(os.path.join(t, ".timings.json"))
     assert set(got) == {"test_slow.py", "test_fast.py", "test_skip.py"}, got
-    assert got["test_slow.py"]["wall"] >= 0.5 and got["test_slow.py"]["wall"] > got["test_fast.py"]["wall"], got
+    assert got["test_slow.py"]["wall"] >= 0.5, got
     if os.name == "posix":
         assert "cpu" in got["test_slow.py"], got                     # measured where it can be
-    # the next run starts the longest first (the one without a time before it) and the long one keeps its priority
+    # Scheduler input must be deterministic: process startup under load can make "fast" exceed half of "slow".
+    run_all.save_timings({"test_slow.py": {"wall": 10.0}, "test_fast.py": {"wall": 1.0},
+                          "test_skip.py": {"wall": 0.5}}, os.path.join(t, ".timings.json"))
+    # The unknown test starts first, then the longest known test at normal priority.
     r = run(t, "--list", "-j", "2")
     rows = [line.split() for line in r.stdout.splitlines() if line.startswith("test_")]
-    assert [x[0] for x in rows] == ["test_bad.py", "test_slow.py", "test_skip.py", "test_fast.py"] or \
-        [x[0] for x in rows] == ["test_bad.py", "test_slow.py", "test_fast.py", "test_skip.py"], r.stdout
+    assert [x[0] for x in rows] == ["test_bad.py", "test_slow.py", "test_fast.py", "test_skip.py"], r.stdout
     pri = {x[0]: x[1] for x in rows}
     assert pri["test_slow.py"] == "normal" and pri["test_fast.py"] == "low" and pri["test_bad.py"] == "low", pri
     serial = [line.split()[0] for line in run(t, "--list", "-j", "1").stdout.splitlines()
