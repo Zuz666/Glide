@@ -90,6 +90,9 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
   const configuredKeys = preloadedKeys !== undefined ? preloadedKeys : await loadConfiguredKeys();
   if (signal.aborted) return;
   const initialLoads: Promise<void>[] = [];
+  const tuningSummary = host.querySelector<HTMLElement>("[data-thinking-selection]");
+  const tuningSwitch = host.querySelector<HTMLInputElement>('[data-key="companion.llm.tune_thinking"] input');
+  if (tuningSummary) tuningSummary.innerHTML = `<span data-thinking-role="fast"></span><span data-thinking-role="deep"></span>`;
   for (const path of ["fast", "deep"]) {
     const modelKey = `${path}_model`, effortKey = `${path}_reasoning_effort`;
     const modelRow = host.querySelector<HTMLElement>(`[data-key="${fullKey(modelKey)}"]`);
@@ -110,22 +113,43 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
       reqEl.hidden = !html;
     };
     syncModelReq();
-    if (!row || !select) continue;
-    const note = row.querySelector<HTMLElement>(".lab small");
+    if (!select && !tuningSummary) continue;
+    const note = row?.querySelector<HTMLElement>(".lab small");
+    const summary = tuningSummary?.querySelector<HTMLElement>(`[data-thinking-role="${path}"]`);
+    let automatic: Obj | undefined;
+    let available = false;
+    const syncSummary = () => {
+      if (!summary) return;
+      const effort = draft(effortKey), tuning = tuningSwitch?.checked ?? draft("tune_thinking") === "true";
+      const selected = effort !== "auto" ? `${effort} effort (explicit; switch has no effect)`
+        : !tuning ? "provider default (tuning Off)"
+        : !available ? "automatic level unavailable — connect the coach to resolve"
+        : automatic?.effort ? `${automatic.effort} effort requested${automatic.thinking ? `; thinking: ${automatic.thinking}` : ""}`
+        : "provider default (no automatic override)";
+      summary.textContent = `${path === "fast" ? "Fast" : "Deep"} · ${draft(modelKey)}: ${selected}.`;
+      summary.classList.toggle("ok", effort === "auto" && tuning && available && !!(automatic?.effort || automatic?.thinking));
+    };
+    tuningSwitch?.addEventListener("change", syncSummary, { signal });
+    select?.addEventListener("change", syncSummary, { signal });
     let revision = 0, timer: number | undefined;
     const load = async () => {
       syncModelReq();
       const version = ++revision, id = draft(modelKey), url = live.engineUrl, token = live.engineToken, state = live.engineState;
-      const current = () => !signal.aborted && row.isConnected && version === revision && id === draft(modelKey) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
+      const current = () => !signal.aborted && host.isConnected && version === revision && id === draft(modelKey) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
       const show = (info?: Obj) => {
         const levels: string[] = info?.levels || [], effort = draft(effortKey);
-        select.innerHTML = effortOptions(levels, effort);
-        select.disabled = !levels.length && effort === "auto";
+        if (select) {
+          select.innerHTML = effortOptions(levels, effort);
+          select.disabled = !levels.length && effort === "auto";
+        }
         if (note) {
           note.innerHTML = `${reasoningHelpHtml(info)} ${AUTO_THINKING_HELP} Save to apply.`;
           bindReasoningTitle(note, info);
         }
       };
+      automatic = undefined;
+      available = false;
+      syncSummary();
       show();
       if (!url || live.engineState !== "running") {
         if (note) note.innerHTML = `Reasoning lookup is unavailable while the coach is not connected. You can still edit model ids. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
@@ -137,25 +161,33 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
         if (!current() || live.engineState !== "running") return;
         if (!response.ok || data.model !== id || !Array.isArray(data.reasoning?.levels)) throw new Error("Capabilities unavailable");
         show(data.reasoning);
+        automatic = data.automatic?.[path];
+        available = !!automatic;
+        syncSummary();
       } catch {
         if (current()) show({ levels: [], unavailable: true });
       }
     };
-    select.addEventListener("model-capabilities-refresh", () => { void load(); }, { signal });
+    select?.addEventListener("model-capabilities-refresh", () => { void load(); }, { signal });
     input?.addEventListener("input", () => {
       ++revision;
       clearTimeout(timer);
       syncModelReq();
-      select.innerHTML = effortOptions([], "auto");
-      select.value = "auto";
-      // Reuse bindField's change handler, including its default and dirty-state semantics.
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-      select.disabled = true;
+      automatic = undefined;
+      available = false;
+      syncSummary();
+      if (select) {
+        select.innerHTML = effortOptions([], "auto");
+        select.value = "auto";
+        // Reuse bindField's change handler, including its default and dirty-state semantics.
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        select.disabled = true;
+      }
       if (note) {
         note.innerHTML = `Reasoning resets to Auto when the model changes. ${EFFORT_HELP} ${AUTO_THINKING_HELP} Save to apply.`;
         bindReasoningTitle(note);
       }
-      timer = window.setTimeout(() => { if (!signal.aborted && row.isConnected) void load(); }, 250);
+      timer = window.setTimeout(() => { if (!signal.aborted && host.isConnected) void load(); }, 250);
     }, { signal });
     signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
     initialLoads.push(load());

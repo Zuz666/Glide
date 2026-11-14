@@ -74,6 +74,21 @@ function fmtRoleModel(name: string | null | undefined, id: string | null | undef
   return name || id || "not configured";
 }
 
+function automaticThinkingHint(m: Partial<Models>, role: "fast" | "deep", effort: string): string {
+  const state = m.tune_thinking === true ? "On" : m.tune_thinking === false ? "Off" : "unavailable";
+  const label = `Automatic thinking tuning: ${state}`;
+  if (effort !== "auto") return `${label} — not applied (explicit ${effort} effort).`;
+  if (m.tune_thinking === false) return `${label} — provider default (no automatic override).`;
+  const automatic = m.automatic_reasoning?.[role];
+  if (m.tune_thinking !== true || !automatic) return `${label} — automatic level unavailable.`;
+  const controls = [
+    automatic.effort ? `${automatic.effort} effort requested` : "",
+    automatic.thinking ? `thinking: ${automatic.thinking}` : "",
+  ].filter(Boolean).join("; ");
+  return controls ? `${label} — ${controls}.\nAutomatic options may fall back if rejected.`
+    : `${label} — provider default (no automatic override).`;
+}
+
 function showModels(m: Partial<Models>): void {
   const fastLabel = m.fast_name || m.fast || "–";
   const deepLabel = m.deep_name || m.deep || "–";
@@ -87,13 +102,13 @@ function showModels(m: Partial<Models>): void {
   setEffortBadge("sb-fast-eff", Boolean(m.fast || m.fast_name), fastEff);
   setEffortBadge("sb-deep-eff", Boolean(m.deep || m.deep_name), deepEff);
   const fastUses = pttDeep
-    ? "Live callouts, quest briefings and translation (spoken questions routed to Deep)."
+    ? `Live callouts, quest briefings and translation (spoken questions routed to Deep).\nDeep model: ${fmtRoleModel(m.deep_name, m.deep)}; reasoning effort: ${deepEff}.`
     : "Live callouts, spoken (push-to-talk) questions, quest briefings and translation.";
   const deepUses = pttDeep
     ? "Typed & spoken (push-to-talk) questions, pace reviews and memory reflection."
     : "Typed questions, pace reviews and memory reflection.";
-  $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${fastUses}\nClick to open Fast model settings.`;
-  $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${deepUses}\nClick to open Deep model settings.`;
+  $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${automaticThinkingHint(m, "fast", fastEff)}\n${fastUses}\nClick to open Fast model settings.`;
+  $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${automaticThinkingHint(m, "deep", deepEff)}\n${deepUses}\nClick to open Deep model settings.`;
   const listen = String(m.listen || ""), fb = m.listen_fallback ? String(m.listen_fallback) : "";
   $("sb-listen").textContent = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
   $("sb-listen-wrap").classList.toggle("off", listen === "off");

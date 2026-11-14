@@ -230,6 +230,8 @@ export interface NavBuild { state: "waiting" | "checking" | "building" | "done" 
   outdated: number[]; built: number[] }
 export interface Models { fast: string | null; deep: string | null; fast_name: string | null; deep_name: string | null;
   fast_reasoning?: string | null; deep_reasoning?: string | null; voice_question?: "fast" | "deep" | null;
+  tune_thinking?: boolean;
+  automatic_reasoning?: Partial<Record<"fast" | "deep", { effort?: string | null; thinking?: string | null }>>;
   listen: string; listen_fallback: string | null;
   translation?: { language: string; available: boolean } }
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;
