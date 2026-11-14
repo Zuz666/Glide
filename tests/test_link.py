@@ -14,10 +14,11 @@ from state import GameState  # noqa: E402
 
 L = lua51.LuaRuntime(unpack_returned_tuples=True)
 L.execute(wowmock.MOCK)
+wowmock.install_bit(L)
 ns = L.table()
 # Core.lua first, as in the TOC: the /glide command and the mark live there (its recorder half: test_addon.py)
-for f in ("Core.lua", "Codec.lua", "State.lua", "Gear.lua", "Extras.lua", "Coach.lua", "Strip.lua", "Minimap.lua",
-          "Panel.lua"):
+for f in ("Core.lua", "MD5.lua", "StepIdentity.lua", "Codec.lua", "State.lua", "Gear.lua", "Extras.lua",
+          "Coach.lua", "Strip.lua", "Minimap.lua", "Panel.lua"):
     src = open(os.path.join(ROOT, "addon", "Glide", f), encoding="utf-8").read()
     L.eval("function(src, name, a, ns) local f, e = loadstring(src, name) if not f then error(e) end return f(a, ns) end")(
         src, "@" + f, "Glide", ns)
@@ -345,5 +346,190 @@ for _ in range(40):
         break
 errs = state.summary()["addon_errors"]
 assert errs["count"] == 2 and errs["last"].startswith("PLAYER_FLAGS_CHANGED: ") and "broken handler" in errs["last"], errs
+
+# Actual Lua capture -> painted strip -> current KnowledgePack -> Coach/overlay authored text.
+# The native fixture supplies RXP parsing/lifecycle, never the digest or the resolved response.
+import sqlite3
+from contextlib import ExitStack, closing
+from knowledge import store
+from knowledge.api import KnowledgePack
+from test_step_identity_addon import NATIVE
+
+L.execute(NATIVE)
+G.fire("ADDON_LOADED", "RXPGuides")
+main = "Go past the waterfall and around the mountain, then follow the path all the way to the bridge."
+note = "If you see a Tornado, use it for faster travel."
+future = "Cross the bridge and follow the river until the next camp, then speak to the flight master."
+source = ("#group Routes\n#name Trail\nstep << Mage\n.goto 2521,1,2 >> Mage only\n"
+          "step\n.goto 2521,58.6,52.8 >> " + main + "\n*|cRXP_WARN_" + note + "|r\n"
+          "step\n.goto 2521,58.8,46.7 >> " + future + "\n")
+faction_source = ("#group Routes\n#name Allegiance (H)\nstep\n"
+                  ".goto 2521,1,2 >> Follow the northern path. << Alliance\n"
+                  ".goto 2521,3,4 >> Follow the southern path. << Horde\n")
+race_source = ("#group Routes\n#name Ancestry\nstep\n"
+               ".goto 2521,1,2 >> Take the human route. << Human\n"
+               ".goto 2521,3,4 >> Take the orc route. << Orc\n")
+G.identitySource = source
+L.execute("RXP.class = 'WARRIOR'; native = RXP.ParseGuide(identitySource); "
+          "RXP.currentGuide = RXP.ProcessGuideTable(native); RXPCData.currentStep = 1")
+# Native RXP generates navigation elements separately from standalone note text.
+G.RXP.currentGuide.steps[1].elements = L.table_from([
+    L.table_from({"tag": "goto", "mapId": 2521, "x": 58.6, "y": 52.8}),
+    L.table_from({"tag": "text", "text": "|cRXP_WARN_" + note + "|r"}),
+])
+
+with tempfile.TemporaryDirectory() as folder, ExitStack() as cleanup:
+    db_path = os.path.join(folder, "kb.db")
+    with closing(sqlite3.connect(db_path)) as db, db:
+        store.create_schema(db)
+        db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(store.SCHEMA_VERSION),))
+        db.executemany("INSERT INTO rxp_guide(key, name, grp, text) VALUES (?, ?, ?, ?)", [
+            ("Routes||Trail", "Trail", "Routes", source),
+            ("Routes||Allegiance (H)", "Allegiance (H)", "Routes", faction_source),
+            ("Routes||Ancestry", "Ancestry", "Routes", race_source),
+        ])
+    pack = KnowledgePack(db_path)
+    cleanup.callback(pack.kb.close)
+    owner = App.__new__(App)
+    owner.pack = pack
+    pointer_state = GameState()
+    pointer_state.step_lookup = owner._step_match
+    for _ in range(40):
+        payload, _ = screen_frame()
+        c, p = protocol.parse_payload(payload)
+        assert c["si"] == "2" and c["st"] == "1", c
+        assert len(c["sh"]) == 35 and c["sh"].startswith("s1:"), c
+        pointer_state.update(c, p)
+    resolved = pointer_state.summary()
+    assert resolved["step_match"] == "verified", resolved
+    assert resolved["steps"][0]["text"] == main and resolved["steps"][0]["notes"] == [note], resolved["steps"]
+    assert resolved["steps"][1]["text"] == pointer_state.pages["S1"]["tx"] != future, resolved["steps"]
+    assert "notes" not in resolved["steps"][1], "the current source pointer must not verify future steps"
+    assert note not in App.step_line(resolved) and main in App.step_line(resolved)
+    assert pointer_state.pages["S0"]["tx"] == note, "the full title must come from verified local content"
+
+    # The source pointer is sufficient: G metadata and browser selection are not prerequisites.
+    early = GameState()
+    early.step_lookup = owner._step_match
+    early.update(c, pointer_state.pages["S0"])
+    no_labels = early.summary()
+    assert no_labels["guide"] is None and no_labels["step_match"] == "verified", no_labels
+    assert no_labels["steps"][0]["text"] == main
+    wrong = pack.verified_step({**resolved, "step_source_index": 1})
+    assert wrong["status"] != "verified" and "step" not in wrong, wrong
+
+    # Unknown faction must not choose an inline branch using the guide-name/race heuristic.
+    G.factionSource = faction_source
+    L.execute("factionGuide = RXP.ParseGuide(factionSource)")
+    faction_index, faction_hash = ns.StepIdentity(G.factionGuide.steps[1])
+    faction_pointer = {**resolved, "guide": "Allegiance (H)", "faction": None,
+                       "step_source_index": faction_index, "step_fingerprint": faction_hash}
+    assert pack.verified_step(faction_pointer)["status"] == "unverified"
+    for faction, text in (("Alliance", "Follow the northern path."), ("Horde", "Follow the southern path.")):
+        branch = pack.verified_step({**faction_pointer, "faction": faction})
+        assert branch["status"] == "verified" and branch["step"]["text"] == text, branch
+
+    # A new core/S0 must not verify the previous character's race/faction branch before B arrives.
+    G.raceSource = race_source
+    L.execute("raceGuide = RXP.ParseGuide(raceSource)")
+    race_index, race_hash = ns.StepIdentity(G.raceGuide.steps[1])
+    first_player = {"pg": "B", "nm": "First", "cl": "WARRIOR", "ra": "Human", "fa": "Alliance"}
+    next_player = {"pg": "B", "nm": "Second", "cl": "WARRIOR", "ra": "Orc", "fa": "Horde"}
+    for index, fingerprint, expected in (
+        (faction_index, faction_hash, "Follow the southern path."),
+        (race_index, race_hash, "Take the orc route."),
+    ):
+        conditional = dict(c, si=str(index), sh=fingerprint, st="1", e1="40:zone:Before", e2="", e3="")
+        for transition in ("source", "restart", "gap", "class"):
+            relog = GameState()
+            relog.step_lookup = owner._step_match
+            prior = dict(c, e1="40:zone:Before", e2="", e3="") if transition == "source" else conditional
+            relog.update(prior, first_player)
+            assert relog.summary()["step_match"] == "verified"
+            arriving = dict(conditional)
+            if transition == "restart":
+                arriving["e1"] = "1:zone:After"
+            elif transition == "gap":
+                relog.last_frame -= 3
+            elif transition == "class":
+                arriving["cl"] = "MAGE"
+            relog.update(arriving, {"pg": "S0", "i": "1", "tx": "New live instruction."})
+            awaiting_player = relog.summary()
+            assert awaiting_player["step_match"] == "unverified", (transition, awaiting_player)
+            assert awaiting_player["steps"][0]["text"] == "New live instruction.", awaiting_player
+            relog.update(arriving, {**next_player, "cl": arriving["cl"]})
+            after_player = relog.summary()
+            assert after_player["step_match"] == "verified" and after_player["steps"][0]["text"] == expected, after_player
+        # If B is in the first frame after a restart, it is already evidence for the new character.
+        relog = GameState()
+        relog.step_lookup = owner._step_match
+        relog.update(conditional, first_player)
+        relog.update(dict(conditional, e1="1:zone:After"), next_player)
+        immediate = relog.summary()
+        assert immediate["step_match"] == "verified" and immediate["steps"][0]["text"] == expected, immediate
+
+    # No local pack never promotes a same-named/live note to an authored full instruction.
+    owner.pack = None
+    missing = pointer_state.summary()
+    assert missing["step_match"] == "missing" and missing["steps"][0]["text"] == note, missing
+    assert "Local source step unavailable" in App.step_line(missing)
+    owner.pack = pack
+
+    # Editing another source block does not invalidate the current source step.
+    G.identitySource = source.replace(future, "Follow the river.")
+    L.execute("native = RXP.ParseGuide(identitySource); RXP.currentGuide = RXP.ProcessGuideTable(native)")
+    payload, _ = screen_frame()
+    unrelated_core, unrelated_page = protocol.parse_payload(payload)
+    assert unrelated_core["sh"] == resolved["step_fingerprint"] and unrelated_core["si"] == "2"
+    pointer_state.update(unrelated_core, unrelated_page)
+    unaffected = pointer_state.summary()
+    assert unaffected["step_match"] == "verified" and unaffected["steps"][0]["text"] == main, unaffected
+
+    # Editing this source block at the same visible number rejects the older local instruction immediately.
+    G.identitySource = source.replace(main, "Take the opposite path.")
+    L.execute("native = RXP.ParseGuide(identitySource); RXP.currentGuide = RXP.ProcessGuideTable(native)")
+    payload, _ = screen_frame()
+    new_core, new_page = protocol.parse_payload(payload)
+    assert new_core["sh"] != resolved["step_fingerprint"] and new_core["si"] == "2" and new_core["st"] == "1"
+    assert new_page["pg"] == "S0" and "opposite path" in new_page["tx"], new_page
+    pointer_state.update(new_core, new_page)
+    mismatch = pointer_state.summary()
+    assert mismatch["step_match"] == "mismatch" and mismatch["steps"][0]["text"] != main, mismatch
+    assert mismatch["guide"] == resolved["guide"], "ordinary guide metadata must not disappear on each step change"
+
+    # A successful knowledge refresh replaces the old index without changing the live pointer.
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("UPDATE rxp_guide SET text=? WHERE key=?", (source.replace(main, "Take the opposite path."), "Routes||Trail"))
+    updated = KnowledgePack(db_path)
+    cleanup.callback(updated.kb.close)
+    owner.pack = updated
+    refreshed = pointer_state.summary()
+    assert refreshed["step_match"] == "verified" and refreshed["steps"][0]["text"] == "Take the opposite path.", refreshed
+
+    # Old lookahead pages cannot become the new current page; only its own pointer can supply full text.
+    L.execute("RXPCData.currentStep = 2")
+    next_index, next_hash = ns.StepIdentity(G.RXP.currentGuide.steps[2])
+    before = dict(new_core, st="2", si=str(next_index), sh=next_hash)
+    owner.pack = None
+    pointer_state.update(before, {"pg": "B", "ra": "Human", "fa": "Alliance"})
+    assert pointer_state.summary()["steps"] == [None, None, None]
+    owner.pack = pack
+    next_step = pointer_state.summary()
+    assert next_step["step_match"] == "verified" and next_step["steps"][0]["text"] == future, next_step
+    assert next_step["steps"][0]["index"] == 2 and next_step["steps"][0]["elements"] == []
+    pointer_state.last_frame = 0
+    assert pointer_state.summary()["step_match"] == "stale"
+    # Core may become visible before its S-page cohort: no old elements or lookahead may leak across it.
+    pointer_state.update(before, {})
+    pointer_state.core = dict(before, st="1", si="2", sh=resolved["step_fingerprint"])
+    raced = pointer_state.summary()
+    assert raced["steps"][0]["text"] == main and raced["steps"][0]["elements"] == [], raced
+    assert raced["steps"][1:] == [None, None], raced
+
+    if os.environ.get("GLIDE_STEP_TITLE_PROOF"):
+        with open(os.environ["GLIDE_STEP_TITLE_PROOF"], "w", encoding="utf-8") as fh:
+            json.dump({**resolved, "title": main, "overlay_step": App.step_line(resolved),
+                       "missing": {**missing, "overlay_step": App.step_line(missing)}}, fh)
+
 print("pages seen:", sorted(p for p in pages_seen if p))
 print("OK")

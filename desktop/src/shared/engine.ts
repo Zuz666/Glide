@@ -55,6 +55,10 @@ export interface EngineState {
   guide_group: string | null;
   step: number | null;
   steps: (GuideStep | null)[];
+  step_source_index?: number | null;
+  step_fingerprint?: string | null;
+  step_match?: "verified" | "missing" | "mismatch" | "unverified" | "stale";
+  step_match_reason?: string | null;
   quests: Record<string, QuestLogEntry>;
   coach_flags: Record<string, boolean>;
   skills: unknown;
@@ -187,7 +191,7 @@ export interface VoiceSpokenEvent {
 
 export interface GuideElement { tag: string; map?: number; x?: number; y?: number; quest?: number; name?: string;
   where?: string; done?: boolean }
-export interface GuideStep { index?: number; text?: string; elements: GuideElement[] }
+export interface GuideStep { index?: number; text?: string; notes?: string[]; elements: GuideElement[] }
 export interface QuestLogEntry { done: boolean; obj: [number, number][]; name?: string | null; level?: number | null }
 export interface Buff { id: string; name: string; mine: boolean; castable?: boolean; duration?: number | null;
   remaining?: number | null }

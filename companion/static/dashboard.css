@@ -155,6 +155,8 @@ body { background: radial-gradient(1200px 800px at 45% 35%, #151821 0%, var(--ni
 .leaf .glyph { width: 38px; display: grid; place-items: center; font: 400 44px/1 var(--f-title); color: var(--rubric); }
 .leaf .glyph .icon { width: 32px; height: 32px; margin-top: 4px; }
 .leaf .lede { margin: 8px 0 0; font: 400 17.5px/1.55 var(--f-read); color: var(--sepia-2); max-width: 64ch; text-wrap: pretty; }
+.leaf .guide-note { margin: 8px 0 0; font: 400 16px/1.5 var(--f-read); color: var(--sepia-2); max-width: 64ch; }
+.leaf .step-match { margin: 8px 0 0; font: 600 12px/1.5 var(--f-ui); color: var(--sepia-2); }
 .leaf.idle .lede { margin-left: 0; }
 .leaf .step-no { font-size: 13px; color: var(--sepia-3); text-align: right; white-space: nowrap; padding-top: 6px; }
 .leaf .step-no b { display: block; font-size: 22px; font-weight: 650; color: var(--sepia); }

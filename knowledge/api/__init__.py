@@ -5,8 +5,8 @@ The LLM narrates; this module knows and computes. Every result is a compact JSON
 numbers with a "facts" list of the ids behind them. Nothing here writes to kb.db and nothing raises to the coach.
 
   pack = KnowledgePack(kb, rxp=None, geo=None)
-      kb    store.KB, a path, or None (missing or unloadable: pack.ok is False, every call answers
-            {"unavailable": reason} and the coach runs as it did before the knowledge layer)
+      kb    store.KB, a path, or None (missing or unloadable: pack.ok is False; fact queries answer
+            {"unavailable": reason}, verified_step answers {"status": "missing"})
       rxp   RestedXP settings of the character; they decide which steps exist and how RXP numbers them:
             ssf, group_quests, hardcore, dungeons. Default DEFAULT_RXP (solo self-found, group quests on: how
             the player's characters are set up in RestedXP's SavedVariables)
@@ -20,6 +20,8 @@ numbers with a "facts" list of the ids behind them. Nothing here writes to kb.db
   pack.decay_info(quest_id, level) turnin_decay_soon facts (one cached row per quest; cheap on any thread)
   pack.verify_facts(ids)           (known, unknown): grounding check of a FACTS line
   pack.status()                    KB status for the companion's startup line
+  pack.verified_step(summary)      {"status", "step"?}: exact source ordinal/block hash match for one authored
+                                  main instruction and separate notes; never uses visible-order heuristics
   TOOLS / tool_definitions()       the Messages API "tools" list
   dispatch(name, args, ctx)        one tool's result dict (time-budgeted, trimmed to RESULT_TOKENS, never raises)
 
@@ -30,6 +32,15 @@ the 40-byte cut), prefers the page's group, the character's faction and non-dung
 step number (core `st`) is RestedXP's number among the steps it keeps for these settings: route.rxp_to_idx (the
 mapping route.brief_for_rxp_step uses) turns it into the guide's step idx. When the live S0 page lists quests the
 mapped step does not touch, the nearest step within 6 numbers that touches them wins.
+Full authored current titles use verified_step instead: core `si` is the original ordinal in that step's own
+source guide; `sh` fingerprints only its canonical source block. The live `st` remains the displayed position,
+not a lookup key. Match the pair in the current immutable pack, independently of G metadata or the browser's
+selected guide; preserve applicable inline conditions and separate notes. Other steps, guide headers and native
+visible ordering are not compared or reconstructed. Lookahead remains short live text until it becomes current.
+GameState supplies race/faction and fallback class only from B received in the current source-pointer/class
+cohort. Pointer changes, detected restarts and stale capture gaps revoke that evidence before the next frame
+is published; a B in the transition frame is accepted as fresh. This prevents a relog from verifying the
+previous character's inline branch. Missing required player evidence keeps the live short text.
 
 Fact ids: q:<quest> c:<creature> i:<item> p:<param key> h:<heuristic id> s:<guide name or key>/<step idx>
 poi:<kind>:<id> g:<glossary term>. verify_facts() accepts one only when the row exists and is usable.

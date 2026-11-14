@@ -69,11 +69,14 @@ app_settings = {
 resize_heights = []
 with open(os.path.join(HERE, "golden", "fixtures", "dashboard_init.json"), encoding="utf-8") as fh:
     date_coach_init = json.load(fh)
+title_proof = {}
 if os.environ.get("GLIDE_STEP_TITLE_PROOF"):
     with open(os.environ["GLIDE_STEP_TITLE_PROOF"], encoding="utf-8") as fh:
         title_proof = json.load(fh)
-    for key in ("steps", "level", "overlay_step"):
-        date_coach_init["state"][key] = title_proof[key]
+    for key in ("steps", "level", "overlay_step", "guide", "guide_group", "step",
+                "step_source_index", "step_fingerprint", "step_match", "step_match_reason"):
+        if key in title_proof:
+            date_coach_init["state"][key] = title_proof[key]
 date_coach_hub = dashboard_mod.Hub()
 date_coach_hub.snapshot, date_coach_hub.messages = date_coach_init["state"], date_coach_init["messages"]
 date_coach_server = dashboard_mod.serve(date_coach_hub, 0, token="date-coach-test")
@@ -97,6 +100,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data(index_html, content_type="text/html; charset=utf-8")
         if self.path == "/date-coach-url":
             return self.send_data("http://127.0.0.1:%d" % date_coach_server.server_address[1])
+        if self.path == "/step-missing" and "missing" in title_proof:
+            date_coach_hub.snapshot = {**date_coach_init["state"], **title_proof["missing"]}
+            return self.send_data(True)
         if self.path == "/overlay.html":
             return self.send_data(overlay_html, content_type="text/html; charset=utf-8")
         if self.path == "/app.css":

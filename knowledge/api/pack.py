@@ -10,10 +10,11 @@ from knowledge.api import tools
 from knowledge.api._layer import E, IMPORT_ERROR, get_data
 from knowledge.api.extras import ExtrasMixin
 from knowledge.api.facts import FactsMixin
-from knowledge.api.guides import GuideResolver, RXP_KEYS
+from knowledge.api.guides import GuideResolver, RXP_KEYS, player_from
 from knowledge.api.lookup import LookupMixin
 from knowledge.api.panel import PanelMixin
 from knowledge.api.resolve import ResolveMixin
+from knowledge.step_identity import StepIdentityIndex
 
 
 class KnowledgePack(ResolveMixin, LookupMixin, PanelMixin, ExtrasMixin, FactsMixin):
@@ -42,6 +43,7 @@ class KnowledgePack(ResolveMixin, LookupMixin, PanelMixin, ExtrasMixin, FactsMix
         self._rules = None
         self._panel = None
         self._status = None
+        self._step_identity: StepIdentityIndex | None = None
 
     # --------------------------------------------------------------------------------------------- basics
     @property
@@ -55,6 +57,22 @@ class KnowledgePack(ResolveMixin, LookupMixin, PanelMixin, ExtrasMixin, FactsMix
                 cache.clear()
             cache[key] = value
         return value
+
+    def verified_step(self, summary):
+        """Full authored current-step text after an exact source ordinal/block hash match."""
+        if not self.ok:
+            return {"status": "missing"}
+        player = player_from(summary, self.rxp) or {}
+        # A guide-name faction guess is not evidence for choosing an inline source-step branch.
+        player["faction"] = str(summary["faction"]).capitalize() if summary.get("faction") else None
+        with self._lock:
+            if self._step_identity is None:
+                try:
+                    rows = self.kb.q("SELECT key, name, grp, text FROM rxp_guide")
+                finally:
+                    self.kb.close()  # the in-memory index must not pin a replaced pack on the capture thread
+                self._step_identity = StepIdentityIndex(rows)
+            return self._step_identity.resolve(summary, player)
 
     def warm(self):
         """Load the lazily built tables (guide names, quests, creatures, maps) so the first callout is fast.

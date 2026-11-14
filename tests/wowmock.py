@@ -198,3 +198,17 @@ RXP = { currentGuide = { name = "1-14 Zephras Isle", group = "RestedXP Forever G
 SlashCmdList = {}
 function print() end
 """
+
+
+def install_bit(lua):
+    """WoW's signed 32-bit operations; Lua 5.1 itself does not provide its host's bit library."""
+    def signed(value):
+        return ((value + 0x80000000) & 0xFFFFFFFF) - 0x80000000
+
+    lua.globals().bit = lua.table_from({
+        "band": lambda a, b: signed(int(a) & int(b)),
+        "bor": lambda a, b: signed(int(a) | int(b)),
+        "bxor": lambda a, b: signed(int(a) ^ int(b)),
+        "lshift": lambda a, n: signed(int(a) << (int(n) % 32)),
+        "rshift": lambda a, n: signed((int(a) & 0xFFFFFFFF) >> (int(n) % 32)),
+    })

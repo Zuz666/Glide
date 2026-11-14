@@ -14,6 +14,7 @@ import wowmock  # noqa: E402
 
 L = lua51.LuaRuntime(unpack_returned_tuples=True)
 L.execute(wowmock.MOCK)
+wowmock.install_bit(L)
 ns = L.table()
 toc = [ln.strip() for ln in open(os.path.join(ROOT, "addon", "Glide", "Glide.toc"), encoding="utf-8")
        if ln.strip().endswith(".lua") and not ln.startswith(("Data", "Recorder", "Scanner", "RXPDump"))]

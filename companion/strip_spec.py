@@ -91,6 +91,11 @@ CORE = (
     Key("tr", "int", "Target reaction to the player, 1 hated .. 8 exalted (only with a target)", "State.lua", "≤0.7"),
     Key("td", "flag", "Target dead (1/0; only with a target)", "State.lua", "≤0.7"),
     Key("st", "int", "RestedXP's current step index (empty: no guide)", "State.lua", "≤0.7"),
+    Key("si", "int", "Current step's original ordinal in its own source guide, before filtering/includes; "
+        "empty when unverified. Not the visible st number.", "StepIdentity.lua", "0.17.6"),
+    Key("sh", "str", "Current source-block fingerprint: s1:<32 lowercase MD5 hex digits>; empty when unverified. "
+        "Coherent with si/st in this frame; verifies only that source step, not the whole guide.",
+        "StepIdentity.lua", "0.17.6"),
     Key("qn", "int", "Quest log pages Q0.. (count)", "State.lua", "≤0.7"),
     Key("qh", "int", "Quest log list hash", "State.lua", "≤0.7"),
     Key("an", "int", "Buff pages A0.. (count)", "State.lua", "≤0.7"),

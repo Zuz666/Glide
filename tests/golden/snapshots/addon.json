@@ -3,122 +3,122 @@
   {
    "at": "login 0",
    "mask": 255,
-   "paint": "1359bb4580b8d960",
-   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|"
+   "paint": "191783fc904e6a15",
+   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=S0;i=5;el=go:2521:42.1:23.5,turnin:92461;tx=Turn in Harmony in Balance"
   },
   {
    "at": "login 1",
    "mask": 255,
-   "paint": "c01daef76f83ceb4",
-   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|"
+   "paint": "3c626a168a243e9c",
+   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=B;cl=WARRIOR;ra=Skyborne;fa=Horde;nm=Fermin;bd=Thendal Grove"
   },
   {
    "at": "login 2",
    "mask": 255,
-   "paint": "0becfba928185084",
-   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|"
+   "paint": "3f17f2ee0cc397b8",
+   "payload": "gv=golden;gk=7;cf=255;t=63621;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=0;qh=0;an=0;ah=0;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=G;gn=1-14 Zephras Isle;gg=RestedXP Forever Guide (H);gx="
   },
   {
    "at": "login 3",
    "mask": 255,
-   "paint": "0db5d6f6eecac1a0",
-   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=S0;i=5;el=go:2521:42.1:23.5,turnin:92461;tx=Turn in Harmony in Balance"
+   "paint": "42e8e52edf496aea",
+   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=I0;g=0.1:1:INVTYPE_2HWEAPON:2:1:14:2:9:1:Heavy Hand Axe:CR1/DP8.1/ST3/WS3.2"
   },
   {
    "at": "login 4",
    "mask": 255,
-   "paint": "3c119daf8f01718b",
-   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=I0;g=0.1:1:INVTYPE_2HWEAPON:2:1:14:2:9:1:Heavy Hand Axe:CR1/DP8.1/ST3/WS3.2"
+   "paint": "dc079281e9f41329",
+   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=Z;zn=Zephras Isle;sz=Thendal Grove;mm=2521;mw=3000;mh=2000"
   },
   {
    "at": "login 5",
    "mask": 255,
-   "paint": "f68590e1abef30e7",
-   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=G;gn=1-14 Zephras Isle;gg=RestedXP Forever Guide (H);gx="
+   "paint": "86664ca732145f76",
+   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=|pg=T;tn=Fermin;tc=normal"
   },
   {
    "at": "events 0",
    "mask": 255,
-   "paint": "24b1c3646d2f7708",
-   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=Z;zn=Zephras Isle;sz=Thendal Grove;mm=2521;mw=3000;mh=2000"
+   "paint": "0fa387dfbf63e72b",
+   "payload": "gv=golden;gk=7;cf=255;t=63622;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=0;ah=0;ak=1;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=S1;i=6;el=accept:92462;tx=Accept Infestation Investigation"
   },
   {
    "at": "events 1",
    "mask": 255,
-   "paint": "cd0dba6eb49d2c47",
-   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64223:0:mk:Main-hand enchant"
+   "paint": "427c243d36ffc917",
+   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64223:0:mk:Main-hand enchant"
   },
   {
    "at": "events 2",
    "mask": 255,
-   "paint": "666c294ba195e5a6",
-   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=T;tn=Fermin;tc=normal"
+   "paint": "afdae849f4353c8a",
+   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=S2;i="
   },
   {
    "at": "events 3",
    "mask": 255,
-   "paint": "465188648fef5c85",
-   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=S1;i=6;el=accept:92462;tx=Accept Infestation Investigation"
+   "paint": "e7fc4e33c51d8541",
+   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=W0;g=16:2361:INVTYPE_2HWEAPON:2:5:5:1:1:1:Battleworn Hammer:DP3.5/WS2.9"
   },
   {
    "at": "events 4",
    "mask": 255,
-   "paint": "0f62787484bd96ba",
-   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=S2;i="
+   "paint": "e994a09855938c7a",
+   "payload": "gv=golden;gk=7;cf=255;t=63623;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=32253;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=K;sk="
   },
   {
    "at": "events 5",
    "mask": 255,
-   "paint": "81379792dfd344e1",
-   "payload": "gv=golden;gk=7;cf=255;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64224:0:mk:Main-hand enchant"
+   "paint": "d72c99d6b0f8f065",
+   "payload": "gv=golden;gk=7;cf=255;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64224:0:mk:Main-hand enchant"
   },
   {
    "at": "/coach combat off",
    "mask": 251,
-   "paint": "d383ac0f8c2c06b8",
-   "payload": "gv=golden;gk=7;cf=251;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=B;cl=WARRIOR;ra=Skyborne;fa=Horde;nm=Fermin;bd=Thendal Grove"
+   "paint": "03f001b69e59eec7",
+   "payload": "gv=golden;gk=7;cf=251;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=E;ex=QUEST_ACCEPTED: Recorder.lua:144: attempt to call field 'GetTitleForQuestID' (a nil value)"
   },
   {
    "at": "/coach voice off",
    "mask": 123,
-   "paint": "6cea91011e9e7923",
-   "payload": "gv=golden;gk=7;cf=123;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=W0;g=16:2361:INVTYPE_2HWEAPON:2:5:5:1:1:1:Battleworn Hammer:DP3.5/WS2.9"
+   "paint": "53556ff988e43ad5",
+   "payload": "gv=golden;gk=7;cf=123;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=Q0;q=92461:0:3/8"
   },
   {
    "at": "/coach reset",
    "mask": 255,
-   "paint": "0439147de3a7d5ca",
-   "payload": "gv=golden;gk=7;cf=255;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=E;ex=QUEST_ACCEPTED: Recorder.lua:144: attempt to call field 'GetTitleForQuestID' (a nil value)"
+   "paint": "da70314a7ade1c17",
+   "payload": "gv=golden;gk=7;cf=255;t=63624;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=10993;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64224:0:mk:Main-hand enchant"
   },
   {
    "at": "/glidelink cell 4",
    "mask": 255,
-   "paint": "da819dc7742f5f17",
-   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64225:0:mk:Main-hand enchant"
+   "paint": "0c63c6d75ebed4c9",
+   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64225:0:mk:Main-hand enchant"
   },
   {
    "at": "/glidelink cell 3",
    "mask": 255,
-   "paint": "1fc1d5eb05cc6c16",
-   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=K;sk="
+   "paint": "91328a2fdf3b28d3",
+   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=B;cl=WARRIOR;ra=Skyborne;fa=Horde;nm=Fermin;bd=Thendal Grove"
   },
   {
    "at": "/glidelink off",
    "mask": 255,
    "paint": "7f77c11ccb8158c0",
-   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=K;sk="
+   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=B;cl=WARRIOR;ra=Skyborne;fa=Horde;nm=Fermin;bd=Thendal Grove"
   },
   {
    "at": "/glidelink on",
    "mask": 255,
-   "paint": "cbb0938233c89722",
-   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=Q0;q=92461:0:3/8"
+   "paint": "289f1a52beaebb7e",
+   "payload": "gv=golden;gk=7;cf=255;t=63625;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=55254;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=2:lvl:7;e2=1:acc:92461|pg=E;ex=QUEST_ACCEPTED: Recorder.lua:144: attempt to call field 'GetTitleForQuestID' (a nil value)"
   },
   {
    "at": "mark",
    "mask": 255,
-   "paint": "e4309c22aaf05a20",
-   "payload": "gv=golden;gk=7;cf=255;t=63626;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;qn=1;qh=32744;an=1;ah=33994;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=3:mark:golden note;e2=2:lvl:7;e3=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64226:0:mk:Main-hand enchant"
+   "paint": "ebf763fb4b56d2c9",
+   "payload": "gv=golden;gk=7;cf=255;t=63626;l=7;x=1234;X=4500;r=2200;h=80;m=50;pt=RAGE;cl=WARRIOR;c=0;d=0;mp=2521;px=4231;py=2377;f=157;sp=70;g=12345;b=18;du=30;hs=0;rs=0;mo=0;tx=0;kc=0;kx=0;tg=250001;tl=3;th=-1;tr=2;td=0;st=5;si=;sh=;qn=1;qh=32744;an=1;ah=33994;ak=0;sw=145;sa=78;wn=1;wh=14831;in=1;ih=23415;rn=0;rh=0;rq=0;tp=;tt=;tq=;er=1;e1=3:mark:golden note;e2=2:lvl:7;e3=1:acc:92461|pg=A0;a=6673:63711:120:mk:Battle Shout,1243:65421:1800::Power Word  Fortitude,mh:64226:0:mk:Main-hand enchant"
   }
  ],
  "link_db": {
@@ -138,6 +138,8 @@
   "Data\\VendorTreasures.lua",
   "Data\\RXPImports.lua",
   "Core.lua",
+  "MD5.lua",
+  "StepIdentity.lua",
   "Recorder.lua",
   "Scanner.lua",
   "RXPDump.lua",

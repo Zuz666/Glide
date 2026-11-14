@@ -17,6 +17,7 @@ import wowmock  # noqa: E402
 
 L = lua51.LuaRuntime(unpack_returned_tuples=True)
 L.execute(wowmock.MOCK)
+wowmock.install_bit(L)
 L.execute(r"""
 LEVEL = 12
 function UnitLevel(u) return u == "target" and 11 or LEVEL end

@@ -123,6 +123,12 @@ local function hearthCD()
     return math.max(0, floor(start + dur - GetTime()))
 end
 
+local function sourcePointer(step, guide)
+    if ns.StepIdentity and guide and guide.steps and step then
+        return ns.StepIdentity(guide.steps[step])
+    end
+end
+
 function ns.Core()
     local t = {}
     local function put(k, v) t[#t + 1] = k .. "=" .. tostring(v == nil and "" or v) end
@@ -173,8 +179,11 @@ function ns.Core()
         put("tr", Safe(UnitReaction("target", "player")) or "")
         put("td", UnitIsDead("target") and 1 or 0)
     end
-    local step = ns.RXPStep()
+    local step, guide = ns.RXPStep()
     put("st", step or "")
+    local source, fingerprint = sourcePointer(step, guide)
+    put("si", source or "")
+    put("sh", fingerprint or "")
     put("qn", ns.questPages or 0)
     put("qh", ns.questHash or 0)
     put("an", ns.buffPages or 0)
@@ -397,6 +406,15 @@ local function buildBuffs()
 end
 
 local cache, dirty, rr = {}, {}, 0
+local cachedGuide, cachedStep, cachedSource, cachedFingerprint
+local function cachePage(id, fn)
+    local ok, s = ns.Try("page " .. id, fn)
+    if ok and s then
+        s = "pg=" .. id .. ";" .. s
+        if #s > PAGE_MAX + 6 then s = s:sub(1, PAGE_MAX + 6) end
+        if cache[id] ~= s then cache[id] = s; dirty[id] = true end
+    end
+end
 function ns.RefreshPages()
     ns.Try("quests", buildQuests)
     if ns.BuildSkills then ns.Try("skills", ns.BuildSkills) end
@@ -407,14 +425,7 @@ function ns.RefreshPages()
     ns.ListPages(builders, "Q", questChunks, "q=")
     ns.ListPages(builders, "A", buffChunks, "a=")
     for _, hook in ipairs(ns.pageHooks) do ns.Try("pages", hook, builders) end
-    for id, fn in pairs(builders) do
-        local ok, s = ns.Try("page " .. id, fn)
-        if ok and s then
-            s = "pg=" .. id .. ";" .. s
-            if #s > PAGE_MAX + 6 then s = s:sub(1, PAGE_MAX + 6) end
-            if cache[id] ~= s then cache[id] = s; dirty[id] = true end
-        end
-    end
+    for id, fn in pairs(builders) do cachePage(id, fn) end
     for id in pairs(cache) do if not builders[id] then cache[id] = nil; dirty[id] = nil end end
 end
 
@@ -430,9 +441,18 @@ end)
 -- core: a page that doesn't fit whole is skipped (and stays queued) rather than cut by the encoder,
 -- since a cut page would read as complete data. Long ring events (e.g. mark notes) shrink the room.
 function ns.NextPage(room)
+    local step, guide = ns.RXPStep()
+    local source, fingerprint = sourcePointer(step, guide)
+    if guide ~= cachedGuide or step ~= cachedStep or source ~= cachedSource or fingerprint ~= cachedFingerprint then
+        -- Core already carries this position; never send its predecessor's cached guide/step page with it.
+        for _, id in ipairs({ "G", "S0", "S1", "S2" }) do cachePage(id, builders[id]) end
+        cachePage("B", builders.B)
+        dirty.B = true  -- unchanged character fields must still attest the new source-step cohort
+        cachedGuide, cachedStep, cachedSource, cachedFingerprint = guide, step, source, fingerprint
+    end
     room = room or math.huge
     local function fits(id) return cache[id] and #cache[id] <= room end
-    for _, id in ipairs({ "R0", "R1", "S0", "A0", "I0", "G", "Z", "T", "A1", "I1", "S1", "S2", "B" }) do
+    for _, id in ipairs({ "R0", "R1", "S0", "B", "A0", "I0", "G", "Z", "T", "A1", "I1", "S1", "S2" }) do
         if dirty[id] and fits(id) then dirty[id] = nil; return cache[id] end
     end
     for id in pairs(dirty) do

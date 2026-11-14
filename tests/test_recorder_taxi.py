@@ -16,6 +16,7 @@ import wowmock  # noqa: E402
 
 L = lua51.LuaRuntime(unpack_returned_tuples=True)
 L.execute(wowmock.MOCK)
+wowmock.install_bit(L)
 L.execute(r"""
 function GetTaxiMapID() return 1414 end
 local function at(x, y) return { GetXY = function() return x, y end } end

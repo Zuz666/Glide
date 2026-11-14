@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from collections import deque
+from collections.abc import Callable
 
 import strip_spec
 from protocol import list_hash
@@ -16,10 +17,19 @@ from knowledge.values import as_int  # noqa: E402
 
 class GameState:
     XP_WINDOW = 900                # seconds of XP history behind xp_per_hour
+    FRESH_SECONDS = 2
+    STEP_MATCH_REASONS = {
+        "missing": "Local source step unavailable",
+        "mismatch": "Local source step differs",
+        "unverified": "Source step identity unverified",
+        "stale": "Game data is stale",
+    }
 
     def __init__(self):
         self.core = {}
         self.pages = {}            # page id -> dict
+        self._step_context = ((None, None, None, None), {})  # immutable pointer/class cohort: S pages + player evidence
+        self.step_lookup: Callable[[dict], dict] | None = None
         self.quest_chunks = {}     # chunk index -> raw text
         self.quests = {}           # qid -> {"done": bool, "obj": [(have, need)]}
         # ring events are new when their id is above the highest seen; the addon counts from 1 again after a UI
@@ -56,9 +66,26 @@ class GameState:
     def update(self, core, page, now=None):
         """Apply one decoded frame. Returns list of new ring events [(id, kind, arg)]."""
         now = now or time.time()
+        prev = self.core
+        restarts = self.addon_restarts
+        ring = self._ring(core)
+        reset = (self.addon_restarts != restarts
+                 or (self.frames > 0 and now - self.last_frame >= self.FRESH_SECONDS)
+                 or (bool(prev) and prev.get("cl") != core.get("cl")))
+        pointer = (core.get("sh"), core.get("si"), core.get("st"), core.get("cl"))
+        previous, step_pages = self._step_context
+        if reset or pointer != previous:
+            step_pages = {}
+            # Revoke old evidence before publishing a new core, even when a restart repeats the same pointer.
+            self._step_context = (pointer, step_pages)
+            if reset or "sh" in core or "si" in core:
+                for pid in ("S0", "S1", "S2"):
+                    self.pages.pop(pid, None)
+        if reset:
+            self.pages.pop("B", None)
+        self.core = core
         self.frames += 1
         self.last_frame = now
-        prev, self.core = self.core, core
         if (prev.get("qn"), prev.get("qh")) != (core.get("qn"), core.get("qh")):
             self._rebuild_quests()          # the log changed: the chunks held may already make it up (a shorter log)
         if page.get("pg"):
@@ -81,6 +108,10 @@ class GameState:
                         self.map_sizes[int(page["mm"])] = (float(page["mw"]), float(page["mh"]))
                     except ValueError:
                         pass
+        if page.get("pg") in ("B", "S0", "S1", "S2"):
+            step_pages = dict(step_pages)
+            step_pages[page["pg"]] = dict(page)
+        self._step_context = (pointer, step_pages)
         if core.get("rn") == "0" and self.gear["R"]:
             self._rebuild_gear("R")
         self._track_xp(now)
@@ -90,7 +121,7 @@ class GameState:
             self._estimate_scale(now, mp, px / 100.0, py / 100.0)
             self.pos_hist.append((now, mp, px / 100.0, py / 100.0))
         new = []
-        for i, kind, arg in self._ring(core):
+        for i, kind, arg in ring:
             if self.event_max is None or i > self.event_max:
                 new.append((i, kind, arg))
                 if kind == "cst":
@@ -444,11 +475,25 @@ class GameState:
             return None
         return (mx - x) / rate * 3600
 
-    def step_info(self, k=0):
-        """Parsed RXP step page S<k>: {'index', 'elements': [...], 'text'}"""
-        p = self.pages.get("S%d" % k)
+    def _step_page(self, pid, core=None):
+        c = self.core if core is None else core
+        if "sh" not in c and "si" not in c:
+            return self.pages.get(pid)
+        pointer, pages = self._step_context
+        if pointer != (c.get("sh"), c.get("si"), c.get("st"), c.get("cl")):
+            return None
+        return pages.get(pid)
+
+    def step_info(self, k=0, core=None):
+        """Parsed current-cohort RXP step page S<k>: {'index', 'elements': [...], 'text'}."""
+        c = self.core if core is None else core
+        p = self._step_page("S%d" % k, c)
         if not p or not p.get("i"):
             return None
+        if "sh" in c or "si" in c:
+            step = as_int(c.get("st"))
+            if step is None or as_int(p.get("i")) != step + k:
+                return None
         els = []
         for e in (p.get("el") or "").split(","):
             parts = e.split(":")
@@ -498,12 +543,14 @@ class GameState:
     def summary(self):
         c = self.core
         b = self.pages.get("B", {})
+        player = self._step_page("B", c) or {}
         z = self.pages.get("Z", {})
         g = self.pages.get("G", {})
         t = self.pages.get("T", {})
         pos = self.pos_hist[-1] if self.pos_hist else None
-        return {
-            "name": b.get("nm"), "class": c.get("cl") or b.get("cl"), "race": b.get("ra"), "faction": b.get("fa"),
+        s: dict = {
+            "name": b.get("nm"), "class": c.get("cl") or player.get("cl"),
+            "race": player.get("ra"), "faction": player.get("fa"),
             "bind": b.get("bd"),
             "level": as_int(c.get("l")), "xp": as_int(c.get("x")), "xp_max": as_int(c.get("X")),
             "rested": as_int(c.get("r"), 0), "hp": self._gauge("h", "hp"), "power": self._gauge("m", "power"),
@@ -522,7 +569,7 @@ class GameState:
                        "tapped_by_others": self._flag(c.get("tt")), "quest_mob": self._flag(c.get("tq"))}
             if c.get("tg") is not None else None,
             "guide": g.get("gn"), "guide_group": g.get("gg"), "step": as_int(c.get("st")),
-            "steps": [self.step_info(k) for k in range(3)],
+            "steps": [self.step_info(k, c) for k in range(3)],
             "quests": self.quests,
             "coach_flags": self.coach_flags(),
             "skills": self.skills(),
@@ -538,5 +585,24 @@ class GameState:
             "on_step_seconds": int(time.time() - self.step_since),
             "dist_to_goto": self.distance_to_goto(),
             "arrow": self.goto_target(),
-            "fresh": time.time() - self.last_frame < 2,
+            "fresh": time.time() - self.last_frame < self.FRESH_SECONDS,
         }
+        if "sh" in c or "si" in c:
+            s["step_source_index"] = as_int(c.get("si"))
+            s["step_fingerprint"] = c.get("sh") or None
+        if s["step"] and (self.step_lookup is not None or "sh" in c or "si" in c):
+            match: dict = {"status": "unverified"}
+            if not s["fresh"]:
+                match = {"status": "stale"}
+            elif s.get("step_fingerprint") and (s.get("step_source_index") or 0) > 0 and self.step_lookup is not None:
+                match = self.step_lookup(s)
+            s["step_match"] = match["status"]
+            s["step_match_reason"] = self.STEP_MATCH_REASONS.get(match["status"])
+            if match["status"] == "verified":
+                current = dict(s["steps"][0] or {"index": s["step"], "elements": [], "text": ""})
+                entry = match["step"]
+                if entry["text"]:
+                    current["text"] = entry["text"]
+                current["notes"] = entry["notes"]
+                s["steps"][0] = current
+        return s
