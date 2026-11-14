@@ -13,7 +13,7 @@ import { defaultHome, isCheckout, isDev, logsDir, pythonCommand, whisperDirs } f
 import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
 import { listWhisperModels, Speech } from "../speech";
-import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest, TtsPlaybackReport, TtsPlaybackState, TtsProvider } from "../../shared/ipc";
+import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest, TtsPlaybackReport, TtsPlaybackState, TtsProvider, Voice } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import { TtsStatusCoordinator } from "../tts-status";
@@ -75,7 +75,6 @@ const handle = <K extends InvokeChannel, Sender extends boolean = false>(ch: K,
 const isUnc = (p: string) => /^[\\/]{2}/.test(String(p || ""));
 
 export function registerIpc(d: IpcDeps): void {
-  setSpeechDestinationCatalogue(() => d.windowsTts.voices());
   const ttsKey = (provider: unknown) => {
     const env = TTS_KEYS[provider as keyof typeof TTS_KEYS];
     return env ? keyValue(env) : "";
@@ -91,6 +90,12 @@ export function registerIpc(d: IpcDeps): void {
       : "stopped",
     onBroadcast: (status) => d.broadcast("tts:status", status),
   });
+  const windowsVoices = async () => {
+    const catalogue = await d.windowsTts.voices();
+    ttsStatus.setWindowsVoices(catalogue);
+    return catalogue;
+  };
+  setSpeechDestinationCatalogue(windowsVoices);
   d.edgeTts?.onStatusChange?.(() => ttsStatus.refresh());
   d.windowsTts?.onStatusChange?.((event) => ttsStatus.onWindowsEvent(event));
   d.windowsTts?.onWorkerChange?.(() => ttsStatus.refresh());
@@ -125,7 +130,7 @@ export function registerIpc(d: IpcDeps): void {
     }
   };
   engineChannels(d);
-  appChannels(d, ttsStatus, ttsKey, syncStatusOwner);
+  appChannels(d, ttsStatus, ttsKey, syncStatusOwner, windowsVoices);
   edgeChannels(d, ttsStatus);
   configChannels(d);
   keyChannels(ttsStatus);
@@ -146,7 +151,7 @@ function engineChannels({ engine }: IpcDeps): void {
 
 /** The app itself: its info and settings, the voice, the footer's resource meter, updates and release notes. */
 function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provider: unknown) => string,
-  syncStatusOwner: (sender: WebContents) => void): void {
+  syncStatusOwner: (sender: WebContents) => void, windowsVoices: () => Promise<Voice[]>): void {
   const { engine, updater, sampler } = d;
   handle("app:info", () => ({
     version: app.getVersion(), dev: isDev, home: engineHome(), defaultHome, checkout: isCheckout(engineHome()),
@@ -264,7 +269,7 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
     if (settings.current.speech?.provider !== "windows") {
       throw new Error("SSML testing is available only for Windows SAPI5 voices");
     }
-    const catalogue = await d.windowsTts.voices();
+    const catalogue = await windowsVoices();
     const selection = options.voiceName || "";
     const voice = selection ? catalogue.find((item) => item.identity === selection || item.id === selection)
       : catalogue.find((item) => item.isDefault);
@@ -278,7 +283,7 @@ function appChannels(d: IpcDeps, ttsStatus: TtsStatusCoordinator, ttsKey: (provi
   handle("tts:windowsStop", (id) => d.windowsTts.stop(id));
   handle("tts:voices", async (provider) => {
     if (provider !== "windows") return ttsVoices(provider, ttsKey(provider), settings.current.speech?.azure?.region);
-    const catalogue = await d.windowsTts.voices();
+    const catalogue = await windowsVoices();
     await refreshSpeechDestination(engine, catalogue);
     return catalogue;
   });

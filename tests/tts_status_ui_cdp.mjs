@@ -1272,6 +1272,45 @@ try {
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
   }
+  if (process.env.GLIDE_NATIVE_LOG_PROOF) {
+    const records = JSON.parse(fs.readFileSync(process.env.GLIDE_NATIVE_LOG_PROOF, "utf8"));
+    const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+      (async () => {
+        const nav = await import('/renderer/nav.js');
+        const logs = await import('/renderer/logs.js');
+        nav.show('logs');
+        document.getElementById('log-filter').value = '';
+        logs.loadLog(${JSON.stringify(records)});
+        const log = document.getElementById('log');
+        if (!log.textContent.includes('requested_voice="Example voice"') || log.textContent.includes('HKEY_'))
+          throw Error('Visible native submission log must contain the name without the registry path');
+        const title = log.querySelector('.log-category').title;
+        if (!title.includes(${JSON.stringify(records[0].attribution.voice)}) || title.includes('\\\\\\\\'))
+          throw Error('Log tooltip must retain the raw identity with single separators');
+      })()` });
+    if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
+    const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    fs.writeFileSync(`${process.env.GLIDE_NATIVE_LOG_PROOF}.png`, Buffer.from(image.data, "base64"));
+  }
+  if (process.env.GLIDE_NATIVE_STATUS_PROOF) {
+    const nativeStatus = JSON.parse(fs.readFileSync(process.env.GLIDE_NATIVE_STATUS_PROOF, "utf8"));
+    const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+      (async () => {
+        const sb = await import('/renderer/session-bar.js');
+        sb.showTtsStatus(${JSON.stringify(nativeStatus)});
+        if (document.getElementById('sb-speak').textContent !== 'SAPI5 · Xenia'
+            || !document.getElementById('sb-speak-wrap').title.includes('Windows SAPI5 (Xenia (Russian))')
+            || document.getElementById('sb-speak-wrap').title.includes('HKEY_'))
+          throw Error('Native status must show its catalogue name without the registry identity');
+      })()` });
+    if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
+    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(`${process.env.GLIDE_NATIVE_STATUS_PROOF}-${label}.png`, Buffer.from(image.data, "base64"));
+    }
+    await send("Emulation.setDeviceMetricsOverride", { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false });
+  }
   if (process.env.GLIDE_REASONING_SCREENSHOT_DIR) {
     fs.mkdirSync(process.env.GLIDE_REASONING_SCREENSHOT_DIR, { recursive: true });
     const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `

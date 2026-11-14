@@ -327,11 +327,12 @@ function request(h,id,body=text,decode=true) {
   const settings={current:{muted:false,speech:{provider:'edge',edge:{voice:'ru-RU-SvetlanaNeural'}}},
     merge(patch){this.current={...this.current,...patch};}};
   let storedKeys={};
+  let nativeCatalogueLoader, nativeCatalogue = [];
   cache('app/settings',{settings});
   cache('app/config',{engineHome:()=>root,keyValue:k=>storedKeys[k]||'',endpointKeyEnvs:()=>[],engineOptions:()=>({}),
     configPath:()=>path.join(root,'config.json'),readConfig:()=>({}),saveConfig:async p=>p,
     saveAppSettingsPatch:async p=>settings.merge(p),
-    setSpeechDestinationCatalogue:()=>{},refreshSpeechDestination:async()=>{}});
+    setSpeechDestinationCatalogue:load=>{nativeCatalogueLoader=load;},refreshSpeechDestination:async()=>{}});
   cache('secrets',{KNOWN_KEYS:[],keyStatus:()=>[],setKey:async(k,v)=>{storedKeys[k]=v;}});
   let synthImpl = async () => Buffer.from([1,2,3]);
   cache('tts',{TTS_KEYS:{openai:'OPENAI_API_KEY',elevenlabs:'ELEVENLABS_API_KEY',azure:'AZURE_SPEECH_KEY',google:'GOOGLE_TTS_API_KEY'},
@@ -358,7 +359,7 @@ function request(h,id,body=text,decode=true) {
     a.send(channel,payload); b.send(channel,payload);
   };
   let winSpeakHook=async()=>({voice:'Xenia (Russian)'});
-  const windowsTts={stop(){},speak:(id,t,opts)=>winSpeakHook(id,t,opts),voices:async()=>[]};
+  const windowsTts={stop(){},speak:(id,t,opts)=>winSpeakHook(id,t,opts),voices:async()=>nativeCatalogue};
   registerIpc({engine,edgeTts:h,windowsTts,updater:{},sampler:{},speech:{},mainWindow:a,overlay:b,
     broadcast,setMuted(m){settings.current.muted=m;h.configure(!m&&settings.current.speech?.provider==='edge');broadcast('app:settings',settings.current);},
     pushMute(){},installUpdate(){},applyOverlaySettings(){broadcast('app:settings',settings.current);},updateTray(){},ensureSpeech:async()=>{}});
@@ -466,6 +467,57 @@ function request(h,id,body=text,decode=true) {
   assert.equal((await invoke(b, 'tts:status:get')).phase, 'ready',
     'late failure of cancelled synth must not trigger error hold');
   synthImpl = async () => Buffer.from([1,2,3]);
+
+  // Native selectors are token identities, not display names; exercise discovery through the real IPC owner.
+  const xeniaToken = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\TokenEnums\\SileroTTS\\Xenia (Russian)';
+  const opaqueToken = 'HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\'
+    + 'long-vendor-'.repeat(12) + 'opaque-id';
+  const duplicateToken = xeniaToken + '-another-engine';
+  await invoke(a, 'app:settings:set', { speech: { provider: 'windows', voiceName: xeniaToken } });
+  const unresolved = await invoke(a, 'tts:status:get');
+  assert(!unresolved.voiceLabel.includes('HKEY_') && !unresolved.fullVoice.includes('HKEY_'),
+    'An unresolved native identity must not leak a registry path into the status label or tooltip');
+  nativeCatalogue = [
+    { id: 'Xenia (Russian)', name: 'Xenia (Russian)', identity: xeniaToken, isDefault: true },
+    { id: 'Microsoft Zira Desktop', name: 'Microsoft Zira Desktop', identity: opaqueToken },
+    { id: 'Xenia (Russian)', name: 'Xenia (Russian)', identity: duplicateToken },
+  ];
+  await nativeCatalogueLoader(); // Session/settings discovery, without first opening the Voice panel.
+  const nativeStatus = await invoke(a, 'tts:status:get');
+  assert.equal(nativeStatus.voiceLabel, 'SAPI5 · Xenia');
+  assert.equal(nativeStatus.fullVoice, 'Windows SAPI5 (Xenia (Russian))');
+  assert.equal(b.statuses.at(-1).fullVoice, nativeStatus.fullVoice, 'Discovery refreshes the overlay as well');
+  if (process.env.GLIDE_NATIVE_STATUS_PROOF)
+    fs.writeFileSync(process.env.GLIDE_NATIVE_STATUS_PROOF, JSON.stringify(nativeStatus));
+  winSpeakHook = async (_id, _text, options) => {
+    assert.equal(options.voiceName, xeniaToken, 'Presentation must not replace the submitted token selector');
+    return { voice: 'Xenia (Russian)' };
+  };
+  await invoke(a, 'tts:windowsSpeak', 'native-token', 'Test.', { voiceName: settings.current.speech.voiceName });
+  await invoke(a, 'tts:playbackState', { requestId: 'native-error', state: 'error' });
+  await invoke(a, 'app:settings:set', { speech: { provider: 'windows', voiceName: duplicateToken } });
+  assert.equal((await invoke(a, 'tts:status:get')).phase, 'ready',
+    'Changing between same-named tokens still clears the previous destination error hold');
+  for (const [selector, expected] of [[opaqueToken, 'Zira'], ['Microsoft Zira Desktop', 'Zira'], ['', 'Xenia']]) {
+    await invoke(a, 'app:settings:set', { speech: { provider: 'windows', voiceName: selector } });
+    assert.equal((await invoke(a, 'tts:status:get')).voiceLabel, 'SAPI5 · ' + expected);
+  }
+  await invoke(a, 'app:settings:set', { speech: { provider: 'edge', edge: { voice: 'ru-RU-SvetlanaNeural' },
+    voiceName: opaqueToken } });
+  for (const [id, report] of [['explicit-token', { fallbackVoice: opaqueToken }], ['saved-token', {}]]) {
+    await invoke(a, 'tts:playbackState', { requestId: id, state: 'fallback', ...report });
+    const fallback = await invoke(a, 'tts:status:get');
+    assert.equal(fallback.voiceLabel, 'Edge · Svetlana');
+    assert.equal(fallback.fallbackVoice, 'Zira', 'Long token identities resolve before display truncation');
+    await invoke(a, 'tts:playbackState', { requestId: id, state: 'ended' });
+  }
+  await invoke(a, 'app:settings:set', { speech: { provider: 'windows', voiceName: xeniaToken } });
+  nativeCatalogue = [];
+  await invoke(a, 'tts:voices', 'windows');
+  const removed = await invoke(a, 'tts:status:get');
+  assert(!removed.fullVoice.includes('Xenia') && !removed.fullVoice.includes('HKEY_'),
+    'Catalogue reload discards names of removed voices without exposing their token paths');
+  assert.equal(settings.current.speech.voiceName, xeniaToken, 'Discovery never rewrites the stored selector');
 
   // Restore Edge provider for the remaining lifecycle/settings tests below.
   await invoke(a, 'app:settings:set', { speech: { provider: 'edge', edge: { voice: 'ru-RU-SvetlanaNeural' } } });
