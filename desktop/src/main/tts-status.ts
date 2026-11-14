@@ -1,5 +1,5 @@
 // Authoritative desktop TTS live status shared between the coach screen and the click-through game overlay.
-import type { AppSettings, TtsPhase, TtsPlaybackReport, TtsProvider, TtsStatus } from "../shared/ipc";
+import type { AppSettings, TtsPhase, TtsPlaybackReport, TtsProvider, TtsStatus, Voice } from "../shared/ipc";
 import { TTS_KEYS } from "./tts";
 
 export type EdgeStatusSnapshot = {
@@ -52,7 +52,7 @@ export function shortSapi5Voice(raw: string): string {
 function describeVoice(
   provider: TtsProvider,
   settings: AppSettings,
-  lastWindowsVoice?: string,
+  windowsVoice = "",
 ): { voiceLabel: string; fullVoice: string } {
   const s = settings.speech || {};
   if (provider === "edge") {
@@ -82,7 +82,7 @@ function describeVoice(
     const voice = s.google?.voice || "en-US-Chirp3-HD-Charon";
     return { voiceLabel: `Google · ${shortGoogleVoice(voice)}`, fullVoice: `Google Cloud (${voice})` };
   }
-  const raw = s.voiceName || lastWindowsVoice || "";
+  const raw = windowsVoice;
   const short = shortSapi5Voice(raw) || "Default";
   return {
     voiceLabel: `SAPI5 · ${short}`,
@@ -113,6 +113,7 @@ export class TtsStatusCoordinator {
   private readonly active = new Map<string, ActiveRequest>();
   private hold?: HoldState;
   private lastWindowsVoice?: string;
+  private readonly windowsVoiceNames = new Map<string, string>();
   private lastSignature = "";
   private lastSnapshot?: TtsStatus;
   private lastConfigKey?: string;
@@ -127,6 +128,24 @@ export class TtsStatusCoordinator {
     },
   ) {}
 
+  setWindowsVoices(voices: readonly Voice[]): void {
+    this.windowsVoiceNames.clear();
+    for (const voice of voices) {
+      this.windowsVoiceNames.set(voice.id, voice.name);
+      if (voice.identity) this.windowsVoiceNames.set(voice.identity, voice.name);
+      if (voice.isDefault) this.windowsVoiceNames.set("", voice.name);
+    }
+    this.publish();
+  }
+
+  private windowsVoiceName(selection: string): string {
+    const name = this.windowsVoiceNames.get(selection);
+    if (name) return name;
+    const raw = selection || this.lastWindowsVoice || "";
+    // Unresolved registry tokens are selectors, never display names; details remain in diagnostics.
+    return /^HKEY_/i.test(raw) ? "Selected voice (name unavailable)" : raw;
+  }
+
   current(): TtsStatus {
     return this.compute(this.lastSnapshot?.updatedAt ?? Date.now());
   }
@@ -134,7 +153,9 @@ export class TtsStatusCoordinator {
   refresh(): TtsStatus {
     const s = this.deps.getSettings();
     const provider: TtsProvider = s.speech?.provider || "windows";
-    const configKey = `${provider}|${describeVoice(provider, s, this.lastWindowsVoice).fullVoice}`;
+    const selection = provider === "windows" ? s.speech?.voiceName || this.lastWindowsVoice || ""
+      : describeVoice(provider, s).fullVoice;
+    const configKey = `${provider}|${selection}`;
     if (this.lastConfigKey !== undefined && this.lastConfigKey !== configKey) {
       this.clearHold();
     }
@@ -236,8 +257,9 @@ export class TtsStatusCoordinator {
     }
     if (state === "fallback") {
       this.clearHold();
-      const fb = typeof report.fallbackVoice === "string" ? shortSapi5Voice(report.fallbackVoice.slice(0, 128)) : undefined;
-      const defaultFb = shortSapi5Voice(this.deps.getSettings().speech?.voiceName || this.lastWindowsVoice || "") || "Default";
+      const fb = typeof report.fallbackVoice === "string"
+        ? shortSapi5Voice(this.windowsVoiceName(report.fallbackVoice)).slice(0, 128) : undefined;
+      const defaultFb = shortSapi5Voice(this.windowsVoiceName(this.deps.getSettings().speech?.voiceName || "")) || "Default";
       this.active.set(requestId, {
         state: "fallback",
         owner: resolvedOwner,
@@ -268,7 +290,7 @@ export class TtsStatusCoordinator {
     if (existing?.state === "fallback") {
       if (ev.type === "started" || ev.type === "done") {
         if (ev.voice) {
-          existing.fallbackVoice = shortSapi5Voice(ev.voice) || existing.fallbackVoice;
+          existing.fallbackVoice = shortSapi5Voice(this.windowsVoiceName(ev.voice)) || existing.fallbackVoice;
           existing.actualVoice = ev.voice;
         }
         if (ev.type === "started") {
@@ -292,7 +314,7 @@ export class TtsStatusCoordinator {
         // SAPI5 started for a failed online request before reportPlayback("fallback") arrived.
         if (existing.timer) { clearTimeout(existing.timer); existing.timer = undefined; }
         existing.state = "fallback";
-        existing.fallbackVoice = shortSapi5Voice(this.deps.getSettings().speech?.voiceName || this.lastWindowsVoice || "") || "Default";
+        existing.fallbackVoice = shortSapi5Voice(this.windowsVoiceName(this.deps.getSettings().speech?.voiceName || "")) || "Default";
       } else {
         this.clearHold();
         this.active.set(ev.id, { state: "generating" });
@@ -346,7 +368,7 @@ export class TtsStatusCoordinator {
   private compute(now: number): TtsStatus {
     const s = this.deps.getSettings();
     const provider: TtsProvider = s.speech?.provider || "windows";
-    const { voiceLabel, fullVoice } = describeVoice(provider, s, this.lastWindowsVoice);
+    const { voiceLabel, fullVoice } = describeVoice(provider, s, this.windowsVoiceName(s.speech?.voiceName || ""));
     const edge = provider === "edge" ? this.deps.edgeSnapshot() : undefined;
     const workerState = provider === "edge" ? edge!.workerState
       : provider === "windows" ? this.deps.windowsWorkerState()

@@ -393,6 +393,43 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   host.dispose();
   assert(worker.killed, 'dispose must terminate its own worker');
 
+  // Submission text is readable; diagnostic metadata and the worker keep the exact requested selector.
+  const logRecords = [];
+  const logging = new WindowsTts('silent-worker.ps1', (text, attribution) => logRecords.push({ text, attribution }));
+  const token = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\ExampleVoice';
+  const logCatalogue = watched(logging.voices());
+  const logWorker = workers.at(-1);
+  logWorker.catalogue = [{ id: 'Example voice', name: 'Example voice', identity: token, isDefault: true }];
+  logWorker.ready();
+  logWorker.list();
+  await settled(logCatalogue);
+  const readable = watched(logging.speak('readable', 'Readable test.', { ...settings, voiceName: token }));
+  const submitted = logRecords.find(record => record.attribution.status === 'submitted');
+  assert(submitted.text.includes('requested_voice="Example voice"') && !submitted.text.includes('HKEY_'),
+    'The primary submission line must show the requested catalogue name, not its registry token');
+  assert.equal(submitted.attribution.voice, token, 'Hover details must retain the exact unescaped token');
+  assert.equal(logWorker.active.voice, token, 'Readable logging must not change the native selector');
+  const started = logRecords.find(record => record.attribution.status === 'started');
+  assert.equal(started.attribution.voice, 'Actual installed voice');
+  assert(started.text.includes('voice="Actual installed voice"'), 'Actual voice remains distinct from requested voice');
+  logWorker.finish();
+  await settled(readable);
+  if (process.env.GLIDE_NATIVE_LOG_PROOF)
+    require('node:fs').writeFileSync(process.env.GLIDE_NATIVE_LOG_PROOF,
+      JSON.stringify([submitted, started].map((record, i) => ({ ...record, t: 1700000000000 + i * 1000, stream: 'out' }))));
+  const emptyCatalogue = watched(logging.voices());
+  logWorker.catalogue = [];
+  logWorker.list();
+  await settled(emptyCatalogue);
+  const unresolved = watched(logging.speak('unresolved', 'Unknown voice.', { ...settings, voiceName: token }));
+  const unknownLog = logRecords.find(record => record.attribution.request_id === 'unresolved' && record.attribution.status === 'submitted');
+  assert(unknownLog.text.includes('name unavailable') && !unknownLog.text.includes('HKEY_')
+    && !unknownLog.text.includes('Example voice'), 'An unresolved token must not reuse a stale or guessed name');
+  assert.equal(unknownLog.attribution.voice, token);
+  logWorker.finish();
+  await settled(unresolved);
+  logging.dispose();
+
   // Some engines complete without reporting a word: retain completion, never fabricate first-word latency.
   const noWordHost = new WindowsTts('silent-worker.ps1');
   const noWordEvents = [];

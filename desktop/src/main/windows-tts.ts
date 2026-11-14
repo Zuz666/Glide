@@ -37,6 +37,7 @@ interface Worker {
   readyTimer?: NodeJS.Timeout;
   pending: Map<number, Pending>;
   warmedVoices: Set<string>;
+  voiceNames: Map<string, string>;
 }
 /** Owns one lazy worker; a failed utterance is never replayed after a process restart. */
 export class WindowsTts {
@@ -203,7 +204,8 @@ export class WindowsTts {
     const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", this.scriptPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    const worker: Worker = { child, lines, ready: false, closed: false, pending: new Map(), warmedVoices: new Set() };
+    const worker: Worker = { child, lines, ready: false, closed: false, pending: new Map(),
+      warmedVoices: new Set(), voiceNames: new Map() };
     this.worker = worker;
     this.notifyWorker();
     worker.readyTimer = setTimeout(() => {
@@ -308,7 +310,7 @@ export class WindowsTts {
         if (message.event === "error") {
           const elapsed = Math.round(performance.now() - pending.submittedAt);
           try {
-            this.note?.(`[voice] SAPI5 warmup failed requested_voice=${JSON.stringify(pending.voice || "Windows default")} elapsed_ms=${elapsed}`, {
+            this.note?.(`[voice] SAPI5 warmup failed requested_voice=${JSON.stringify(this.requestedVoiceName(pending.voice))} elapsed_ms=${elapsed}`, {
               category: "TTS", operation: "native warmup", provider: "SAPI5", status: "error",
               ...(pending.voice ? { voice: pending.voice } : {}), elapsed_ms: elapsed,
             });
@@ -337,6 +339,11 @@ export class WindowsTts {
         && typeof voice.identity === "string" && !!voice.identity && typeof voice.isDefault === "boolean")) {
         pending.reject(new Error("Windows TTS: invalid voice catalogue"));
       } else {
+        worker.voiceNames.clear();
+        for (const voice of message.voices) {
+          worker.voiceNames.set(voice.id, voice.name);
+          if (voice.identity) worker.voiceNames.set(voice.identity, voice.name);
+        }
         pending.resolve(message.voices);
       }
     } else if (message.event === "done" && pending.kind === "speak") {
@@ -370,6 +377,12 @@ export class WindowsTts {
     }
   }
 
+  private requestedVoiceName(selector: string): string {
+    if (!selector) return "Windows default";
+    return this.worker?.voiceNames.get(selector)
+      || (/^HKEY_/i.test(selector) ? "Selected voice (name unavailable)" : selector);
+  }
+
   private noteSpeech(pending: Pending, status: string, error?: string): number | undefined {
     if (pending.kind !== "speak" || pending.command.op !== "speak") return;
     const command = pending.command;
@@ -379,7 +392,7 @@ export class WindowsTts {
       request_id: pending.callerId, status, rate: command.rate, volume: command.volume,
       ...(voice ? { voice } : {}), ...(status === "submitted" ? {} : { elapsed_ms: elapsed }) };
     const detail = status === "submitted"
-      ? ` requested_voice=${JSON.stringify(command.voice || "Windows default")} rate=${command.rate} volume=${command.volume} text=${JSON.stringify(command.text)}`
+      ? ` requested_voice=${JSON.stringify(this.requestedVoiceName(command.voice))} rate=${command.rate} volume=${command.volume} text=${JSON.stringify(command.text)}`
       : `${pending.actualVoice ? ` voice=${JSON.stringify(pending.actualVoice)}` : ""} elapsed_ms=${elapsed}${error ? ` reason=${JSON.stringify(error)}` : ""}`;
     // Diagnostics must not interrupt playback or leave promises unresolved.
     try { this.note?.(`[voice] SAPI5 ${status} request=${JSON.stringify(pending.callerId)}${detail}`, attribution); }
