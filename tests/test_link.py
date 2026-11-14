@@ -269,6 +269,38 @@ ns.RefreshPages()
 assert ns.NextPage(5) == ""
 assert ns.NextPage(1000).startswith("pg=S0;i=6;")
 
+# Step titles lose color markup before protocol escaping or the 60-byte budget consumes visible words.
+from app import App  # noqa: E402
+
+saved_step = G.RXP.currentGuide.steps[6]
+title = "If you see a Tornado, use it for faster travel."
+for raw, visible, quest in (
+        ("|cFFFCDC00" + title + "|r", title, False),
+        ("|cRXP_WARN_Use |cRXP_ENEMY_the path|r safely|r", "Use the path safely", False),
+        ("|cnWARNING_COLOR:Follow the road|r", "Follow the road", True),
+        ("|cff00ff00" + "A long visible instruction " * 4 + "|r", ("A long visible instruction " * 4)[:60], True),
+        ("Choose ||cFFFCDC00 literally; then=go", "Choose ,cFFFCDC00 literally, then,go", False)):
+    element = L.table_from({"tag": "complete" if quest else "text", "text": raw})
+    if quest:
+        element.questId = 92461
+    G.RXP.currentGuide.steps[6] = L.table_from({"elements": L.table_from([element])})
+    ns.RefreshPages()
+    core, page = protocol.parse_payload(ns.Core() + "|" + ns.NextPage(1000))
+    assert page["pg"] == "S0" and page["tx"] == visible, page
+    title_state = GameState()
+    title_state.update(core, page)
+    summary = title_state.summary()
+    assert summary["steps"][0]["text"] == visible, summary["steps"]
+    assert visible in App.step_line(summary), App.step_line(summary)
+    assert element.text == raw, "Serialization must not alter the rich guide text"
+    if raw == "|cFFFCDC00" + title + "|r" and os.environ.get("GLIDE_STEP_TITLE_PROOF"):
+        import json
+        with open(os.environ["GLIDE_STEP_TITLE_PROOF"], "w", encoding="utf-8") as fh:
+            json.dump({"steps": summary["steps"], "level": summary["level"], "title": visible,
+                       "overlay_step": App.step_line(summary)}, fh)
+G.RXP.currentGuide.steps[6] = saved_step
+ns.RefreshPages()
+
 # feedback.py: one JSON line per mark in data/live/flags.jsonl
 import json
 import tempfile

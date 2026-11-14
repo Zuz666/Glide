@@ -1740,6 +1740,35 @@ try {
   if (narrowOverlayResult.exceptionDetails) {
     throw Error(narrowOverlayResult.exceptionDetails.exception?.description || narrowOverlayResult.exceptionDetails.text);
   }
+  if (process.env.GLIDE_STEP_TITLE_PROOF) {
+    const proof = JSON.parse(fs.readFileSync(process.env.GLIDE_STEP_TITLE_PROOF, "utf8"));
+    await send("Emulation.setDeviceMetricsOverride", { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false });
+    const overlayTitle = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+      (async () => {
+        window.__drive.emit('app:settings', { overlay: { collapsed: false, opacity: 0.85, fontSize: 13 } });
+        window.__drive.es.dispatch('state', ${JSON.stringify({ overlay_step: proof.overlay_step, frames: 50 })});
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        if (document.getElementById('step').textContent !== ${JSON.stringify(proof.overlay_step)})
+          throw Error('Overlay must render the decoded plain step title');
+      })()` });
+    if (overlayTitle.exceptionDetails) throw Error(overlayTitle.exceptionDetails.exception?.description || overlayTitle.exceptionDetails.text);
+    let image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    fs.writeFileSync(`${process.env.GLIDE_STEP_TITLE_PROOF}-overlay.png`, Buffer.from(image.data, "base64"));
+    const coachUrl = await (await fetch(`${baseUrl}/date-coach-url`)).json();
+    await send("Page.navigate", { url: `${coachUrl}/#t=date-coach-test` });
+    let ready = false;
+    for (let i = 0; i < 200 && !ready; i++) {
+      const title = await send("Runtime.evaluate", { expression: `document.querySelector('#plate h1')?.textContent`, returnByValue: true });
+      ready = title.result?.value === proof.title;
+      if (!ready) await sleep(25);
+    }
+    if (!ready) throw Error("Coach title did not match the decoded addon words");
+    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(`${process.env.GLIDE_STEP_TITLE_PROOF}-coach-${label}.png`, Buffer.from(image.data, "base64"));
+    }
+  }
   console.log(overlayResult.result.value);
 } finally {
   ws?.close();

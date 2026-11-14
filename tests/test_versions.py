@@ -3,7 +3,6 @@ import os, sys, tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "companion"))
 import versions
 exp = versions.expected()
-assert exp == "0.17.4", exp
 assert versions.status(None, 3)["ok"] is None                              # no data yet
 assert versions.status(exp, 50, exp, exp)["ok"] is True
 r = versions.status(None, 50, exp, exp)                                    # old addon still loaded

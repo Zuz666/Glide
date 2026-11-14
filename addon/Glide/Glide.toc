@@ -2,7 +2,7 @@
 ## Title: Glide
 ## Notes: Glide - records quests, NPCs, XP and routes, and streams live game state to the Glide companion through a small pixel strip (top-left). What it does for you: repairs everything at a merchant who repairs, and when the bags are full, deletes the cheapest item RestedXP marked as junk.
 ## Author: Fermin
-## Version: 0.17.4
+## Version: 0.17.5
 ## SavedVariables: GlideRecorderDB, GlideLinkDB
 ## OptionalDeps: RXPGuides
 ## IconTexture: Interface\AddOns\Glide\Media\icon
