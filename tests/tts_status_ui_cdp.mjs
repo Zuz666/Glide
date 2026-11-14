@@ -179,6 +179,36 @@ try {
     'Expected Fast tooltip to report low effort and Deep PTT routing: ' + fastBtn.title);
   check(deepBtn.title.includes('Reasoning effort: medium') && deepBtn.title.includes('Typed & spoken (push-to-talk) questions'),
     'Expected Deep tooltip to report medium effort and spoken PTT routing: ' + deepBtn.title);
+  check(Math.abs(fastEff.getBoundingClientRect().right - deepEff.getBoundingClientRect().right) < 1,
+    'Fast and Deep effort badges must share their right edge despite different model names');
+  const tuningModels = {
+    fast: 'gemini:gemini-4-hydrogen', fast_name: 'Gemini 4 Hydrogen', fast_reasoning: 'auto',
+    deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)', deep_reasoning: 'medium',
+    voice_question: 'deep', tune_thinking: true,
+    automatic_reasoning: { fast: { effort: 'low' } }, listen: 'whisper small',
+  };
+  sb.sessionBar({ models: tuningModels });
+  check(fastBtn.title.includes('low effort requested') && fastBtn.title.includes('gpt-6.1-terra')
+    && fastBtn.title.includes('reasoning effort: medium'),
+    'Fast tooltip must show its automatic request and identify the Deep model used for spoken questions');
+  check(deepBtn.title.includes('Automatic thinking tuning: On')
+    && deepBtn.title.includes('explicit medium effort') && !deepBtn.title.includes('low effort requested'),
+    'Deep tooltip must explain why automatic tuning does not override its explicit effort');
+  sb.sessionBar({ models: { ...tuningModels, deep: 'claude-sonnet-5-5', deep_name: 'Claude Sonnet',
+    deep_reasoning: 'auto', automatic_reasoning: {
+      fast: { effort: 'minimal' }, deep: { effort: 'medium', thinking: 'adaptive' },
+    } } });
+  check(deepBtn.title.includes('medium effort requested') && deepBtn.title.includes('thinking: adaptive'),
+    'Deep Auto tooltip must use its own policy, not the Fast role policy');
+  sb.sessionBar({ models: { ...tuningModels, automatic_reasoning: { fast: { effort: null } } } });
+  check(fastBtn.title.includes('provider default') && !fastBtn.title.includes('low effort requested'),
+    'A learned empty override must clear the previously displayed automatic level');
+  sb.sessionBar({ models: { ...tuningModels, tune_thinking: false, automatic_reasoning: {} } });
+  check(fastBtn.title.includes('Automatic thinking tuning: Off') && !fastBtn.title.includes('low effort requested'),
+    'Turning tuning off must clear automatic controls from the live tooltip');
+  sb.sessionBar({ models: { ...tuningModels, tune_thinking: undefined, automatic_reasoning: undefined } });
+  check(fastBtn.title.includes('unavailable') && !fastBtn.title.includes('low effort requested'),
+    'An older engine without automatic policy data must not inherit or invent a level');
 
   // Stopping coach hides effort badges cleanly, and re-emitting state restores them.
   sb.sessionBar(null);
@@ -292,6 +322,68 @@ try {
   await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'models'
     && inSetBodyView('[data-key="companion.llm.deep_model"]'), 'Deep button did not scroll deep_model into view');
 
+  // Selected models resolve automatic requests without making a paid model call.
+  window.__reasoningProof = async () => {
+    const { live } = await import('/renderer/state.js');
+    const { edits } = await import('/renderer/settings/fields.js');
+    const { bindModelReasoning } = await import('/renderer/settings/model-picker.js');
+    const before = { url: live.engineUrl, state: live.engineState, fetch: window.fetch, edits: new Map(edits) };
+    edits.set('companion.llm.fast_model', 'claude-sonnet-5-5');
+    edits.set('companion.llm.deep_model', 'gemini:gemini-3-flash');
+    edits.set('companion.llm.fast_reasoning_effort', 'auto');
+    edits.set('companion.llm.deep_reasoning_effort', 'auto');
+    edits.set('companion.llm.tune_thinking', true);
+    page.openSettingsTab('models');
+    await page.renderSettings();
+    live.engineUrl = 'http://reasoning.fixture'; live.engineState = 'running';
+    window.fetch = async (url, ...args) => String(url).startsWith('http://reasoning.fixture/models?')
+      ? new Response(JSON.stringify({
+        model: new URL(url).searchParams.get('reasoning_model'),
+        reasoning: { levels: ['low', 'medium', 'high'] },
+        automatic: String(url).includes('claude')
+          ? { fast: { effort: 'low', thinking: 'between_tools' }, deep: { effort: 'medium' } }
+          : { fast: { effort: 'minimal' }, deep: { effort: null } },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      : before.fetch(url, ...args);
+    await bindModelReasoning(document.getElementById('set-body'), new Set());
+    const summary = document.querySelector('[data-thinking-selection]');
+    check(summary.textContent.includes('claude-sonnet-5-5: low effort requested; thinking: between_tools')
+      && summary.textContent.includes('gemini:gemini-3-flash: provider default'),
+      'Automatic tuning must name selected models and distinguish requested effort from provider defaults');
+    const automaticRow = summary.querySelector('[data-thinking-role="fast"]');
+    const defaultRow = summary.querySelector('[data-thinking-role="deep"]');
+    const neutralColor = getComputedStyle(summary).color;
+    check(getComputedStyle(automaticRow).color !== neutralColor && getComputedStyle(defaultRow).color === neutralColor,
+      'Only the role with an applicable automatic override must receive the positive highlight');
+    const toggle = document.querySelector('[data-key="companion.llm.tune_thinking"] input');
+    toggle.click();
+    check(summary.textContent.includes('provider default (tuning Off)') && !summary.textContent.includes('effort requested'),
+      'Turning tuning Off must immediately show provider defaults without saving');
+    check(getComputedStyle(automaticRow).color === neutralColor && getComputedStyle(defaultRow).color === neutralColor,
+      'Turning tuning off must remove the positive highlight from both roles');
+    const effort = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');
+    effort.value = 'high'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+    check(summary.textContent.includes('high effort (explicit; switch has no effect)'),
+      'An explicit effort must visibly override the automatic tuning switch');
+    toggle.click();
+    check(getComputedStyle(automaticRow).color === neutralColor,
+      'Explicit effort must stay neutral even while automatic tuning is On');
+    effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+    check(getComputedStyle(automaticRow).color !== neutralColor,
+      'Returning to Auto must restore the highlight for the known automatic policy');
+    live.engineState = 'stopped';
+    await bindModelReasoning(document.getElementById('set-body'), new Set());
+    check([...summary.querySelectorAll('span')].every(row => getComputedStyle(row).color === neutralColor),
+      'An unavailable policy must not keep a stale positive highlight');
+    live.engineState = 'running';
+    await bindModelReasoning(document.getElementById('set-body'), new Set());
+    document.querySelector('[data-key="companion.llm.tune_thinking"]').scrollIntoView({ block: 'center' });
+    return () => {
+      live.engineUrl = before.url; live.engineState = before.state; window.fetch = before.fetch;
+      edits.clear(); for (const [key, value] of before.edits) edits.set(key, value);
+    };
+  };
+  (await window.__reasoningProof())();
   nav.show('coach');
   ttsEl.click();
   await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'voice'
@@ -1179,6 +1271,20 @@ try {
   });
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
+  }
+  if (process.env.GLIDE_REASONING_SCREENSHOT_DIR) {
+    fs.mkdirSync(process.env.GLIDE_REASONING_SCREENSHOT_DIR, { recursive: true });
+    const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+      (async () => { window.__restoreReasoningProof = await window.__reasoningProof(); })()` });
+    if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
+    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      await send("Runtime.evaluate", { expression: `document.querySelector('[data-key="companion.llm.tune_thinking"]').scrollIntoView({ block: 'center' });` });
+      await sleep(100);
+      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, `reasoning-${label}.png`), Buffer.from(image.data, "base64"));
+    }
+    await send("Runtime.evaluate", { expression: `window.__restoreReasoningProof();` });
   }
   if (process.env.GLIDE_VOICE_SCREENSHOT_DIR) {
     fs.mkdirSync(process.env.GLIDE_VOICE_SCREENSHOT_DIR, { recursive: true });

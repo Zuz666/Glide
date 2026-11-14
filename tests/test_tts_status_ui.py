@@ -232,6 +232,43 @@ _ms = companion_app.App._model_status(_stub_app)
 assert _ms["fast_reasoning"] == "low" and _ms["deep_reasoning"] == "medium" and _ms["voice_question"] == "deep", _ms
 _cfg["fast_reasoning_effort"] = "auto"
 assert companion_app.App._model_status(_stub_app)["fast_reasoning"] == "auto"
+_stub_app.catalog = None
+import providers  # noqa: E402
+
+_gemini_provider = providers.OpenAICompatProvider("gemini", {"tune_thinking": True}, "")
+_stub_app.coach.llm.provider_for = lambda _m: _gemini_provider
+for _model, _fast_effort, _deep_effort, _thinking in (
+    ("claude-sonnet-5-5", "low", "medium", "between_tools"),
+    ("claude-haiku-4-5", None, None, None),
+    ("gemini:gemini-3-flash", "minimal", None, None),
+    ("gemini:gemini-2.5-pro", "low", None, None),
+    ("ep:openai:gpt-6-luna", None, None, None),
+    ("anthropic/claude-sonnet-5.5", None, None, None),
+):
+    _auto = companion_app.App.on_models(_stub_app, reasoning_model=_model)["automatic"]
+    assert _auto["fast"]["effort"] == _fast_effort and _auto["deep"]["effort"] == _deep_effort, _auto
+    assert _auto["fast"].get("thinking") == _thinking, _auto
+_gemini_provider.accepted("gemini:gemini-3-flash", {"reasoning_effort": "low"})
+_auto = companion_app.App.on_models(_stub_app, reasoning_model="gemini:gemini-3-flash")["automatic"]
+assert _auto["fast"]["effort"] == "low" and _auto["deep"]["effort"] is None, _auto
+_gemini_provider.accepted("gemini:gemini-3-flash", {})
+_auto = companion_app.App.on_models(_stub_app, reasoning_model="gemini:gemini-3-flash")["automatic"]
+assert _auto["fast"]["effort"] is None, _auto
+_auto = companion_app.App.on_models(_stub_app, reasoning_model="gemini:gemini-2.5-pro")["automatic"]
+assert _auto["fast"]["effort"] == "low", _auto
+_cfg.update(fast_model="gemini:gemini-3-flash", deep_model="claude-sonnet-5-5",
+            fast_reasoning_effort="auto", deep_reasoning_effort="auto", tune_thinking=True)
+_gemini_provider.accepted("gemini:gemini-3-flash", {"reasoning_effort": "low"})
+_ms = companion_app.App._model_status(_stub_app)
+assert _ms["tune_thinking"] is True and _ms["automatic_reasoning"]["fast"]["effort"] == "low", _ms
+assert _ms["automatic_reasoning"]["deep"]["effort"] == "medium", _ms
+_gemini_provider.accepted("gemini:gemini-3-flash", {})
+assert companion_app.App._model_status(_stub_app)["automatic_reasoning"]["fast"]["effort"] is None
+_cfg["deep_reasoning_effort"] = "high"
+_ms = companion_app.App._model_status(_stub_app)
+assert _ms["deep_reasoning"] == "high" and "deep" not in _ms["automatic_reasoning"], _ms
+_cfg["tune_thinking"] = False
+assert companion_app.App._model_status(_stub_app)["automatic_reasoning"] == {}
 # Game-link check boundary: shared between Status (/health) and overlay state.coach.link_issue.
 def _link_app(*, sim=False, frames=0, last_frame_t=0.0, strip_other=None, decoded=10, attempts=10):
     return types.SimpleNamespace(

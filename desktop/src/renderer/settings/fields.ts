@@ -119,7 +119,7 @@ export function fieldHtml(f: Field): string {
   const pttToggle = f.key === "app:engineArgs.noPtt";
   const hasKeyNote = f.key === "companion.ptt.engine" || f.key === "companion.llm.recall_meaning";
   const help = thinking
-    ? esc(f.help).replace("lightweight", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">lightweight</button>`)
+    ? esc(f.help).replace("model-specific levels", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">model-specific levels</button>`)
     : pttToggle
       ? esc(f.help).replace("Voice settings", `<button type="button" class="reset settings-jump" data-jump-tab="voice" data-jump-target="stt">Voice settings</button>`)
       : esc(f.help);
@@ -129,7 +129,7 @@ export function fieldHtml(f: Field): string {
     <div class="ctl">${ctl}
       ${f.restart ? `<span class="restart" title="Applies when the coach restarts">${icon("rotate-cw")}</span>` : ""}
       ${!isApp(f.key) ? `<button type="button" class="reset" data-reset="${esc(f.key)}" ${resettable ? "" : "disabled"} title="${esc(resetTitle(f))}">Use default</button>` : ""}
-      ${hasKeyNote ? `<span data-field-key-note hidden></span>` : ""}</div></div>${thinking ? THINKING_HELP : ""}`;
+      ${hasKeyNote ? `<span data-field-key-note hidden></span>` : ""}${thinking ? `<small data-thinking-selection aria-live="polite"></small>` : ""}</div></div>${thinking ? THINKING_HELP : ""}`;
 }
 
 /** Follow the control drawn by fieldHtml: each change is an edit (or no longer one when it's back to the stored value). */
