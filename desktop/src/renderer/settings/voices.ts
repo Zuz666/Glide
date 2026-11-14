@@ -14,6 +14,7 @@ import { Obj, SpeechSettings, TtsProvider, Voice } from "../types.js";
 import { SPEECH_FEATURES, speechFeatures } from "../speech-markup.js";
 import type { SpeechFeature } from "../../shared/speech-markup.js";
 import { VOICE_EXAMPLES as EXAMPLES, voiceExample } from "./voice-examples.js";
+import { whenLeft } from "../nav.js";
 
 const PROVIDERS: [string, string, string][] = [   // id, label, key
   ["windows", "Windows voices (SAPI5, offline)", ""],
@@ -304,6 +305,10 @@ function bindSample(host: HTMLElement): void {
       if (button.isConnected && version === revision) draw();
     }
   };
+  whenLeft("settings", () => {
+    revision++;
+    if (button.isConnected) draw();
+  });
   host.addEventListener("speech-markup-changed", () => { revision++; draw(); }, { signal: voiceBindings!.signal });
   host.addEventListener("speech-catalogue-changed", draw, { signal: voiceBindings!.signal });
   host.addEventListener("speech-destination-changed", () => { revision++; draw(); }, { signal: voiceBindings!.signal });

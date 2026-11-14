@@ -1045,6 +1045,29 @@ try {
     pendingReplay();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     check(markupSamples.length === beforeReplacement + 1, 'Late preparation cannot play after another history entry was selected');
+    for (const returnBeforeCompletion of [false, true]) {
+      delayPreparation = true;
+      releasePreparation = undefined;
+      document.querySelector('[data-replay-spoken="' + markedId + '"]').click();
+      await until(() => !!releasePreparation);
+      const afterLeaving = releasePreparation;
+      const beforeLeaving = markupSamples.length;
+      nav.show('coach');
+      if (returnBeforeCompletion) {
+        nav.show('settings');
+        await page.renderSettings();
+      }
+      delayPreparation = false;
+      afterLeaving();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      check(markupSamples.length === beforeLeaving,
+        'Leaving Settings must invalidate pending history replay even after returning before completion');
+      if (!returnBeforeCompletion) {
+        nav.show('settings');
+        await page.renderSettings();
+      }
+      await until(() => !!document.querySelector('[data-replay-spoken="' + markedId + '"]'));
+    }
   } finally {
     narratorMod.speech.say = markupSay;
     window.glide.invoke = markupInvoke;
@@ -1090,6 +1113,9 @@ try {
   await page.renderSettings();
   check(JSON.stringify(historyTexts()) === JSON.stringify([plainObserved, plainObserved, 'Восстановите силы.']),
     'Reopening voice settings preserves the three comparison entries');
+  const historyPreviewMode = document.getElementById('sv-sample-mode');
+  historyPreviewMode.value = 'plain';
+  historyPreviewMode.dispatchEvent(new Event('change', { bubbles: true }));
   const lastSource = document.getElementById('sv-sample-source');
   lastSource.value = 'last';
   lastSource.dispatchEvent(new Event('change', { bubbles: true }));
