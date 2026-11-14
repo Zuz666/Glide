@@ -1,7 +1,7 @@
 """Push-to-talk: hold a key, speak, release -> transcript -> coach question -> spoken answer.
 
 Key state is read passively with GetAsyncKeyState (nothing is sent to the game). Audio is recorded
-with Windows' built-in MCI (no dependencies). Speech-to-text:
+with Windows' built-in WASAPI (no dependencies). Speech-to-text:
   whisper  local faster-whisper model (pip install faster-whisper), accurate, offline after first download
   windows  Windows' built-in recognizer through PowerShell (no install, less accurate)
   auto     whisper if installed, else windows
@@ -16,7 +16,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.error
@@ -26,6 +25,8 @@ import uuid
 import settings
 from log import log, log_once
 from speech_language import language_code
+from ptt_audio import Recording
+from ptt_capture import Capture
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -49,41 +50,6 @@ def parse_key(name):
             raise ValueError("unknown push-to-talk key %r (examples: F8, MOUSE5, CTRL+Q)" % part)
         codes.append(VK[part])
     return codes
-
-
-class Recorder:
-    """Records the default microphone to a 16 kHz mono 16-bit WAV with MCI."""
-
-    def __init__(self):
-        self.winmm = ctypes.windll.winmm
-        self.active = False
-
-    def _mci(self, cmd):
-        buf = ctypes.create_unicode_buffer(256)
-        err = self.winmm.mciSendStringW(cmd, buf, 255, 0)
-        if err:
-            ebuf = ctypes.create_unicode_buffer(256)
-            self.winmm.mciGetErrorStringW(err, ebuf, 255)
-            raise RuntimeError("MCI '%s': %s" % (cmd.split()[0], ebuf.value))
-        return buf.value
-
-    def start(self):
-        try:
-            self._mci("close glideptt")
-        except RuntimeError:
-            pass
-        self._mci("open new type waveaudio alias glideptt")
-        self._mci("set glideptt time format ms bitspersample 16 channels 1 samplespersec 16000 "
-                  "bytespersec 32000 alignment 2")
-        self._mci("record glideptt")
-        self.active = True
-
-    def stop(self, path):
-        self.active = False
-        self._mci("stop glideptt")
-        self._mci('save glideptt "%s"' % path)
-        self._mci("close glideptt")
-        return path
 
 
 def whisper_model_path(model_name):
@@ -128,30 +94,8 @@ class WhisperSTT:
         self.name = "whisper " + model_name
         self.model_id = os.path.basename(model_name.replace("\\", "/"))
 
-    @staticmethod
-    def load_wav(path):
-        """WAV -> 16 kHz mono float32 array, without PyAV (some PyAV versions break faster-whisper's
-        own decoder: "open() got an unexpected keyword argument 'metadata_errors'")."""
-        import wave
-        import numpy as np
-        with wave.open(path, "rb") as w:
-            rate, ch, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
-            raw = w.readframes(w.getnframes())
-        if width == 2:
-            a = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-        elif width == 1:
-            a = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-        else:
-            a = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-        if ch > 1:
-            a = a.reshape(-1, ch).mean(axis=1)
-        if rate != 16000 and len(a):
-            n = int(len(a) * 16000 / rate)
-            a = np.interp(np.linspace(0, len(a) - 1, n), np.arange(len(a)), a).astype(np.float32)
-        return a
-
-    def transcribe(self, path, prompt=""):
-        audio = self.load_wav(path)
+    def transcribe(self, recording: Recording, prompt=""):
+        audio = recording.waveform()
         segs, _ = self.model.transcribe(audio, language=self.language, beam_size=1, vad_filter=True,
                                         initial_prompt=prompt[:600] or None)
         return " ".join(s.text.strip() for s in segs).strip()
@@ -160,7 +104,38 @@ class WhisperSTT:
 PS_STT = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$inputStream = $null
+$wave = $null
+$r = $null
 try {
+  $inputStream = [Console]::OpenStandardInput()
+  $wave = New-Object System.IO.MemoryStream
+  $buffer = New-Object byte[] 8192
+  $maxBytes = 3840044
+  while ($true) {
+    $count = [int][Math]::Min($buffer.Length, $maxBytes - $wave.Length + 1)
+    $read = $inputStream.Read($buffer, 0, $count)
+    if ($read -eq 0) { break }
+    if ($wave.Length + $read -gt $maxBytes) { throw 'Recording exceeds the 120-second audio limit.' }
+    $wave.Write($buffer, 0, $read)
+  }
+  if ($wave.Length -lt 46) { throw 'Empty or malformed WAV recording.' }
+  $data = $wave.GetBuffer()
+  $ascii = [System.Text.Encoding]::ASCII
+  if ($ascii.GetString($data, 0, 4) -ne 'RIFF' -or
+      [BitConverter]::ToUInt32($data, 4) -ne $wave.Length - 8 -or
+      $ascii.GetString($data, 8, 8) -ne 'WAVEfmt ' -or
+      [BitConverter]::ToUInt32($data, 16) -ne 16 -or
+      [BitConverter]::ToUInt16($data, 20) -ne 1 -or
+      [BitConverter]::ToUInt16($data, 22) -ne 1 -or
+      [BitConverter]::ToUInt32($data, 24) -ne 16000 -or
+      [BitConverter]::ToUInt32($data, 28) -ne 32000 -or
+      [BitConverter]::ToUInt16($data, 32) -ne 2 -or
+      [BitConverter]::ToUInt16($data, 34) -ne 16 -or
+      $ascii.GetString($data, 36, 4) -ne 'data' -or
+      [BitConverter]::ToUInt32($data, 40) -ne $wave.Length - 44 -or
+      ($wave.Length - 44) % 2 -ne 0) { throw 'Malformed canonical PCM WAV recording.' }
+  $wave.Position = 0
   Add-Type -AssemblyName System.Speech
   $languages = $env:GLIDE_PTT_RECOGNIZER_LANGUAGES -split ';'
   $recognizer = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() |
@@ -173,12 +148,16 @@ try {
   }
   $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine -ArgumentList $recognizer.Id
   $r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
-  $r.SetInputToWaveFile($env:GLIDE_PTT_WAV)
+  $r.SetInputToWaveStream($wave)
   $res = $r.Recognize()
   if ($res) { [Console]::Out.Write($res.Text) }
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1
+} finally {
+  if ($null -ne $r) { $r.Dispose() }
+  if ($null -ne $wave) { $wave.Dispose() }
+  if ($null -ne $inputStream) { $inputStream.Dispose() }
 }
 """
 
@@ -192,30 +171,29 @@ class WindowsSTT:
         alias = {"fil": "tl", "tl": "fil", "nb": "no", "no": "nb", "jv": "jw", "jw": "jv"}.get(self.language)
         self.recognizer_languages = ";".join([self.language, alias] if alias else [self.language])
 
-    def transcribe(self, path, prompt=""):
-        # the recording's path goes in the environment: -Command joins its arguments into the script's text, so a
-        # path argument would have run as code (and the recognizer got no file)
+    def transcribe(self, recording: Recording, prompt=""):
+        audio = recording.wav_bytes()
         out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", PS_STT],
-                             stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=30,
-                             env=dict(os.environ, GLIDE_PTT_WAV=path, GLIDE_PTT_LANGUAGE=self.language,
+                             input=audio, capture_output=True, timeout=30,
+                             env=dict(os.environ, GLIDE_PTT_LANGUAGE=self.language,
                                       GLIDE_PTT_RECOGNIZER_LANGUAGES=self.recognizer_languages),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if out.returncode:
-            raise RuntimeError((out.stderr or "").strip() or "Windows speech recognition failed")
-        return (out.stdout or "").strip()
+            raise RuntimeError((out.stderr or b"").decode("utf-8", "replace").strip()
+                               or "Windows speech recognition failed")
+        return (out.stdout or b"").decode("utf-8", "replace").strip()
 
 
-def _multipart(fields, file_field, path):
+def _multipart(fields, file_field, recording: Recording):
     """multipart/form-data body for an OpenAI-style transcription request -> (body bytes, content type)."""
     b = uuid.uuid4().hex
     parts = []
     for k, v in fields.items():
         if v:
             parts.append(('--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n' % (b, k, v)).encode("utf-8"))
-    with open(path, "rb") as fh:
-        data = fh.read()
-    parts.append(('--%s\r\nContent-Disposition: form-data; name="%s"; filename="question.wav"\r\n'
-                  'Content-Type: audio/wav\r\n\r\n' % (b, file_field)).encode("utf-8") + data + b"\r\n")
+    data = recording.wav_bytes()
+    parts.extend((('--%s\r\nContent-Disposition: form-data; name="%s"; filename="question.wav"\r\n'
+                   'Content-Type: audio/wav\r\n\r\n' % (b, file_field)).encode("utf-8"), data, b"\r\n"))
     parts.append(("--%s--\r\n" % b).encode("utf-8"))
     return b"".join(parts), "multipart/form-data; boundary=" + b
 
@@ -244,17 +222,16 @@ class OnlineSTT:
         self.timeout = timeout
         self.name = "%s %s" % (label, self.model)
 
-    def transcribe(self, path, prompt=""):
+    def transcribe(self, recording: Recording, prompt=""):
         if self.engine == "deepgram":
             from urllib.parse import urlencode
             q = [("model", self.model), ("language", self.language), ("smart_format", "true")]
             # nova-3 keyterm prompting: the game names most likely to come up
             names = [n.strip() for n in (prompt.split("Names:", 1)[-1] if "Names:" in prompt else "").split(",")]
             q += [("keyterm", n) for n in names if n][:30]
-            with open(path, "rb") as fh:
-                req = urllib.request.Request(self.url + "?" + urlencode(q), data=fh.read(), method="POST",
-                                             headers={"authorization": "Token " + self.key,
-                                                      "content-type": "audio/wav"})
+            req = urllib.request.Request(self.url + "?" + urlencode(q), data=recording.wav_bytes(), method="POST",
+                                         headers={"authorization": "Token " + self.key,
+                                                  "content-type": "audio/wav"})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
                     d = json.loads(r.read().decode("utf-8"))
@@ -264,7 +241,7 @@ class OnlineSTT:
             alts = ((d.get("results") or {}).get("channels") or [{}])[0].get("alternatives") or [{}]
             return (alts[0].get("transcript") or "").strip()
         body, ctype = _multipart({"model": self.model, "language": self.language, "response_format": "json",
-                                  "prompt": prompt[:800]}, "file", path)
+                                  "prompt": prompt[:800]}, "file", recording)
         req = urllib.request.Request(self.url, data=body, method="POST",
                                      headers={"authorization": "Bearer " + self.key, "content-type": ctype})
         try:
@@ -287,6 +264,7 @@ class PushToTalk:
     on_state = None                             # set in __init__; a bare instance (the tests) has no indicator
     key_down = False                            # the key is held now ("idle" from a previous press may come later)
     transcribing = False                        # the last recording is still being turned into text
+    capture_factory = Capture
 
     @property
     def opt(self):
@@ -305,12 +283,16 @@ class PushToTalk:
         self.stt = None
         self.fallback = None                    # the local engine, when an online one is in use
         self.ok = False
+        self._stop = threading.Event()
+        self._attempt_lock = threading.RLock()
+        self._attempt = None
+        self._capture = None
         if not IS_WINDOWS:
             return
-        self.rec = Recorder()
         self.user32 = ctypes.windll.user32
         threading.Thread(target=self._load_stt, daemon=True).start()
-        threading.Thread(target=self._loop, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
         self.ok = True
 
     def _load_local(self, engine):
@@ -357,70 +339,140 @@ class PushToTalk:
     def _held(self):
         return all(self.user32.GetAsyncKeyState(k) & 0x8000 for k in self.keys)
 
+    def stop(self):
+        """Retire the attempt before waiting for capture cleanup; late recognition is ignored."""
+        with self._attempt_lock:
+            if self._stop.is_set():
+                return
+            self._stop.set()
+            self._attempt = None
+            self.key_down = self.transcribing = False
+            capture = self._capture
+            if capture is not None:
+                capture.cancel()
+            self._state("idle")
+        if capture is not None and not capture.done.wait(5):
+            log("ptt", "microphone cleanup is still pending")
+        thread = getattr(self, "_thread", None)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(5)
+
+    def _current(self, attempt):
+        return not self._stop.is_set() and self._attempt is attempt
+
+    def _notify(self, attempt, message):
+        with self._attempt_lock:
+            if self._current(attempt):
+                self.on_status(message)
+
     def _loop(self):
+        capture = None
+        attempt = None
         down_at = None
-        skip = False                            # a press that arrived while transcribing: wait for a fresh one
-        while True:
-            time.sleep(0.02)
-            held = self._held()
-            if held and down_at is None:
-                if skip or self.transcribing:   # a press during transcription is ignored, not queued
-                    skip = True
-                    continue
-                if self.focus_check and not self.focus_check():
-                    continue
-                try:
-                    self.rec.start()
-                except Exception as e:
-                    self.on_status({"kind": "error", "text": "push-to-talk: microphone: %s" % e, "speak": False})
-                    time.sleep(2)
-                    continue
-                down_at = time.time()
-                self.key_down = True
-                self._state("listening")
-                if self.opt.get("beep"):
-                    threading.Thread(target=beep, args=(880, 60), daemon=True).start()
-            elif not held:
-                skip = False
-                if down_at is None:
-                    continue
-                dur = time.time() - down_at
-                down_at = None
-                self.key_down = False
-                path = os.path.join(tempfile.gettempdir(), "glide_ptt.wav")
-                try:
-                    self.rec.stop(path)
-                except Exception as e:
-                    self._state("idle")
-                    self.on_status({"kind": "error", "text": "push-to-talk: %s" % e, "speak": False})
-                    continue
-                if self.opt.get("beep"):
-                    threading.Thread(target=beep, args=(520, 60), daemon=True).start()
-                if dur < self.opt.get("min_seconds"):
-                    self._state("idle")
-                    continue
-                self._state("transcribing")
-                self.transcribing = True
-                threading.Thread(target=self._handle, args=(path,), daemon=True).start()
-
-    def _handle(self, path):
+        finishing = discard = skip = False
         try:
-            self._transcribe(path)
+            while not self._stop.wait(0.02):
+                held = self._held()
+                if not held:
+                    skip = False
+                if capture is None:
+                    if not held:
+                        continue
+                    if skip or self.transcribing:
+                        skip = True
+                        continue
+                    if self.focus_check and not self.focus_check():
+                        continue
+                    with self._attempt_lock:
+                        if self._stop.is_set():
+                            break
+                        attempt = self._attempt = object()
+                        capture = self._capture = self.capture_factory()
+                        down_at = None
+                        finishing = discard = False
+                        try:
+                            capture.start()
+                        except Exception as e:
+                            self._notify(attempt, {"kind": "error", "text": "push-to-talk: microphone: %s" % e,
+                                                   "speak": False})
+                            capture.cancel()
+                            capture = self._capture = None
+                            self._attempt = None
+                            skip = True
+                    continue
+                if not finishing and not held:
+                    finishing = True
+                    self.key_down = False
+                    discard = down_at is None or time.monotonic() - down_at < self.opt.get("min_seconds")
+                    if discard:
+                        capture.cancel()
+                    else:
+                        capture.finish()
+                    if down_at is not None and self.opt.get("beep"):
+                        threading.Thread(target=beep, args=(520, 60), daemon=True).start()
+                if finishing and held:
+                    skip = True             # a new press during finalization is not another question
+                if capture.done.is_set():
+                    with self._attempt_lock:
+                        self._capture = None
+                        if not self._current(attempt):
+                            break
+                        self.key_down = False
+                        if capture.error:
+                            self._notify(attempt, {"kind": "error",
+                                                   "text": "push-to-talk: microphone: %s" % capture.error,
+                                                   "speak": False})
+                        recording = capture.recording
+                        if recording is not None and not discard and not capture.error:
+                            self.transcribing = True
+                            self._state("transcribing")
+                            if self._current(attempt):
+                                threading.Thread(target=self._handle, args=(recording, attempt), daemon=True).start()
+                        else:
+                            self._state("idle")
+                            self._attempt = None
+                        skip = skip or held
+                        capture = None
+                        recording = None     # only the recognition worker owns the completed audio now
+                    continue
+                if capture.ready.is_set() and down_at is None and not finishing:
+                    with self._attempt_lock:
+                        if not self._current(attempt):
+                            break
+                        down_at = time.monotonic()
+                        self.key_down = True
+                        self._state("listening")
+                        if self.opt.get("beep"):
+                            threading.Thread(target=beep, args=(880, 60), daemon=True).start()
         finally:
-            self._state("idle")           # published while the gate is still closed: a later press's
-            self.transcribing = False     # "listening" can never be hidden by this stale "idle"
+            if capture is not None:
+                capture.cancel()
+                if not capture.done.wait(5):
+                    log("ptt", "microphone cleanup is still pending")
 
-    def _transcribe(self, path):
+    def _handle(self, recording: Recording, attempt):
+        try:
+            self._transcribe(recording, attempt)
+        finally:
+            with self._attempt_lock:
+                if self._current(attempt):
+                    self._state("idle")       # publish before opening admission for a fresh press
+                    self.transcribing = False
+                    self._attempt = None
+
+    def _transcribe(self, recording: Recording, attempt):
         while self.stt is None:
-            time.sleep(0.1)
-        t0 = time.time()
+            if self._stop.wait(0.1) or not self._current(attempt):
+                return
+        if not self._current(attempt):
+            return
+        t0 = time.monotonic()
         prompt = self.prompt_fn() if self.prompt_fn else ""
         stt = self.stt
-        started = time.monotonic()
         used_fallback = False
         def attribution(status):
             result = {"category": "STT", "operation": "transcription", "role": "spoken question",
-                      "elapsed_ms": round((time.monotonic() - started) * 1000), "status": status}
+                      "elapsed_ms": round((time.monotonic() - t0) * 1000), "status": status}
             for key, value in (("provider", getattr(stt, "provider", None)),
                                ("model", getattr(stt, "model_id", None)),
                                ("language", getattr(stt, "language", None))):
@@ -429,28 +481,36 @@ class PushToTalk:
                     result[key] = value
             return result
         try:
-            text = stt.transcribe(path, prompt)
+            text = stt.transcribe(recording, prompt)
         except Exception as e:
-            if self.fallback is None or self.fallback is stt:
-                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e,
-                                "speak": False, "attribution": attribution("error")})
+            if not self._current(attempt):
                 return
-            self.on_status({"kind": "info", "text": "push-to-talk: %s failed (%s); using %s"
-                            % (stt.name, str(e)[:160], self.fallback.name), "speak": False,
-                            "attribution": attribution("fallback")})
+            if self.fallback is None or self.fallback is stt:
+                self._notify(attempt, {"kind": "error", "text": "push-to-talk: transcription failed: %s" % e,
+                                       "speak": False, "attribution": attribution("error")})
+                return
+            self._notify(attempt, {"kind": "info", "text": "push-to-talk: %s failed (%s); using %s"
+                                   % (stt.name, str(e)[:160], self.fallback.name), "speak": False,
+                                   "attribution": attribution("fallback")})
+            if not self._current(attempt):
+                return
             stt = self.fallback
             used_fallback = True
             try:
-                text = stt.transcribe(path, prompt)
+                text = stt.transcribe(recording, prompt)
             except Exception as e2:
-                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e2,
-                                "speak": False, "attribution": attribution("error")})
+                self._notify(attempt, {"kind": "error", "text": "push-to-talk: transcription failed: %s" % e2,
+                                       "speak": False, "attribution": attribution("error")})
                 return
-        if not text:
-            self.on_status({"kind": "error", "text": "Didn't catch that.", "speak": True,
-                            "attribution": attribution("empty")})
-            return
-        self.on_status({"kind": "question", "text": "🎙 " + text, "speak": False,
-                        "model": "%s %.1fs" % (stt.name, time.time() - t0),
-                        "attribution": attribution("completed after fallback" if used_fallback else "completed")})
-        self.on_question(text)
+        with self._attempt_lock:
+            if not self._current(attempt):
+                return
+            if not text:
+                self._notify(attempt, {"kind": "error", "text": "Didn't catch that.", "speak": True,
+                                       "attribution": attribution("empty")})
+                return
+            self._notify(attempt, {"kind": "question", "text": "🎙 " + text, "speak": False,
+                                   "model": "%s %.1fs" % (stt.name, time.monotonic() - t0),
+                                   "attribution": attribution("completed after fallback" if used_fallback else "completed")})
+            if self._current(attempt):
+                self.on_question(text)

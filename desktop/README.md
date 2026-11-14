@@ -143,6 +143,14 @@ The key can be changed under Settings > Overlay (`companion.overlay.drag_key`, a
 
 ## Voice
 
+### Push-to-talk recognition
+
+Hold the configured key, speak, and release to ask the coach. The engine records the ordinary Windows default microphone through shared-mode WASAPI; Electron does not record microphone audio. Each accepted press resolves the default input again, without switching devices midway through a question.
+
+Microphone audio stays in memory: local Whisper receives samples directly, Windows Speech receives an in-memory WAV over a binary pipe, and an online recognizer receives WAV bytes through its existing upload protocol. Online failures retain the same recording for the selected local fallback. This does not disable transcript logs, model caches or the chosen provider's network processing.
+
+Recordings are limited to 120 seconds. Reaching the limit or losing the microphone discards the whole recording and reports an error; no truncated question is submitted. Release the key and press again to retry. Presses during transcription remain ignored until released. Short taps retain the existing minimum-duration rule. No temporary recording is created, but an old `glide_ptt.wav` from a previous version is not automatically deleted.
+
 ### Choosing how the coach speaks
 
 Open **Settings > Voice > Voice output > Spoken by**:

@@ -1096,10 +1096,15 @@ class App:
             self.feed.start()
         loop = self.sim_loop if self.args.sim else self.capture_loop
         threading.Thread(target=loop, daemon=True).start()
-        if self.args.app:
-            self._run_under_app(port)
-        else:
-            self._run_standalone()
+        try:
+            if self.args.app:
+                self._run_under_app(port)
+            else:
+                self._run_standalone()
+        finally:
+            ptt = getattr(self, "ptt", None)
+            if ptt is not None:
+                ptt.stop()
 
     def _start_background_work(self):
         """The SavedVariables archiver, push-to-talk, and (playing for real) the knowledge refresh and the walking
