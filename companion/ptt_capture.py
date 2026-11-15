@@ -17,6 +17,8 @@ _MAX_FRAMES = 1_920_000
 _NO_PROGRESS_SECONDS = 5.0
 _SILENT = 0x2
 _DISCONTINUITY = 0x1
+_BUFFER_DURATION_HNS = 5_000_000  # 500 ms of native scheduling headroom, not a batching delay.
+_POLL_MILLISECONDS = 10
 _ZEROES = bytes(4096)
 
 
@@ -248,7 +250,7 @@ def _method(pointer: _VOID, index: int, result, *arguments):
 
 
 class _Wasapi:
-    """Minimal shared/event-driven WASAPI binding. Every resource is per attempt.
+    """Shared WASAPI input with bounded buffering and control-interruptible polling.
 
     All methods except wake belong to the capture-owner STA thread. wake's event
     lifetime is protected separately, and never holds a lock during COM operations.
@@ -258,7 +260,6 @@ class _Wasapi:
         self._device = _VOID()
         self._audio = _VOID()
         self._capture = _VOID()
-        self._audio_event = None
         self._control_event = None
         self._wake_lock = threading.Lock()
         self._com_initialized = False
@@ -291,13 +292,12 @@ class _Wasapi:
         self._kernel.SetEvent.restype = ctypes.c_int32
         self._kernel.CloseHandle.argtypes = [_VOID]
         self._kernel.CloseHandle.restype = ctypes.c_int32
-        self._kernel.WaitForMultipleObjects.argtypes = [_DWORD, ctypes.POINTER(_VOID), ctypes.c_int32, _DWORD]
-        self._kernel.WaitForMultipleObjects.restype = _DWORD
+        self._kernel.WaitForSingleObject.argtypes = [_VOID, _DWORD]
+        self._kernel.WaitForSingleObject.restype = _DWORD
         _check(self._ole.CoInitializeEx(None, 2), "CoInitializeEx(STA)")
         self._com_initialized = True  # S_FALSE also requires CoUninitialize.
         with self._wake_lock:
             self._control_event = self._new_event()
-        self._audio_event = self._new_event()
         _check(self._ole.CoCreateInstance(ctypes.byref(_ENUMERATOR_CLASS), None, 23,
                                          ctypes.byref(_ENUMERATOR_IID), ctypes.byref(self._enum)),
                "create device enumerator")
@@ -309,15 +309,15 @@ class _Wasapi:
                                                     23, None, ctypes.byref(self._audio)),
                "activate input audio client")
         wave = _WaveFormat(1, 1, 16000, 32000, 2, 16, 0)
-        # Shared mode; event callback plus Windows PCM/channel/rate conversion.
-        # Both duration and periodicity MUST be zero for shared event capture.
-        flags = 0x00040000 | 0x80000000
+        # A Python owner cannot reliably service a minimum event-driven buffer
+        # under engine/game load. Timer-driven shared capture allows headroom;
+        # frequent reads and the control event keep normal finish responsive.
+        flags = 0x80000000  # Windows PCM/channel/rate conversion; no EVENTCALLBACK.
         _check(_method(self._audio, 3, _HRESULT, ctypes.c_int32, _DWORD,
                        ctypes.c_int64, ctypes.c_int64, ctypes.POINTER(_WaveFormat),
-                       ctypes.POINTER(_GUID))(self._audio, 0, flags, 0, 0, ctypes.byref(wave), None),
+                       ctypes.POINTER(_GUID))(self._audio, 0, flags, _BUFFER_DURATION_HNS, 0,
+                                             ctypes.byref(wave), None),
                "initialize shared 16 kHz mono PCM16 input")
-        _check(_method(self._audio, 13, _HRESULT, _VOID)(self._audio, self._audio_event),
-               "SetEventHandle")
         _check(_method(self._audio, 14, _HRESULT, ctypes.POINTER(_GUID),
                        ctypes.POINTER(_VOID))(self._audio, ctypes.byref(_CAPTURE_IID),
                                              ctypes.byref(self._capture)), "get capture client")
@@ -387,12 +387,12 @@ class _Wasapi:
         assert self._kernel is not None  # Only reached after successful open/Start.
         if self._wake_error:
             raise RuntimeError(self._wake_error)
-        events = (_VOID * 2)(self._control_event, self._audio_event)
-        result = self._kernel.WaitForMultipleObjects(2, events, False, max(1, int(timeout * 1000)))
+        result = self._kernel.WaitForSingleObject(
+            self._control_event, max(1, min(_POLL_MILLISECONDS, int(timeout * 1000))))
         if result == 0xFFFFFFFF:
             raise ctypes.WinError(ctypes.get_last_error())
-        if result not in (0, 1, 0x102):
-            raise RuntimeError("WASAPI event wait failed (0x%08X)" % result)
+        if result not in (0, 0x102):
+            raise RuntimeError("WASAPI control wait failed (0x%08X)" % result)
 
     def wake(self) -> None:
         with self._wake_lock:
@@ -421,15 +421,13 @@ class _Wasapi:
         with self._wake_lock:
             control = self._control_event
             self._control_event = None
-        for handle in (self._audio_event, control):
-            if handle is not None:
-                try:
-                    assert self._kernel is not None  # Every event was created by this DLL.
-                    if not self._kernel.CloseHandle(handle):
-                        errors.append("close capture event: %s" % ctypes.get_last_error())
-                except Exception as exc:
-                    errors.append("close capture event: %s" % exc)
-        self._audio_event = None
+        if control is not None:
+            try:
+                assert self._kernel is not None  # Every event was created by this DLL.
+                if not self._kernel.CloseHandle(control):
+                    errors.append("close capture event: %s" % ctypes.get_last_error())
+            except Exception as exc:
+                errors.append("close capture event: %s" % exc)
         if self._com_initialized:
             try:
                 assert self._ole is not None  # Paired with successful CoInitializeEx.
