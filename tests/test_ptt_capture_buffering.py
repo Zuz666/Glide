@@ -17,9 +17,13 @@ class Endpoint:
     Timer-mode capacity comes from Initialize, not from a test-selected buffer size.
     Only the operating-system boundary is controlled: Capture and _Wasapi are real.
     """
-    def __init__(self):
+    def __init__(self, pause=0.15):
         self.now = 0.0
-        self.expected = struct.pack("<6400h", *range(-3200, 3200))
+        self.expected = struct.pack("<16000h", *range(-8000, 8000))
+        self.expected = self.expected[:640] + bytes(320) + self.expected[960:]
+        self.pause = pause
+        self.empty_returned = False
+        self.borrowed = False
         self.capacity = 0
         self.flags = 0
         self.read_frame = 0
@@ -61,8 +65,8 @@ class Endpoint:
         self.now += min(milliseconds / 1000, 0.01) if self.flags & 0x00040000 else milliseconds / 1000
         if self.read_frame and not self.delayed:
             self.delayed = True
-            self.now += 0.15
-        if self.now >= 0.4:
+            self.now += self.pause
+        if self.now >= 1.0:
             self.capture.finish()
         return 0x102
 
@@ -79,7 +83,7 @@ class Endpoint:
 
     def update(self):
         if not self.stopped:
-            self.produced = min(6400, round(self.now * 16000) // 160 * 160)
+            self.produced = min(16000, round(self.now * 16000) // 160 * 160)
         if self.produced - self.read_frame > self.capacity:
             self.read_frame = self.produced - self.capacity
             self.gap = True
@@ -94,17 +98,30 @@ class Endpoint:
         return self.assign(output, min(160, self.produced - self.read_frame))
 
     def get_buffer(self, this, data, frames, flags, position, timestamp):
+        assert not self.borrowed, "previous native packet was not released"
+        self.update()
+        if self.read_frame == self.produced:
+            self.assign(frames, 0)
+            return 0x08890001
+        if self.read_frame and not self.empty_returned:
+            self.empty_returned = True
+            # BUFFER_EMPTY leaves data/flags untouched but clears the frame count.
+            self.assign(frames, 0)
+            return 0x08890001
+        self.borrowed = True
         self.frames = min(160, self.produced - self.read_frame)
         chunk = self.expected[self.read_frame * 2:(self.read_frame + self.frames) * 2]
         self.storage = ctypes.create_string_buffer(chunk)
-        self.assign(data, ctypes.addressof(self.storage))
+        silent = self.read_frame == 320
+        self.assign(data, 0 if silent else ctypes.addressof(self.storage))
         self.assign(frames, self.frames)
-        self.assign(flags, int(self.gap))
+        self.assign(flags, int(self.gap) | (0x2 if silent else 0))
         self.gap = False
         return 0
 
     def release_buffer(self, this, frames):
-        assert frames == self.frames
+        assert self.borrowed and frames == self.frames
+        self.borrowed = False
         self.read_frame += frames
         self.storage = None
         return 0
@@ -132,17 +149,23 @@ class Endpoint:
         return {"ole32": self.ole, "kernel32": self.kernel}[name]
 
 
-endpoint = Endpoint()
-with patch.object(audio.sys, "platform", "win32"), \
-        patch.object(audio.ctypes, "WinDLL", endpoint.dll, create=True), \
-        patch.object(audio, "_method", endpoint.method):
-    endpoint.capture.start()
-    assert endpoint.capture.done.wait(3), "capture did not retire"
+for pause in (0.15, 0.45, 0.6):
+    endpoint = Endpoint(pause)
+    with patch.object(audio.sys, "platform", "win32"), \
+            patch.object(audio.ctypes, "WinDLL", endpoint.dll, create=True), \
+            patch.object(audio, "_method", endpoint.method):
+        endpoint.capture.start()
+        assert endpoint.capture.done.wait(3), "capture did not retire"
 
-assert endpoint.capture.error is None, endpoint.capture.error
-recording = endpoint.capture.recording
-assert recording is not None and recording.pcm == endpoint.expected, "question lost or reordered samples"
-assert endpoint.delayed, "scheduler pause was not exercised"
-assert endpoint.closed == {1, 2, 3, 4} and not endpoint.handles, "capture resources leaked"
-assert endpoint.stopped
-print("WASAPI capture preserves the complete question across a 150 ms reader pause OK")
+    recording = endpoint.capture.recording
+    if pause < 0.5:
+        assert endpoint.capture.error is None, endpoint.capture.error
+        assert recording is not None and recording.pcm == endpoint.expected, "question lost or reordered samples"
+    else:
+        assert recording is None, "over-capacity loss published a partial question"
+        assert "discontinuity" in endpoint.capture.error, endpoint.capture.error
+    assert endpoint.delayed and endpoint.empty_returned, "native edge cases were not exercised"
+    assert not endpoint.borrowed, "native packet leaked"
+    assert endpoint.closed == {1, 2, 3, 4} and not endpoint.handles, "capture resources leaked"
+    assert endpoint.stopped
+print("WASAPI capture preserves PCM across 150/450 ms stalls and rejects 600 ms overflow OK")

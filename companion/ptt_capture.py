@@ -344,15 +344,11 @@ class _Wasapi:
 
     def next_packet(self) -> _Packet | None:
         self._owned()
-        count = _DWORD()
-        _check(_method(self._capture, 5, _HRESULT, ctypes.POINTER(_DWORD))(
-            self._capture, ctypes.byref(count)), "GetNextPacketSize")
-        if not count.value:
-            return None
         data = _VOID()
         frames = _DWORD()
         flags = _DWORD()
-        # Timing observations are optional and not used to infer lost samples.
+        # GetBuffer reports BUFFER_EMPTY itself; a separate size query adds a
+        # native call/GIL handoff without reserving a packet or protecting a read.
         result = _method(self._capture, 3, _HRESULT, ctypes.POINTER(_VOID),
                          ctypes.POINTER(_DWORD), ctypes.POINTER(_DWORD),
                          ctypes.POINTER(_UINT64), ctypes.POINTER(_UINT64))(
