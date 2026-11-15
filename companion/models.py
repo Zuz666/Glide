@@ -7,6 +7,7 @@ Prices: OpenRouter's list carries them (USD per token -> per MTok here). Anthrop
 models get the published list prices below (cache read/write included); a model missing from the table shows
 no price.
 """
+from collections.abc import Callable
 import json
 from datetime import datetime, timezone
 import threading
@@ -17,6 +18,7 @@ import urllib.request
 import jsonfile
 import openai_capabilities
 import openai_compat
+import opencode
 
 # $/MTok as of 2026-10-11: (id substring, input, output, cache read, cache write 5 min); first match wins.
 # Cache reads are 0.1x input, except Opus/Sonnet 5.5 (0.05x) and Fable/Mythos 5.1 (0.025x); 1-hour writes are 2x.
@@ -46,6 +48,8 @@ MAX_AGE_S = 24 * 3600
 
 def provider(model):
     m = model or ""
+    if m.startswith(opencode.PREFIX):
+        return "opencode"
     if m.startswith("gemini:"):
         return "gemini"
     if m.startswith("ep:"):
@@ -121,9 +125,9 @@ def static_price(model, cfg=None):
     return None
 
 
-def _get(url, headers=None, timeout=20):
+def _get(url, headers=None, timeout=20, opener=None):
     req = urllib.request.Request(url, headers=dict(headers or {}, **{"user-agent": "glide-companion"}))
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with (opener or urllib.request.urlopen)(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -177,15 +181,34 @@ def fetch_openrouter(key=None, url=OPENROUTER_MODELS, getter=_get):
     return out
 
 
+def fetch_opencode(key, getter=None):
+    """Authenticated catalog discovery, including raw excluded entries and full tariffs."""
+    if not key:
+        return []
+    headers = {"authorization": "Bearer " + key}
+    data = getter(opencode.MODELS_URL, headers) if getter else \
+        _get(opencode.MODELS_URL, headers, opener=opencode.open_request)
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        raise ValueError("OpenCode catalog response has no model list")
+    return [opencode.catalog_entry(m) for m in data["data"]
+            if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]]
+
+
 class Catalog:
     """Thread-safe model list with a disk cache. entries() never touches the network; refresh() does."""
 
-    def __init__(self, path, anthropic_key=None, openrouter_key=None, fetchers=None, gemini_key=None, endpoints=None):
+    def __init__(self, path, anthropic_key=None, openrouter_key=None, fetchers=None, gemini_key=None, endpoints=None,
+                 *, opencode_key=None):
         self.path = path
-        self.keys = {"anthropic": anthropic_key, "gemini": gemini_key, "openrouter": openrouter_key}
+        self.keys = {"anthropic": anthropic_key, "gemini": gemini_key, "openrouter": openrouter_key,
+                     "opencode": opencode_key}
         self.endpoints = endpoints or {}                 # {id: endpoint dict + "key"}: custom OpenAI-compatible APIs
-        self.fetchers = dict({"anthropic": fetch_anthropic, "gemini": fetch_gemini, "openrouter": fetch_openrouter},
-                             **(fetchers or {}))
+        self.fetchers: dict[str, Callable[..., list[dict]]] = dict(
+            {"anthropic": fetch_anthropic, "gemini": fetch_gemini, "openrouter": fetch_openrouter}, **(fetchers or {}))
+        # An injected catalog is an isolated HTTP seam: adding a built-in must not
+        # unexpectedly start real network requests in existing consumers/tests.
+        if fetchers is None:
+            self.fetchers["opencode"] = fetch_opencode
         self.lock = threading.Lock()
         self.data = {"updated": None, "models": [], "errors": {}}
         try:
@@ -200,6 +223,8 @@ class Catalog:
 
     def _project_entry(self, m, ep_cfg):
         mid = m.get("id")
+        if m.get("provider") == "opencode":
+            return None if m.get("excluded_reason") else m
         if m.get("provider") != "endpoint" or not openai_compat.is_endpoint(mid):
             return m
         contract = openai_capabilities.describe_endpoint_model(mid, ep_cfg, m)
@@ -217,15 +242,27 @@ class Catalog:
             out["unverified"] = True
         return out
 
+    def _opencode_expired(self):
+        imported = (self.data.get("provider_updated") or {}).get("opencode")
+        return not isinstance(imported, (int, float)) or time.time() - imported > MAX_AGE_S
+
     def _projection_key(self):
         models_list = self.data.get("models")
         eps = tuple(sorted((str(k), str((v or {}).get("base_url") or ""))
                            for k, v in (self.endpoints or {}).items() if isinstance(v, dict)))
         return (id(self.data), id(models_list), len(models_list or ()), eps,
-                datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"), self._opencode_expired())
 
     def _index(self):
         raw = list(self.data.get("models") or ())
+        expired = self._opencode_expired()
+        for m in raw:
+            if isinstance(m, dict) and m.get("provider") == "opencode":
+                imported = (self.data.get("provider_updated") or {}).get("opencode", m.get("pricing_updated"))
+                if imported is not None:
+                    m["pricing_updated"] = imported
+                m["pricing_stale"] = bool((self.data.get("provider_stale") or {}).get("opencode", m.get("pricing_stale"))
+                                           or (self.data.get("errors") or {}).get("opencode") or expired)
         self.raw_by_id = {m["id"]: m for m in raw if isinstance(m, dict) and "id" in m}
         ep_cfg = self._ep_cfg()
         self.projected = [p for m in raw if isinstance(m, dict) for p in (self._project_entry(m, ep_cfg),) if p is not None]
@@ -236,15 +273,21 @@ class Catalog:
         if getattr(self, "_proj_key", None) != self._projection_key():
             self._index()
     def refresh(self):
-        """Fetch both lists (a failing provider keeps its old entries); returns the status dict."""
+        """Fetch catalogs; failures retain each provider's last successful import."""
         old = self.data.get("models") or []
         models, errors = [], {}
-        for prov in ("anthropic", "gemini", "openrouter"):
+        updated = dict(self.data.get("provider_updated") or {})
+        stale = dict(self.data.get("provider_stale") or {})
+        for prov in ("anthropic", "gemini", "openrouter", "opencode"):
             try:
+                if prov == "opencode" and not self.keys.get(prov):
+                    raise ValueError("no " + opencode.KEY_ENV)
+                if prov == "opencode" and prov not in self.fetchers:
+                    raise ValueError("no injected OpenCode fetcher")
                 got = self.fetchers[prov](self.keys.get(prov))
             except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
                 errors[prov] = "%s: %s" % (type(e).__name__, e)
-                got = [m for m in old if m.get("provider") == prov]
+                got = [dict(m) for m in old if m.get("provider") == prov]
             if prov == "gemini" and not got and not self.keys.get("gemini"):
                 errors.setdefault("gemini", "no GEMINI_API_KEY")
             if prov == "anthropic" and not got:
@@ -252,16 +295,30 @@ class Catalog:
                         "context": None, "listed": False} for i, n in KNOWN_ANTHROPIC]
                 if not self.keys.get("anthropic"):
                     errors.setdefault("anthropic", "no ANTHROPIC_API_KEY: showing known models")
+            if prov in errors:
+                stale[prov] = True
+            else:
+                updated[prov] = time.time()
+                stale[prov] = False
+            if prov == "opencode":
+                for row in got:
+                    if prov in updated:
+                        row["pricing_updated"] = updated[prov]
+                    row["pricing_stale"] = stale[prov]
             models += got
         for eid, ep in self.endpoints.items():
             try:
                 got = self.fetchers.get("endpoint", fetch_endpoint)(ep, ep.get("key"))
+                updated["ep:" + eid] = time.time()
+                stale["ep:" + eid] = False
             except (urllib.error.URLError, OSError, ValueError, KeyError) as e:
                 errors["ep:" + eid] = "%s: %s" % (type(e).__name__, e)
+                stale["ep:" + eid] = True
                 got = [m for m in old if m.get("endpoint") == eid]
             models += got
         with self.lock:
-            self.data = {"updated": time.time(), "models": models, "errors": errors}
+            self.data = {"updated": time.time(), "models": models, "errors": errors,
+                         "provider_updated": updated, "provider_stale": stale}
             self._index()
         try:
             jsonfile.write_atomic(self.path, self.data)
@@ -277,7 +334,11 @@ class Catalog:
         self._ensure_projected()
         d = self.data
         return {"updated": d.get("updated"), "errors": d.get("errors") or {}, "count": len(self.projected),
-                "keys": {k: bool(v) for k, v in self.keys.items()}, "endpoints": sorted(self.endpoints)}
+                "keys": {k: bool(v) for k, v in self.keys.items()}, "endpoints": sorted(self.endpoints),
+                "provider_updated": dict(d.get("provider_updated") or {}),
+                "provider_stale": {**(d.get("provider_stale") or {}),
+                                   "opencode": self._opencode_expired()
+                                   or bool((d.get("provider_stale") or {}).get("opencode"))}}
 
     def entries(self):
         self._ensure_projected()

@@ -238,9 +238,11 @@ export interface Models { fast: string | null; deep: string | null; fast_name: s
   automatic_reasoning?: Partial<Record<"fast" | "deep", { effort?: string | null; thinking?: string | null }>>;
   listen: string; listen_fallback: string | null;
   translation?: { language: string; available: boolean } }
+/** Completed responses: stale_estimates is a subset of estimated; cost_usd sums known amounts only. */
+export interface CostCoverage { reported: number; estimated: number; unknown: number; stale_estimates: number }
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;
   tool_calls: number; cited: number; unsupported: number; uncached_in_tokens: number; cache_read_tokens: number;
-  cache_write_tokens: number; cost_usd: number; web_searches?: number;
+  cache_write_tokens: number; cost_usd: number; cost_coverage?: CostCoverage; web_searches?: number;
   thinking?: string | null; link_issue?: string | null; link_status?: "warn" | "error" | null }
 export interface KbStatus { ok: boolean; reason?: string; guides?: number }
 /** The step brief: why the route does this step now (knowledge/api; GameState and the knowledge pack). */

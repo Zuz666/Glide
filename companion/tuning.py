@@ -32,13 +32,13 @@ DEFAULT_RATE = {"voice": 10.6, "typed": 1.0}   # questions per hour from the 10.
 
 
 def input_price(model, catalog=None):
-    """$/MTok input for a model: the catalog's price (OpenRouter list, Anthropic table), else the Anthropic table."""
+    """$/MTok input; unknown OpenCode rates remain unknown rather than borrowing a vendor's price."""
     if catalog is not None:
         p = catalog.price(model)
         if p and p.get("in") is not None:
             return p["in"]
     p = models.static_price(model)
-    return p["in"] if p else 2.0
+    return p["in"] if p else None if models.provider(model) == "opencode" else 2.0
 
 
 import re  # noqa: E402
@@ -60,7 +60,9 @@ def profile(coach, min_hours=0.25, min_calls=5):
         if hours >= min_hours and (st.get("calls") or 0) >= min_calls:
             out[path] = {k: int((st.get(k) or 0) / hours) for k in ("cache_read", "uncached", "output")}
             out[path]["measured"] = True
-            out[path]["cost_per_h"] = round((st.get("cost_usd") or 0) / hours, 4)
+            coverage = st.get("cost_coverage") or {}
+            out[path]["cost_per_h"] = None if coverage.get("unknown") else round((st.get("cost_usd") or 0) / hours, 4)
+            out[path]["cost_coverage"] = dict(coverage)
         else:
             out[path] = dict(DEFAULT_PROFILE[path], measured=False)
     return out
@@ -136,7 +138,7 @@ def _inputs(coach, review_minutes):
 
 
 def validate_model_choice(model, cfg, catalog=None):
-    """Reject malformed IDs and excluded official OpenAI specialty/shut-down models before saving."""
+    """Reject malformed IDs and known excluded coach models before saving."""
     if not isinstance(model, str) or not MODEL_RE.match(model.strip()):
         raise ValueError("not a model id: %r" % (model,))
     clean = model.strip()
@@ -145,6 +147,10 @@ def validate_model_choice(model, cfg, catalog=None):
         contract = openai_capabilities.describe_endpoint_model(clean, cfg, entry)
         if contract.suitability == "excluded":
             raise ValueError("%s cannot be used as a coach model (%s)." % (clean, contract.reason))
+    elif models.provider(clean) == "opencode":
+        entry = openai_capabilities.catalog_raw_entry(catalog, clean)
+        if reason := (entry or {}).get("excluded_reason"):
+            raise ValueError("%s cannot be used as a coach model (%s)." % (clean, reason))
 
 
 def apply(cfg, changes, config_path=None, catalog=None):

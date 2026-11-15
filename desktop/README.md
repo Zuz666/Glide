@@ -110,7 +110,7 @@ Live settings apply to the next call; fields marked ↻ require a coach restart.
 
 ## Models and agents
 
-Settings separates **API keys** (credentials for AI, speech and search services) from **AI models** (model selection and behavior). Under AI models, **Custom endpoints** follows **Model ids**; **AI behavior & requests** contains spoken-question routing, the AI switch, request timing and automatic thinking tuning.
+Settings separates **Credentials** (credentials for AI, speech and search services) from **AI models** (model selection and behavior). Under AI models, **Custom endpoints** follows **Model ids**; **AI behavior & requests** contains spoken-question routing, the AI switch, request timing and automatic thinking tuning.
 
 Each reasoning-effort explanation links Auto to **Automatic thinking tuning**. The switch shows the selected Fast/Deep models and their requested automatic effort and thinking mode, using the engine's request policy. Unsaved model, effort and switch edits update the preview; Save still applies them. Explicit effort is labelled as overriding the switch, and provider-default or disconnected/unknown cases never invent a numeric level. Hover or focus **model-specific levels** to see the broader provider policy. Compatible endpoints/OpenRouter are unaffected; turning tuning off leaves Auto to the provider. Requested automatic options may fall back if the provider rejects them; this preview is not a measurement of a completed call. Session-bar effort badges share a right edge.
 For Gemini, the preview also uses the active provider's remembered accepted automatic option for that model and role, including a fallback to `low` or to provider defaults.
@@ -123,13 +123,20 @@ Every provider the console supports works here:
 - **Anthropic:** `claude-…`
 - **Gemini:** `gemini:<id>`
 - **OpenRouter:** `vendor/model`
+- **OpenCode API (pay-as-you-go):** `opencode:<native-model-id>`, including ids containing `/`.
+
+For OpenCode, save `OPENCODE_API_KEY` under **Settings > Credentials**, restart the coach to apply the credential, then refresh the catalog under **AI models** and choose Fast/Deep models. Saving the key never changes those choices. Use a personal or service-account key with **Models Request** permission and pay-as-you-go credit. **Test** checks authenticated catalog access only: it does not generate an answer or verify model-request permission or balance. The built-in connection uses the fixed [OpenCode OpenAI-compatible gateway](https://opencode.ai/docs/console/harnesses/), rejects redirects, and leaves reasoning at **Auto**. OpenCode Go is not integrated.
+
+The OpenCode catalog imports paid conversational models and full tariffs, including context thresholds and cache-write durations. Displayed hourly prices are base-rate estimates, not quotes or charges. Rates older than 24 hours or retained after a failed refresh are marked stale; failed discovery does not stop answers or select another model.
+
+Session spending distinguishes provider-reported charges, estimates and unknown costs. When any response has unknown cost, the displayed amount is an incomplete known subtotal, not a complete bill; a wholly unknown total is not shown as zero. Cached-rate estimates remain labelled. Tariff conditions the engine cannot price safely produce unknown cost instead of an invented rate.
 
 On top of those, **custom endpoints** (Settings > AI models) add any OpenAI-compatible server: Ollama, LM Studio, OpenAI, Groq, Mistral, DeepSeek and others.
 
 - **Config:** they are saved in `companion.llm.endpoints`.
 - **Model ids:** `ep:<endpoint>:<model>`.
 - **Picking one:** the endpoint's models appear under Settings > AI models > Choose models. You can also click one in the endpoint's test list.
-- **Keys:** set credentials in Settings > API keys; a key is optional for local servers. After adding or editing endpoints, click **Save endpoints** first: endpoint-to-keys links stay disabled until saved, so navigation cannot discard those edits and new endpoint credentials appear in the key list.
+- **Keys:** set credentials in Settings > Credentials; a key is optional for local servers. After adding or editing endpoints, click **Save endpoints** first: endpoint-to-keys links stay disabled until saved, so navigation cannot discard those edits and new endpoint credentials appear in the key list.
 
 ## Overlay
 

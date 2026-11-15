@@ -21,6 +21,7 @@ export const STT_ENGINE_KEY: Record<string, string> = {
 const VENDOR_KEY_HOSTS: Record<string, readonly string[]> = {
   ANTHROPIC_API_KEY: ["api.anthropic.com"],
   OPENROUTER_API_KEY: ["openrouter.ai"],
+  OPENCODE_API_KEY: ["opencode.ai"],
   GEMINI_API_KEY: ["generativelanguage.googleapis.com"],
   GOOGLE_API_KEY: ["generativelanguage.googleapis.com"],
   OPENAI_API_KEY: ["api.openai.com"],
@@ -121,11 +122,13 @@ export function modelRequirementHtml(
     }
     return "";
   }
-  const [prov, env]: [string, string] = id.startsWith("gemini:")
-    ? ["gemini", "GEMINI_API_KEY"]
-    : id.includes("/")
-      ? ["openrouter", "OPENROUTER_API_KEY"]
-      : ["anthropic", "ANTHROPIC_API_KEY"];
+  const [prov, env]: [string, string] = id.startsWith("opencode:")
+    ? ["opencode", "OPENCODE_API_KEY"]
+    : id.startsWith("gemini:")
+      ? ["gemini", "GEMINI_API_KEY"]
+      : id.includes("/")
+        ? ["openrouter", "OPENROUTER_API_KEY"]
+        : ["anthropic", "ANTHROPIC_API_KEY"];
   const hasKey = configuredKeys ? configuredKeys.has(env)
     : catalogKeys && prov in catalogKeys ? Boolean(catalogKeys[prov]) : true;
   if (hasKey) return "";
@@ -150,6 +153,8 @@ export function formatCatalogIssuesHtml(
     } else if (k === "gemini" && msg.includes("GEMINI_API_KEY")) {
       const rest = msg.replace("no GEMINI_API_KEY", "").trim();
       parts.push(`gemini: no ${jumpLinkHtml("GEMINI_API_KEY", "keys", "key:GEMINI_API_KEY", true)}${rest ? ` ${esc(rest)}` : ""}`);
+    } else if (k === "opencode" && msg.includes("OPENCODE_API_KEY")) {
+      parts.push(`opencode: ${esc(msg.replace("OPENCODE_API_KEY", ""))} ${jumpLinkHtml("OPENCODE_API_KEY", "keys", "key:OPENCODE_API_KEY", true)}`);
     } else if (k.startsWith("ep:")) {
       const eid = k.slice(3);
       const ep = endpoints.find((x) => x.id === eid);

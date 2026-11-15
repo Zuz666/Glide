@@ -322,6 +322,83 @@ function overlayFocusChecks() {
   }
 }
 
+async function opencodeCredentialChecks(invoke, h, p) {
+  const originalFetch = global.fetch, originalStorage = electron.safeStorage;
+  const previousKey = process.env.OPENCODE_API_KEY;
+  const requests = [];
+  let status = 200, networkError = false;
+  process.env.OPENCODE_API_KEY = "";
+  // OS encryption is the boundary: the real key store and IPC lifecycle remain in use.
+  electron.safeStorage = {
+    isAsyncEncryptionAvailable: async () => true,
+    encryptStringAsync: async (text) => Buffer.from("encrypted:" + text.split("").reverse().join("")),
+    decryptStringAsync: async (bytes) => ({ result: bytes.toString().slice(10).split("").reverse().join(""), shouldReEncrypt: false }),
+  };
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url, ...options });
+    if (networkError) throw new Error("offline fixture");
+    return new Response(JSON.stringify({ data: [{ id: "vendor/chat-model" }] }), {
+      status, headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    write(p, JSON.stringify({ companion: { llm: {
+      fast_model: "gemini:existing", deep_model: "vendor/existing",
+      endpoints: [
+        { id: "bad", base_url: "https://opencode.ai.example/v1", key_env: "OPENCODE_API_KEY" },
+        { id: "good", base_url: "https://opencode.ai/inference/openai/v1", key_env: "OPENCODE_API_KEY" },
+      ],
+    } } }));
+    settings.current = { engineHome: h };
+    const before = read(p);
+    const listed = await invoke("keys:list");
+    const guide = listed.known.find(k => k.env === "OPENCODE_API_KEY");
+    assert.ok(guide && guide.guide.steps.join(" ").includes("Models Request"));
+    const draft = await invoke("keys:test", "OPENCODE_API_KEY", " draft-fixture-secret ");
+    assert.strictEqual(draft.ok, true);
+    assert.deepStrictEqual(draft.models, ["opencode:vendor/chat-model"]);
+    assert.match(draft.message, /catalog access/i);
+    assert.match(draft.message, /credit and generation were not verified/i);
+    assert.strictEqual(requests.length, 1, "Test must only read the fixed catalog");
+    assert.strictEqual(requests[0].url, "https://opencode.ai/inference/openai/v1/models");
+    assert.strictEqual(requests[0].method ?? "GET", "GET");
+    assert.strictEqual(requests[0].headers.authorization, "Bearer draft-fixture-secret");
+    assert.strictEqual(requests[0].redirect, "error", "Credentials must not follow catalog redirects");
+    assert.strictEqual((await invoke("keys:list")).status.find(k => k.env === "OPENCODE_API_KEY").saved, false);
+    assert.strictEqual(read(p), before, "Draft Test must not save or select models");
+    for (status of [401, 403]) {
+      const failed = await invoke("keys:test", "OPENCODE_API_KEY", "draft-fixture-secret");
+      assert.strictEqual(failed.ok, false);
+      assert.match(failed.error, new RegExp(`HTTP ${status}`));
+      assert.ok(!failed.error.includes("draft-fixture-secret"), "Diagnostics must not echo credentials");
+    }
+    status = 200;
+    networkError = true;
+    assert.match((await invoke("keys:test", "OPENCODE_API_KEY", "draft-fixture-secret")).error, /Network error/);
+    networkError = false;
+    await invoke("keys:set", "OPENCODE_API_KEY", "saved-fixture-secret");
+    const saved = (await invoke("keys:list")).status.find(k => k.env === "OPENCODE_API_KEY");
+    assert.strictEqual(saved.saved, true);
+    assert.ok(!JSON.stringify(saved).includes("saved-fixture-secret"));
+    assert.ok(!read(path.join(userData, "secrets.json")).includes("saved-fixture-secret"));
+    await invoke("keys:test", "OPENCODE_API_KEY");
+    assert.strictEqual(requests.at(-1).headers.authorization, "Bearer saved-fixture-secret");
+    assert.deepStrictEqual(config.endpointKeyEnvs(), ["GLIDE_ENDPOINT_BAD_KEY", "OPENCODE_API_KEY"]);
+    await invoke("endpoint:test", "https://opencode.ai.example/v1", "OPENCODE_API_KEY");
+    assert.strictEqual(requests.at(-1).headers.authorization, undefined, "Lookalike hosts cannot receive OpenCode keys");
+    await invoke("endpoint:test", "https://opencode.ai/inference/openai/v1", "OPENCODE_API_KEY");
+    assert.strictEqual(requests.at(-1).headers.authorization, "Bearer saved-fixture-secret");
+    await invoke("keys:set", "OPENCODE_API_KEY", "");
+    assert.strictEqual((await invoke("keys:list")).status.find(k => k.env === "OPENCODE_API_KEY").saved, false);
+    assert.strictEqual(read(p), before, "Save, Test and Remove must not alter model roles");
+  } finally {
+    global.fetch = originalFetch;
+    electron.safeStorage = originalStorage;
+    if (previousKey === undefined) delete process.env.OPENCODE_API_KEY;
+    else process.env.OPENCODE_API_KEY = previousKey;
+  }
+}
+
 async function windowsProcessVoiceChecks() {
   const { EventEmitter } = require("events");
   const { usesAppWindowsVoice } = require(path.join(dist, "..", "shared", "windows-process-voice.mjs"));
@@ -359,6 +436,7 @@ async function windowsProcessVoiceChecks() {
   });
   const sender = { mainFrame: { url: OWN_PAGES[0] } };
   const invoke = (channel, ...args) => handlers.get(channel)({ sender, senderFrame: sender.mainFrame }, ...args);
+  await opencodeCredentialChecks(invoke, h, p);
   const appVoice = (speech) => invoke("app:settings:set", { speech });
   const processVoice = () => config.readConfig().companion?.voice?.voice;
   const reset = (voice, speech = {}) => {

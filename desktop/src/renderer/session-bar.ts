@@ -3,6 +3,7 @@
 import { taskBar } from "./activity.js";
 import { call, glide } from "./bridge.js";
 import { $, cap } from "./dom.js";
+import { sessionCostText } from "./cost-presentation.js";
 import { renderReminders } from "./memory.js";
 import { speech } from "./narrator.js";
 import { currentPage } from "./nav.js";
@@ -49,8 +50,7 @@ export function sessionBar(d: LiteState | null): void {
 
 function showUsage(minutes: number | undefined, c: Partial<CoachStats>): void {
   $("sb-time").textContent = fmtDur(Math.round(minutes || 0));
-  const cost = Number(c.cost_usd || 0);
-  $("sb-cost").textContent = `$${cost < 10 ? cost.toFixed(3) : cost.toFixed(2)}`;
+  $("sb-cost").textContent = sessionCostText(c.cost_usd, c.cost_coverage);
   $("sb-calls").textContent = String(c.calls ?? 0);
   const tot = (c.cache_read_tokens || 0) + (c.uncached_in_tokens || 0) + (c.cache_write_tokens || 0);
   $("sb-cache").textContent = tot ? `${Math.round((100 * (c.cache_read_tokens || 0)) / tot)}%` : "–";

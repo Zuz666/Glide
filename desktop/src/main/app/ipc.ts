@@ -14,6 +14,7 @@ import { ResourceSampler } from "../resources";
 import { keyStatus, KNOWN_KEYS, setKey } from "../secrets";
 import { listWhisperModels, Speech } from "../speech";
 import type { AppSettingsPatch, EdgeTtsEvent, EventChannel, EventMap, InvokeArgs, InvokeChannel, InvokeResult, LogAttribution, RxpGuideDetail, RxpGuideFacts, RxpImport, RxpImportResult, RxpRoutes, RxpRoutesRequest, TtsPlaybackReport, TtsPlaybackState, TtsProvider, Voice } from "../../shared/ipc";
+import type { KeyTest } from "../../shared/ipc";
 import { appSettingsProblem, Obj } from "../store";
 import { synth, TTS_KEYS, voices as ttsVoices } from "../tts";
 import { TtsStatusCoordinator } from "../tts-status";
@@ -48,6 +49,7 @@ export interface IpcDeps {
 /** The built-in vendors' keys and the hosts they may go to (companion/openai_compat.py VENDOR_KEY_HOSTS). */
 const VENDOR_KEY_HOSTS: Record<string, string[]> = {
   ANTHROPIC_API_KEY: ["api.anthropic.com"], OPENROUTER_API_KEY: ["openrouter.ai"],
+  OPENCODE_API_KEY: ["opencode.ai"],
   GEMINI_API_KEY: ["generativelanguage.googleapis.com"], GOOGLE_API_KEY: ["generativelanguage.googleapis.com"],
   OPENAI_API_KEY: ["api.openai.com"], GROQ_API_KEY: ["api.groq.com"], DEEPGRAM_API_KEY: ["api.deepgram.com"],
   TAVILY_API_KEY: [], BRAVE_API_KEY: [], ELEVENLABS_API_KEY: [], AZURE_SPEECH_KEY: [], GOOGLE_TTS_API_KEY: [],
@@ -440,10 +442,8 @@ function keyChannels(ttsStatus: TtsStatusCoordinator): void {
   });
 }
 
-/** A model key against its own vendor: a key that lists models works. Answers the ids it can use, newest first where
- * the vendor orders them, in the engine's form (Gemini's as gemini:<id>, OpenAI's as ep:openai:<id>). OpenRouter's list is public, so its key is
- * checked on its own route. */
-async function testModelKey(env: string, key: string): Promise<{ ok: boolean; models?: string[]; error?: string }> {
+/** A model credential checked against its vendor. Catalog discovery is not proof of model-request access. */
+async function testModelKey(env: string, key: string): Promise<KeyTest> {
   const get = async (url: string, headers: Record<string, string>) => {
     const r = await fetch(url, { headers, signal: AbortSignal.timeout(10000) });
     if (r.status === 401 || r.status === 403) throw new Error("the key was refused: check it was copied whole");
@@ -451,6 +451,25 @@ async function testModelKey(env: string, key: string): Promise<{ ok: boolean; mo
     return (await r.json()) as any;
   };
   try {
+    if (env === "OPENCODE_API_KEY") {
+      let r: Response;
+      try {
+        r = await fetch("https://opencode.ai/inference/openai/v1/models", {
+          headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10000), redirect: "error",
+        });
+      } catch {
+        return { ok: false, error: "Network error: could not read the OpenCode catalog. Check connectivity and try again." };
+      }
+      if (r.status === 401) return { ok: false, error: "HTTP 401: authentication refused. Check the API key was copied whole." };
+      if (r.status === 403) return { ok: false, error: "HTTP 403: catalog access denied. Check this key's workspace permissions." };
+      if (!r.ok) return { ok: false, error: `HTTP ${r.status}: OpenCode catalog access failed.` };
+      let d: { data?: { id?: string }[] };
+      try { d = await r.json() as typeof d; }
+      catch { return { ok: false, error: "OpenCode returned an unreadable catalog." }; }
+      if (!Array.isArray(d.data)) return { ok: false, error: "OpenCode returned an unreadable catalog." };
+      return { ok: true, models: d.data.flatMap((m) => m && typeof m.id === "string" && m.id ? [`opencode:${m.id}`] : []),
+        message: "Authenticated catalog access confirmed. Model-request permission, available credit and generation were not verified." };
+    }
     if (env === "ANTHROPIC_API_KEY") {
       const d = await get("https://api.anthropic.com/v1/models?limit=100", { "x-api-key": key, "anthropic-version": "2023-06-01" });
       return { ok: true, models: (d.data || []).map((m: any) => m.id).filter(Boolean) };

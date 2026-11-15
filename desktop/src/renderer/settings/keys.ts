@@ -17,6 +17,7 @@ const TESTABLE_MODEL_ENVS = new Set([
   "GEMINI_API_KEY",
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
+  "OPENCODE_API_KEY",
 ]);
 
 type KeysPayload = NonNullable<Awaited<ReturnType<typeof call<"keys:list">>>>;
@@ -201,6 +202,8 @@ function drawPanel(g: Group, host: HTMLElement, r: KeysPayload): void {
     const session = editorSession;
     activeInput.addEventListener("input", () => {
       drafts.set(env, activeInput.value);
+      const msg = host.querySelector<HTMLElement>("[data-test-msg]");
+      if (msg) { msg.hidden = true; msg.textContent = ""; }
     });
     if (prevFocused && activeEnv === env) {
       activeInput.focus({ preventScroll: true });
@@ -235,14 +238,16 @@ function drawPanel(g: Group, host: HTMLElement, r: KeysPayload): void {
     const env = btn.dataset.test!;
     const session = editorSession;
     const msg = host.querySelector<HTMLElement>("[data-test-msg]");
-    const val = activeInput?.value.trim() || undefined;
+    const raw = activeInput?.value ?? "";
+    const val = raw.trim() || undefined;
     if (msg) { msg.hidden = false; msg.textContent = "Testing…"; msg.className = "help key-test-msg"; }
     btn.disabled = true;
     const res = await call("keys:test", env, val);
     if (editorSession !== session || !msg?.isConnected) return;
     btn.disabled = false;
+    if ((activeInput?.value ?? "") !== raw) return;
     if (!res) return;
-    msg.textContent = res.ok ? `Valid — ${res.models?.length ?? 0} models reachable.` : `Failed: ${res.error || "rejected"}`;
+    msg.textContent = res.ok ? res.message || `Valid — ${res.models?.length ?? 0} models reachable.` : `Failed: ${res.error || "rejected"}`;
     msg.className = `help key-test-msg ${res.ok ? "ok" : "bad"}`;
   });
 

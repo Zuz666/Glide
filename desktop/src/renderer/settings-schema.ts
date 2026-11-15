@@ -65,14 +65,14 @@ export const SCHEMA: Tab[] = [
       { title: "Speech recognition (Push-to-talk)", special: "keys", keyKind: "speech",
         intro: "Optional online speech-to-text. Bundled Whisper and Windows speech work offline without a credential; OpenAI transcription uses OPENAI_API_KEY above." },
       { title: "Web search", special: "keys", keyKind: "search",
-        intro: "Optional live web lookup for Gemini, OpenRouter and custom-endpoint models. Claude models search without a separate key." },
+        intro: "Optional live web lookup for Gemini, OpenRouter, OpenCode and custom-endpoint models. Claude models search without a separate key." },
     ],
   },
   {
     id: "models", title: "AI models", groups: [
       { title: "Choose models", special: "model-picker",
-        intro: "Every model your keys and endpoints can use, cheapest first within each provider, with what it would cost an hour at your usage. Choose reasoning effort separately for each role; changes apply to the next call." },
-      { title: "Model ids", intro: "Or type an id: claude-… (Anthropic), gemini:<id> (Gemini API), vendor/model (OpenRouter), ep:<endpoint>:<model> (custom endpoint).",
+        intro: "Discovered coach model choices, cheapest estimated hourly usage first within each provider. Catalog access does not guarantee model-request access or credit. Choose reasoning effort separately for each role; changes apply to the next call." },
+      { title: "Model ids", intro: "Or type an id: claude-… (Anthropic), gemini:<id> (Gemini API), vendor/model (OpenRouter), opencode:<id> (OpenCode pay-as-you-go), ep:<endpoint>:<model> (custom endpoint).",
         fields: [
           { key: L + "fast_model", label: "Fast model", type: "text", wide: true,
             help: "Live callouts, quest briefings and translation. Spoken questions use the separately selected role below." },

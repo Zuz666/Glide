@@ -1,5 +1,5 @@
-"""Talking to the model providers: the Claude API, Gemini, OpenRouter and custom OpenAI-compatible endpoints
-(providers.py sends each one's requests; openai_compat.py translates for the last three). Every request goes through
+"""Talking to the model providers: Claude, Gemini, OpenRouter, OpenCode and custom OpenAI-compatible endpoints
+(providers.py sends each one's requests; openai_compat.py translates compatible chat requests). Every request goes through
 the billing guard (a fatal error suspends that provider, transient ones back off), prompt caching markers,
 thinking/effort options per model, streamed replies, the tool-use loop, and the token and cost accounting the
 dashboard shows.
@@ -9,6 +9,7 @@ The coach holds one LLMClient and hands it its system prompt (system_fn), the ru
 reflection running beside a callout books its tokens and picks its options for its own path."""
 from contextlib import contextmanager
 import json
+import math
 import os
 import re
 import threading
@@ -19,6 +20,7 @@ from typing import Any, Callable
 import models as models_mod
 import openai_capabilities
 import openai_compat
+import opencode
 import providers
 import reasoning
 import settings
@@ -46,7 +48,7 @@ def api_message(detail):
 
 API_LABEL = providers.API_LABEL
 KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "gemini": "GEMINI_API_KEY", "openrouter": "OPENROUTER_API_KEY",
-           "endpoint": "custom endpoint (Settings > Models)"}
+           "opencode": opencode.KEY_ENV, "endpoint": "custom endpoint (Settings > Models)"}
 
 
 def path_roles(cfg):
@@ -97,13 +99,14 @@ def path_of(deep):
 
 def api_keys(cfg):
     """The keys of an "llm" config, read from the environment (never stored): ({"anthropic", "openrouter",
-    "gemini", "endpoint"}: key or "", {endpoint id: endpoint with its key}). A local endpoint may need no key, so
+    "gemini", "opencode", "endpoint"}: key or "", {endpoint id: endpoint with its key}). A local endpoint may need no key, so
     "endpoint" reads "configured" whenever one is set up and each request uses its endpoint's own key."""
     env = settings.Settings("llm", cfg).get("api_key_env")
     keys = {"anthropic": os.environ.get(env, "").strip(),
             "openrouter": os.environ.get(cfg.get("openrouter_key_env", "OPENROUTER_API_KEY"), "").strip(),
             "gemini": (os.environ.get(cfg.get("gemini_key_env", "GEMINI_API_KEY"), "")
-                       or os.environ.get("GOOGLE_API_KEY", "")).strip()}
+                       or os.environ.get("GOOGLE_API_KEY", "")).strip(),
+            "opencode": os.environ.get(opencode.KEY_ENV, "").strip()}
     eps = {eid: dict(ep, key=os.environ.get(ep["key_env"], "").strip())
            for eid, ep in openai_compat.endpoints(cfg).items()}
     keys["endpoint"] = "configured" if eps else ""
@@ -163,15 +166,19 @@ class LLMClient:
         # one provider per API; custom endpoints one each, under their model prefix "ep:<id>"
         self.providers = {"anthropic": providers.AnthropicProvider(cfg, self.key),
                           "gemini": providers.OpenAICompatProvider("gemini", cfg, self.keys["gemini"]),
-                          "openrouter": providers.OpenAICompatProvider("openrouter", cfg, self.keys["openrouter"])}
+                          "openrouter": providers.OpenAICompatProvider("openrouter", cfg, self.keys["openrouter"]),
+                          "opencode": providers.OpenCodeProvider(cfg, self.keys["opencode"])}
         for eid, ep in self.endpoints.items():
             self.providers["ep:" + eid] = providers.OpenAICompatProvider(
                 "endpoint", cfg, ep["key"], url=ep["base_url"] + "/chat/completions", label=ep["label"])
         self.catalog = catalog                # models.Catalog: prices and tool support
         self.usage_fn = usage_fn              # callback(dict) per API call: tokens read/written/uncached, cost
-        self.path_stats = {"since": time.time(), "fast": {}, "deep": {}}
-        self.stats = {"calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0, "tool_calls": 0,
-                      "uncached_in_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0}
+        self.path_stats: dict[str, Any] = {"since": time.time(), "fast": {}, "deep": {}}
+        self.stats: dict[str, Any] = {
+            "calls": 0, "errors": 0, "in_tokens": 0, "out_tokens": 0, "tool_calls": 0,
+            "uncached_in_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_usd": 0.0,
+            "cost_coverage": {"reported": 0, "estimated": 0, "unknown": 0, "stale_estimates": 0},
+        }
         self._acct = threading.Lock()         # the coach and reflection threads both book calls
         self.suspended = None                 # reason the API can't be used (no credits, bad key): stop calling
         self.suspended_for = None             # the provider that suspension applies to
@@ -276,7 +283,7 @@ class LLMClient:
         up-front thinking off and use low effort (fast); reviews and typed questions keep adaptive
         thinking at medium effort."""
         m = model.lower()
-        if "/" in m or m.startswith("gemini:") or m.startswith("ep:"):   # OpenRouter / Gemini / custom endpoints
+        if models_mod.provider(m) != "anthropic":
             return {}
         if "haiku" in m and not any(v in m for v in ("haiku-5", "haiku5")):
             return {}                      # Haiku 4.5 and older: no adaptive thinking or effort (400 on effort)
@@ -309,14 +316,20 @@ class LLMClient:
                        % (openai_compat.split_endpoint(model)[0], model), "speak": False})
             return None, {}
         label = p.label
+        exclusion = None
         if openai_compat.is_endpoint(model):
             raw_entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
             contract = openai_capabilities.describe_endpoint_model(model, self.cfg, raw_entry)
             if contract.suitability == "excluded":
-                self.stats["errors"] += 1
-                self.emit({"kind": "error", "text": "%s cannot be used as a coach model (%s)."
-                           % (model, contract.reason), "speak": False})
-                return None, opts
+                exclusion = contract.reason
+        elif model.startswith(opencode.PREFIX):
+            raw_entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
+            exclusion = (raw_entry or {}).get("excluded_reason")
+        if exclusion:
+            self.stats["errors"] += 1
+            self.emit({"kind": "error", "text": "%s cannot be used as a coach model (%s)."
+                       % (model, exclusion), "speak": False})
+            return None, opts
         current = getattr(self._request, "current", None)
         if effort is None:
             effort = current["attribution"]["reasoning"] if current is not None else \
@@ -415,17 +428,27 @@ class LLMClient:
         self.fails, self.backoff_until = 0, 0
 
     def _account(self, model, body, u, path):
-        """Count one answered request: tokens (read from cache, written to it, uncached), web searches and the cost,
-        in the session totals, its path's totals (`path`: "fast" | "deep"), the last turn's usage and the app's
-        usage log."""
+        """Book one completed response, keeping charges, estimates and unknown costs distinct."""
         cost = u.get("cost_usd")
-        if cost is None:
-            price = self.catalog.price(model, self.cfg) if self.catalog is not None else \
-                models_mod.static_price(model, self.cfg)
-            cost = models_mod.cost_usd(price, u)
+        reported = isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0
+        basis = "estimated" if u.get("cost_estimated") is True else "reported"
+        stale = False
+        if not reported:
+            basis = "estimated"
+            if model.startswith(opencode.PREFIX):
+                entry = self.catalog.get(model) if self.catalog is not None else None
+                cost = opencode.estimate_cost(entry, u) if entry is not None else None
+                stale = cost is not None and bool(entry and entry.get("pricing_stale"))
+            else:
+                price = self.catalog.price(model, self.cfg) if self.catalog is not None else \
+                    models_mod.static_price(model, self.cfg)
+                cost = models_mod.cost_usd(price, u)
+        if cost is None or not math.isfinite(cost) or cost < 0:
+            cost, basis, stale = None, "unknown", False
         searches = int(((u.get("server_tool_use") or {}).get("web_search_requests")) or 0)
-        if searches:
-            cost = (cost or 0.0) + searches * 0.01                # $10 per 1,000 searches
+        if searches and cost is not None:
+            cost += searches * 0.01             # Native web search: $10 per 1,000 searches.
+            basis = "estimated"
         with self._acct:
             self.stats["calls"] += 1
             self.stats["in_tokens"] += ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
@@ -443,17 +466,27 @@ class LLMClient:
             for k, v in (("calls", 1), ("cache_read", u.get("cache_read_input_tokens") or 0),
                          ("uncached", (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)),
                          ("cache_write", u.get("cache_creation_input_tokens") or 0),
-                         ("output", u.get("output_tokens") or 0), ("cost_usd", cost or 0.0)):
+                         ("output", u.get("output_tokens") or 0)):
                 ps[k] = ps.get(k, 0) + v
-            if cost:
-                self.stats["cost_usd"] += cost
+            for totals in (self.stats, ps):
+                totals["cost_usd"] = totals.get("cost_usd", 0.0) + (cost if cost is not None else 0.0)
+                coverage = totals.get("cost_coverage")
+                if coverage is None:
+                    coverage = totals["cost_coverage"] = {
+                        "reported": 0, "estimated": 0, "unknown": 0, "stale_estimates": 0,
+                    }
+                coverage[basis] += 1
+                if stale:
+                    coverage["stale_estimates"] += 1
         if self.usage_fn:
             try:
                 self.usage_fn({"model": model, "path": path, "tools": bool(body.get("tools")),
                                "in": u.get("input_tokens") or 0, "read": u.get("cache_read_input_tokens") or 0,
                                "write": u.get("cache_creation_input_tokens") or 0,
                                "write_1h": (u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0,
-                               "out": u.get("output_tokens") or 0, "cost": round(cost or 0.0, 6)})
+                               "out": u.get("output_tokens") or 0,
+                               "cost": round(cost, 6) if cost is not None else None,
+                               "cost_basis": basis, "cost_stale": stale})
             except Exception as e:  # noqa: BLE001 - the usage log is an extra
                 log_once("llm.usage", e)
 
@@ -728,9 +761,9 @@ class LLMClient:
         self.suspended, self.suspended_for = reason, prov
         self.stats["errors"] += 1
         if first:
-            fix = {"out of API credits": "add credits (console.anthropic.com Plans & Billing, openrouter.ai/credits, or "
-                                         "Google AI Studio billing) or pick a cheaper model in the dashboard",
-                   "API key rejected": "check ANTHROPIC_API_KEY (OPENROUTER_API_KEY / GEMINI_API_KEY for those models)",
+            fix = {"out of API credits": "add credits (console.anthropic.com Plans & Billing, openrouter.ai/credits, "
+                                         "opencode.ai/console, or Google AI Studio billing) or pick a cheaper model in the dashboard",
+                   "API key rejected": "check " + KEY_ENV.get(prov, "the configured API key"),
                    "API access denied": "check the API key's organization and permissions"}[reason]
             self.emit({"kind": "error", "text": "Coach AI stopped: %s. No more API calls; basic callouts only. "
                        "To resume, %s, then ask the coach any question (or restart)." % (reason, fix),

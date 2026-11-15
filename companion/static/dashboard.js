@@ -1005,10 +1005,16 @@ function renderSession(d) {
   if (!d.coach) return;
   const c = d.coach, kb = /** @type {KbStatus} */ (d.kb || {});
   const promptTokens = (c.cache_read_tokens || 0) + (c.uncached_in_tokens || 0) + (c.cache_write_tokens || 0);
+  const coverage = c.cost_coverage;
+  const amount = `$${(c.cost_usd || 0).toFixed(3)}`;
+  const known = (coverage?.reported || 0) + (coverage?.estimated || 0);
+  let spend = coverage?.estimated ? `${amount} (estimate)` : amount;
+  if (coverage?.unknown) spend = known ? `${spend} + ? (incomplete)` : 'Cost unknown';
+  if (coverage?.stale_estimates) spend += ' · cached-rate estimate';
   const stats = $('stats');
   stats.className = '';
   stats.innerHTML = [
-    ['Coach', `${esc(c.mode)}, ${c.calls} calls, $${(c.cost_usd || 0).toFixed(3)}`],
+    ['Coach', `${esc(c.mode)}, ${c.calls} calls, ${spend}`],
     ['Web searches', c.web_searches || 0],
     ['Cache hits', promptTokens ? Math.round(100 * (c.cache_read_tokens || 0) / promptTokens) + '%' : '–'],
     ['Tokens', `${formatNumber(c.in_tokens)} in, ${formatNumber(c.out_tokens)} out`],

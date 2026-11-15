@@ -43,7 +43,7 @@ from coach_deps import CoachDeps
 import websearch
 from geo import Geo
 from knowledge_layer import KnowledgeHandle, handle_view, knowledge_package, load_knowledge_layer, open_pack
-from llm_client import LLMClient
+from llm_client import KEY_ENV, LLMClient
 from localization import Localizer
 from prompt_context import short_json
 from reflector import Reflector
@@ -281,7 +281,7 @@ class Coach:
         counts (cited / unsupported) after tool_calls, where they always were."""
         out = {}
         for k, v in self.llm.stats.items():
-            out[k] = v
+            out[k] = dict(v) if k == "cost_coverage" else v
             if k == "tool_calls":
                 out.update(self.grounding)
         return out
@@ -688,7 +688,7 @@ class Coach:
             text = self.offline(batch, ctx, question)
             if question:
                 text = "No %s for %s; pick another model in the dashboard. %s" % (
-                    {"openrouter": "OPENROUTER_API_KEY", "gemini": "GEMINI_API_KEY"}.get(prov, "ANTHROPIC_API_KEY"),
+                    KEY_ENV.get(prov, "ANTHROPIC_API_KEY"),
                     model, text or "")
             return self._emit_offline(question, text, bool(question), "offline (no %s key)" % prov, batch=batch)
         user = self._user_message(ctx, trigger, question=bool(question), triggers=triggers if batch else None,
@@ -1262,6 +1262,10 @@ class Coach:
             msg = self._respond([], question=question, voice=voice)
         finally:
             self.emit = emit0
-        delta = {k: self.stats.get(k, 0) - before.get(k, 0) for k in self.stats}
+        after = self.stats
+        delta = {k: after[k] - before.get(k, 0) for k in after if k != "cost_coverage"}
+        if "cost_coverage" in after:
+            delta["cost_coverage"] = {k: n - before.get("cost_coverage", {}).get(k, 0)
+                                      for k, n in after["cost_coverage"].items()}
         return {"answer": msg if msg and msg.get("kind") in REPLIES else None, "messages": got,
                 "latency_s": round(time.time() - t0, 2), "stats": delta, "usage": dict(self.llm.last_usage)}

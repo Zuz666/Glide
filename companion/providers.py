@@ -12,12 +12,13 @@ from typing import Protocol
 
 import openai_compat
 import openai_responses
+import opencode
 import reasoning
 import settings
 from log import log_once
 
 API_LABEL = {"anthropic": "Claude API", "gemini": "Gemini API", "openrouter": "OpenRouter",
-             "endpoint": "custom endpoint"}
+             "endpoint": "custom endpoint", "opencode": "OpenCode"}
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
@@ -113,9 +114,12 @@ def _json_request(url, body, headers):
 
 
 class _HTTP:
+    def _open(self, req, timeout):
+        return urllib.request.urlopen(req, timeout=timeout)
+
     def fetch(self, req, stream, on_text, timeout):
         """Send one request -> the reply as JSON (a streamed one read with read_stream). HTTP errors raise."""
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with self._open(req, timeout) as r:
             return read_stream(r, on_text, req.full_url) if stream else json.loads(r.read().decode("utf-8"))
 
 
@@ -138,7 +142,7 @@ class AnthropicProvider(_HTTP):
     def request(self, body, attempt, on_text):
         """-> (urllib Request, whether the reply is streamed)."""
         messages = body.get("messages") or []
-        private = (openai_compat.META_BLOCK, openai_responses.META_BLOCK)
+        private = (openai_compat.META_BLOCK, openai_responses.META_BLOCK, opencode.META_BLOCK)
         if any(isinstance(m.get("content"), list) and any(b.get("type") in private for b in m["content"]
                                                         if isinstance(b, dict)) for m in messages):
             body = dict(body, messages=[dict(m, content=[b for b in m["content"]
@@ -240,3 +244,37 @@ class OpenAICompatProvider(_HTTP):
     def accepted(self, model, attempt, deep=False):
         if self.flavor == "gemini":
             self.effort_ok[model, deep] = attempt
+
+
+class OpenCodeProvider(OpenAICompatProvider):
+    """Fixed-origin pay-as-you-go gateway, never selected by upstream model heuristics."""
+
+    def __init__(self, cfg, key):
+        super().__init__("opencode", cfg, key, url=opencode.CHAT_URL)
+
+    def _open(self, req, timeout):
+        return opencode.open_request(req, timeout)
+
+    def fatal_reason(self, code, detail):
+        if code == 403:
+            return "API access denied"
+        return super().fatal_reason(code, detail)
+
+    def option_sets(self, model, opts, deep, effort="auto"):
+        if effort != "auto":
+            raise ValueError("OpenCode explicit effort mapping is not established; use auto")
+        return [{}]
+
+    def request(self, body, attempt, on_text):
+        if not self.key:
+            raise ValueError("no " + opencode.KEY_ENV)
+        if not (body.get("model") or "").startswith(opencode.PREFIX):
+            raise ValueError("OpenCode requests require an opencode: model")
+        if attempt:
+            raise ValueError("OpenCode explicit request controls are not established")
+        return _json_request(opencode.CHAT_URL, openai_compat.to_openai(body, "opencode"),
+                             {"authorization": "Bearer " + self.key, "content-type": "application/json",
+                              "user-agent": "glide-companion"}), False
+
+    def parse(self, data):
+        return openai_compat.from_openai(data, "opencode")

@@ -295,6 +295,7 @@ export function engineOptions(): EngineOptions {
 
 const ENDPOINT_VENDOR_HOSTS: Record<string, readonly string[]> = {
   ANTHROPIC_API_KEY: ["api.anthropic.com"], OPENROUTER_API_KEY: ["openrouter.ai"],
+  OPENCODE_API_KEY: ["opencode.ai"],
   GEMINI_API_KEY: ["generativelanguage.googleapis.com"], GOOGLE_API_KEY: ["generativelanguage.googleapis.com"],
   OPENAI_API_KEY: ["api.openai.com"], GROQ_API_KEY: ["api.groq.com"], DEEPGRAM_API_KEY: ["api.deepgram.com"],
   TAVILY_API_KEY: [], BRAVE_API_KEY: [], ELEVENLABS_API_KEY: [], AZURE_SPEECH_KEY: [], GOOGLE_TTS_API_KEY: [],
