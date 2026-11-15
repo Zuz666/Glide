@@ -84,6 +84,11 @@ app. A difference is either a bug (fix it) or an intended change: record it in `
 "Recorded changes" (what, why, which recommendation), then re-record only that probe:
 `py -3 tests/golden/golden.py record <probe>`. Never re-record to make an unexplained difference go away.
 
+`tests/test_golden_addon_replay.py` always checks the database-free addon → engine half of the engine golden,
+including on CI without game data. After an intended addon payload or scheduling change, update the dependent
+`engine.json` `addon` expectations as well as the addon snapshot. Preserve the machine-dependent `sim` section
+when the original databases are unavailable; never replace it with this machine's reduced simulator output.
+
 On the development PC (it has the data), `tests/test_golden.py` inside `run_all` runs `golden.py check` over every
 probe, so a green `run_all` with `test_golden.py ok` is the golden check: don't run it a second time. `golden.py`
 stays for `record`, a single probe and `--portable` on a machine without the data.
