@@ -95,7 +95,7 @@ def run():
 
 def sim_run():
     """-> list of records, one per frame with anything observable, plus periodic panels."""
-    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_API_KEY"):
         os.environ[k] = ""
     fr = frames()
     sys.path.insert(0, os.path.join(ROOT, "companion"))

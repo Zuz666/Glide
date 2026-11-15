@@ -243,7 +243,8 @@ class App:
         import reminders
         keys, endpoints = llm_client.api_keys(llm_cfg)
         self.catalog = models.Catalog(live_path("models.json"), keys.get("anthropic"),
-                                      keys.get("openrouter"), gemini_key=keys.get("gemini"), endpoints=endpoints)
+                                      keys.get("openrouter"), gemini_key=keys.get("gemini"),
+                                      opencode_key=keys.get("opencode"), endpoints=endpoints)
         # what the coach learns about the player, kept outside the install and the engine home (memory.memory_dir);
         # a simulated run gets a throwaway memory so test sessions never teach the real one
         self.memory = memory.Memory(None if self.args.sim else memory.default_path())
@@ -483,8 +484,7 @@ class App:
         return flags
 
     def on_models(self, refresh=False, reasoning_model=None):
-        """Dashboard model selector: the catalog (Anthropic + OpenRouter), the current choices and the token profile
-        used for the $/hour estimates."""
+        """Coach model selector: the provider catalog, saved choices and the token profile for cost estimates."""
         import tuning
         if refresh:
             self.catalog.refresh()
@@ -513,7 +513,8 @@ class App:
                     opt.get(path + "_model"), llm,
                     openai_capabilities.catalog_raw_entry(self.catalog, opt.get(path + "_model")))
                     for path in ("fast", "deep")},
-                "profile": tuning.profile(self.coach), "spent_usd": round(self.coach.stats.get("cost_usd", 0.0), 4)}
+                "profile": tuning.profile(self.coach), "spent_usd": round(self.coach.stats.get("cost_usd", 0.0), 4),
+                "cost_coverage": dict(self.coach.stats.get("cost_coverage") or {})}
 
     def _step_match(self, summary):
         pack = self.pack

@@ -76,6 +76,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             return self.send_data(html, content_type="text/html; charset=utf-8")
+        assets = {
+            "/app.css": ("desktop/src/renderer/app.css", "text/css; charset=utf-8"),
+            "/glide.css": ("companion/static/glide.css", "text/css; charset=utf-8"),
+            "/date-time-display.js": ("companion/static/date-time-display.js", "text/javascript; charset=utf-8"),
+        }
+        if self.path in assets:
+            source, content_type = assets[self.path]
+            with open(os.path.join(ROOT, source), encoding="utf-8") as asset:
+                return self.send_data(asset.read(), content_type=content_type)
         if self.path == "/probe":
             return self.send_data({"attempts": len(attempts), "config": glideconfig.read(tmp)[0]})
         if self.path.startswith("/models"):
@@ -94,6 +103,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data(glideconfig.read(tmp)[0])
         if channel == "app:settings:get":
             return self.send_data({"muted": True, "speech": {"volume": 0}})
+        if channel == "tts:status:get":
+            return self.send_data({"provider": "windows", "voiceLabel": "Muted test voice", "fullVoice": "",
+                                   "phase": "muted", "updatedAt": 0})
         if channel == "config:set":
             attempts.append(args[0])
             if reject:

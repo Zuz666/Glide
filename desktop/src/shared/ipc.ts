@@ -461,8 +461,8 @@ export interface KeyStatus { env: string; saved: boolean; fromEnv: boolean; hint
 export interface Footprint { cpu: number; memMB: number; processes: number }
 
 export interface EndpointTest { ok: boolean; models?: string[]; error?: string }
-/** A model key tried against its vendor (keys:test): the model ids it can use (Gemini's as gemini:<id>). */
-export interface KeyTest { ok: boolean; models?: string[]; error?: string }
+/** A credential checked against its vendor; listed models do not guarantee model-request access. */
+export interface KeyTest { ok: boolean; models?: string[]; error?: string; message?: string }
 
 /** What each channel takes and answers (the renderer gets the answer once the main process's promise settles). */
 export interface InvokeMap {

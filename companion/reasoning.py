@@ -1,6 +1,7 @@
 """Documented reasoning controls for a model's actual API; no probes or fallback requests."""
 import openai_capabilities
 import openai_compat
+import opencode
 
 # Schema vocabulary is not a promise that every compatible server accepts every value.
 # https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
@@ -95,6 +96,9 @@ def _anthropic(entry):
 def describe(model, cfg, entry=None) -> dict:
     """Return explicit choices (excluding auto), documentation confidence and tool-capable transport."""
     entry = _catalog_entry(model, entry)
+    if (model or "").startswith(opencode.PREFIX):
+        return _result((), "OpenCode native reasoning metadata does not establish translated Chat effort controls; "
+                       "use auto.", "chat", False)
     if openai_compat.is_endpoint(model):
         contract = openai_capabilities.describe_endpoint_model(model, cfg, entry)
         return _result(contract.efforts, contract.note, contract.transport, contract.known,

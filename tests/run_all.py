@@ -44,7 +44,8 @@ _HEAVY = ("test_golden.py", "test_navmesh.py", "test_rxp_explorer.py", "test_rxp
           "test_models.py")
 SLOTS = 2            # tests at once per -j while the long ones have priority
 RISE = 1.25          # a recorded time rises at most this much per run (and falls at once)
-_PAID_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
+_PAID_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+              "OPENCODE_API_KEY")
 _REF = re.compile(r"^(HEAD|FETCH_HEAD|ORIG_HEAD|[0-9a-f]{7,40})([~^].*)?$|/|[~^]")   # --changed REF, not a word
 
 

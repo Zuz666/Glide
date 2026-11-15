@@ -29,7 +29,7 @@ export function renderLanguage(_g: Group, host: HTMLElement): void {
   const fast = String(llm.fast_model || MANIFEST["llm.fast_model"].default);
   const enabled = llm.enabled ?? MANIFEST["llm.enabled"].default;
   const endpoint = fast.startsWith("ep:") ? llm.endpoints?.find((e: { id: string }) => e.id === fast.split(":")[1]) : undefined;
-  const api = endpoint?.label || (fast.startsWith("ep:") ? fast.split(":")[1] : fast.startsWith("gemini:") ? "Gemini API" : fast.includes("/") ? "OpenRouter" : "Anthropic API");
+  const api = endpoint?.label || (fast.startsWith("ep:") ? fast.split(":")[1] : fast.startsWith("opencode:") ? "OpenCode API (pay-as-you-go)" : fast.startsWith("gemini:") ? "Gemini API" : fast.includes("/") ? "OpenRouter" : "Anthropic API");
   const ownWindows = voice.output === "windows";
   const provider = ownWindows ? "windows" : sp.provider || "windows";
   const name = PROVIDERS[provider]?.[0] || provider;

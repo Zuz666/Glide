@@ -22,9 +22,11 @@ back to its offline callouts:
 
 ```
 set ANTHROPIC_API_KEY=
+set OPENAI_API_KEY=
 set GEMINI_API_KEY=
 set GOOGLE_API_KEY=
 set OPENROUTER_API_KEY=
+set OPENCODE_API_KEY=
 py -3 companion\app.py --sim --no-voice --no-overlay --no-ptt --port 8766
 ```
 

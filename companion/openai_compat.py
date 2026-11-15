@@ -15,6 +15,8 @@ import json
 import re
 import urllib.parse
 
+import opencode
+
 URL = "https://openrouter.ai/api/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 GEMINI_PREFIX = "gemini:"                     # direct Gemini API models are "gemini:<id>", e.g. gemini:gemini-2.5-flash
@@ -32,7 +34,7 @@ def is_endpoint(model):
 
 
 def is_openrouter(model):
-    return "/" in (model or "") and not is_gemini(model) and not is_endpoint(model)
+    return "/" in (model or "") and not (model or "").startswith(opencode.PREFIX) and not is_gemini(model) and not is_endpoint(model)
 
 
 def split_endpoint(model):
@@ -49,6 +51,7 @@ VENDOR_KEY_HOSTS = {
     "ANTHROPIC_API_KEY": ("api.anthropic.com",), "OPENROUTER_API_KEY": ("openrouter.ai",),
     "GEMINI_API_KEY": ("generativelanguage.googleapis.com",), "GOOGLE_API_KEY": ("generativelanguage.googleapis.com",),
     "OPENAI_API_KEY": ("api.openai.com",), "GROQ_API_KEY": ("api.groq.com",), "DEEPGRAM_API_KEY": ("api.deepgram.com",),
+    "OPENCODE_API_KEY": ("opencode.ai",),
     "TAVILY_API_KEY": (), "BRAVE_API_KEY": (), "ELEVENLABS_API_KEY": (), "AZURE_SPEECH_KEY": (), "GOOGLE_TTS_API_KEY": (),
 }
 KEY_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
@@ -112,6 +115,8 @@ def to_openai(body, flavor="openrouter", limit_field="max_tokens"):
     cache = flavor == "openrouter" and model.startswith(CACHE_VENDORS)
     if flavor == "gemini" and is_gemini(model):
         model = model[len(GEMINI_PREFIX):]
+    if flavor == "opencode" and model.startswith(opencode.PREFIX):
+        model = model[len(opencode.PREFIX):]
     if flavor == "endpoint" and is_endpoint(model):
         model = split_endpoint(model)[1]
     msgs = []
@@ -143,7 +148,7 @@ def to_openai(body, flavor="openrouter", limit_field="max_tokens"):
                 extra = b.get("extra_content")
                 if flavor == "gemini" and not calls and not _signature(extra):
                     extra = {"google": {"thought_signature": DUMMY_SIGNATURE}}
-                if extra:
+                if extra and flavor != "opencode":
                     call["extra_content"] = extra
                 calls.append(call)
             out = {"role": "assistant", "content": _text(blocks) or None}
@@ -152,6 +157,11 @@ def to_openai(body, flavor="openrouter", limit_field="max_tokens"):
             meta = next((b for b in blocks if b.get("type") == META_BLOCK), None)
             if meta and meta.get("reasoning_details") and flavor == "openrouter":
                 out["reasoning_details"] = meta["reasoning_details"]      # OpenRouter: Gemini 3 / reasoning models
+            gateway_meta = next((b for b in blocks if b.get("type") == opencode.META_BLOCK), None)
+            if gateway_meta and flavor == "opencode":
+                for field in ("reasoning_content", "reasoning_details"):
+                    if field in gateway_meta:
+                        out[field] = gateway_meta[field]
             msgs.append(out)
             continue
         # user turn: tool results become "tool" messages, any text a user message
@@ -196,7 +206,7 @@ def normalize_token_usage(total_input, output_tokens, details):
     return usage
 
 
-def from_openai(data):
+def from_openai(data, flavor="openrouter"):
     """OpenRouter chat/completions response -> Anthropic Messages-shaped dict (content blocks, stop_reason,
     usage with input/output/cache_read tokens, cost_usd when OpenRouter reports it)."""
     if not isinstance(data, dict):
@@ -215,18 +225,24 @@ def from_openai(data):
         except ValueError:
             args = {}
         block = {"type": "tool_use", "id": c.get("id"), "name": fn.get("name"), "input": args}
-        if c.get("extra_content"):
+        if c.get("extra_content") and flavor != "opencode":
             block["extra_content"] = c["extra_content"]           # Gemini thought signature: send it back
         content.append(block)
-    if msg.get("reasoning_details") and any(b["type"] == "tool_use" for b in content):
-        content.append({"type": META_BLOCK, "reasoning_details": msg["reasoning_details"]})
+    if any(b["type"] == "tool_use" for b in content):
+        if flavor == "opencode":
+            meta = {field: msg[field] for field in ("reasoning_content", "reasoning_details") if field in msg}
+            if meta:
+                content.append({"type": opencode.META_BLOCK, **meta})
+        elif msg.get("reasoning_details"):
+            content.append({"type": META_BLOCK, "reasoning_details": msg["reasoning_details"]})
     finish = (choices[0].get("finish_reason") if choices else None) or ""
     stop = {"tool_calls": "tool_use", "length": "max_tokens", "stop": "end_turn"}.get(finish, "end_turn")
     if any(b["type"] == "tool_use" for b in content):
         stop = "tool_use"
     u = data.get("usage") or {}
-    usage = normalize_token_usage(u.get("prompt_tokens"), u.get("completion_tokens"), u.get("prompt_tokens_details"))
-    if u.get("cost") is not None:
+    usage = (opencode.normalize_usage(u) if flavor == "opencode" else
+             normalize_token_usage(u.get("prompt_tokens"), u.get("completion_tokens"), u.get("prompt_tokens_details")))
+    if flavor != "opencode" and u.get("cost") is not None:
         usage["cost_usd"] = float(u["cost"])
     return {"content": content, "stop_reason": stop, "usage": usage, "model": data.get("model")}
 

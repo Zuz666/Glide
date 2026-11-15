@@ -1,6 +1,7 @@
 // Settings > Choose models applies catalogue picks live; manual ids and effort share Save/Revert.
 import { call } from "../bridge.js";
 import { esc, icon, toast } from "../dom.js";
+import { sessionCostText } from "../cost-presentation.js";
 import { bindDateTime, clearDateTime, dateTimeHtml } from "../date-time.js";
 import { MANIFEST } from "../settings-manifest.js";
 import { Group } from "../settings-schema.js";
@@ -10,8 +11,8 @@ import { edits, getPath } from "./fields.js";
 import { formatCatalogIssuesHtml, loadConfiguredKeys, modelRequirementHtml } from "./key-links.js";
 import { AUTO_THINKING_HELP } from "./thinking-help.js";
 
-const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3 };
-const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter" };
+const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3, opencode: 4 };
+const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter", opencode: "OpenCode API (pay-as-you-go)" };
 const ROLES: [string, string, string, string][] = [
   ["fast", "fast_model", "Fast role", "Callouts, quest briefings and translation. Spoken questions use the role selected below."],
   ["deep", "deep_model", "Deep role", "Typed questions and pace reviews. Spoken questions use the role selected below."]];
@@ -40,14 +41,43 @@ function modelSettingsSaved(applied: Obj): void {
 /** Dollars an hour from catalogue prices and the role's token profile (null: price unknown). */
 function mcost(models: Obj, path: string, model: Obj): number | null {
   const p = model.price, pr = (models.profile || {})[path];
-  if (!p || p.in == null || !pr) return null;
+  if (!p || p.in == null || p.out == null || !pr) return null;
+  if (model.provider === "opencode" && pr.cache_read > 0 && p.cache_read == null) return null;
   const rd = p.cache_read != null ? p.cache_read : p.in;
-  return (pr.cache_read * rd + pr.uncached * p.in + pr.output * (p.out || 0)) / 1e6;
+  return (pr.cache_read * rd + pr.uncached * p.in + pr.output * p.out) / 1e6;
 }
 
 function mlabel(m: Obj): string {
   const p = m.price;
-  return `${m.name}${m.provider !== "anthropic" ? `  [${m.id}]` : ""}, ${p ? `$${per(p.in)} in / $${per(p.out)} out per million` : "price unknown"}${m.tools === false ? ", no tools" : ""}${m.context ? `, ${Math.round(m.context / 1000)}k context` : ""}${m.unverified === true ? ", unverified" : ""}`;
+  return `${m.name}${m.provider !== "anthropic" ? `  [${m.id}]` : ""}, ${p ? `${m.pricing ? "base rates " : ""}$${per(p.in)} in / $${per(p.out)} out per million` : "price unknown"}${m.pricing ? ", tariff conditions apply" : ""}${m.pricing_stale ? ", stale rates" : ""}${m.tools === false ? ", no tools" : ""}${m.context ? `, ${Math.round(m.context / 1000)}k context` : ""}${m.unverified === true ? ", unverified" : ""}`;
+}
+
+/** Preserve every imported condition, including ones this UI cannot interpret, instead of flattening tariffs. */
+function tariffHtml(model?: Obj): string {
+  if (!model || model.provider !== "opencode") return "";
+  const pricing = model.pricing;
+  const rates = (rate: Obj) => {
+    const parts = [`$${per(rate.price)} per million`];
+    if (rate.cache?.read != null) parts.push(`cache read $${per(rate.cache.read)}`);
+    const write = rate.cache?.write;
+    if (typeof write === "number") parts.push(`cache write $${per(write)}`);
+    else if (write && typeof write === "object") {
+      for (const [duration, price] of Object.entries(write)) parts.push(`cache write ${duration}: $${typeof price === "number" ? per(price) : JSON.stringify(price)}`);
+    }
+    return parts.join("; ");
+  };
+  const rows = pricing ? ["input", "output"].flatMap((kind) => {
+    const rate = pricing[kind];
+    if (!rate || typeof rate !== "object") return [];
+    const result = [`<li>${esc(kind)} base: ${esc(rates(rate))}</li>`];
+    for (const override of Array.isArray(rate.overrides) ? rate.overrides : []) {
+      result.push(`<li>${esc(kind)} when ${esc(JSON.stringify(override.when ?? {}))}: ${esc(rates(override))}</li>`);
+    }
+    return result;
+  }).join("") : "";
+  return `<div class="mcost" data-tariff="${esc(model.id)}">Catalog rates (USD per million tokens), not a reported request charge.
+    ${model.pricing_stale ? "<strong>Stale rates.</strong> " : ""}Last successful import: ${model.pricing_updated ? dateTimeHtml(model.pricing_updated * 1000, "dateTime") : "unknown"}.
+    ${pricing ? `<ul>${rows}</ul><details><summary>Complete imported tariff and conditions</summary><pre>${esc(JSON.stringify(pricing, null, 2))}</pre></details>` : "Tariff unknown."}</div>`;
 }
 
 function effortOptions(levels: string[], effort: string): string {
@@ -207,24 +237,26 @@ function roleHtml(
   const costs = new Map<string, number | null>(all.map((model) => [model.id, mcost(models, path, model)]));
   const list = all.filter((m) => m.id === cur || q.every((w) => `${m.id} ${m.name}`.toLowerCase().includes(w)))
     .sort((a, b) => (MORDER[a.provider] ?? 9) - (MORDER[b.provider] ?? 9) || (costs.get(a.id) ?? 1e9) - (costs.get(b.id) ?? 1e9));
-  const groups: Record<string, Obj[]> = { anthropic: [], gemini: [], endpoint: [], openrouter: [] };
+  const groups: Record<string, Obj[]> = { anthropic: [], gemini: [], endpoint: [], openrouter: [], opencode: [] };
   list.forEach((m) => (groups[m.provider] || groups.openrouter).push(m));
   const shutdown = shutdownDate(info);
   const missingReason = shutdown ? "excluded: shut down on " : info?.suitability === "excluded" && info?.reason ? `excluded: ${info.reason}` : "not in the list";
   const opts = (cur && !all.some((m) => m.id === cur) ? `<option value="${esc(cur)}" selected${shutdown ? ` data-shutdown-date="${esc(shutdown)}"` : ""}>${esc(cur)} (${esc(missingReason)})</option>` : "") +
     Object.entries(groups).filter(([, v]) => v.length).map(([g, v]) => `<optgroup label="${MGROUP[g]}">${v.map((m) => {
       const c = costs.get(m.id);
-      return `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(mlabel(m))}${c != null ? `, about $${per(c)} an hour` : ""}</option>`;
+      return `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(mlabel(m))}${c != null ? `, ${m.pricing ? "base-rate estimate" : "about"} $${per(c)} an hour` : ""}</option>`;
     }).join("")}</optgroup>`).join("");
   const selPrice = models.selected_prices?.[path];
-  const c = costs.get(cur) ?? (selPrice ? mcost(models, path, { price: selPrice }) : null), m = all.find((x) => x.id === cur);
+  const c = costs.get(cur) ?? (selPrice && !cur?.startsWith("opencode:") ? mcost(models, path, { price: selPrice }) : null);
+  const m = all.find((x) => x.id === cur);
   const effortKey = `${path}_reasoning_effort`, effort = models.selected?.[effortKey] || "auto", levels: string[] = info?.levels || [];
   const reqHtml = modelRequirementHtml(cur, live.config, configuredKeys, models.status?.keys);
   return `<div class="field"><div class="lab">${esc(label)}<small>${esc(help)}</small></div><div class="ctl mpick" style="display:grid;width:100%">
         <input type="text" data-filter="${path}" value="${esc(filter)}" placeholder="Filter: claude, gemini, flash, ollama…" aria-label="Filter models">
         <select data-pick="${key}" aria-label="${esc(label)}">${opts}</select>
         ${reqHtml ? `<div class="mkey">${reqHtml}</div>` : ""}
-        <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `About <em>$${per(c)} an hour</em> at ${(models.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.` : "Price unknown."}</div>
+        <div class="mcost">${m && m.tools === false ? "<em>No tool use</em>: answers get the knowledge block but no lookups. " : ""}${c != null ? `${m?.pricing ? "Base-rate estimate" : "Estimate"}: <em>$${per(c)} an hour</em> at ${(models.profile?.[path] || {}).measured ? "this session's" : "typical"} usage.${m?.pricing ? " Context, cache-write duration and other tariff conditions can change this estimate." : ""}${m?.pricing_stale ? " Uses stale rates." : ""}` : "Price unknown."}</div>
+        ${tariffHtml(m)}
         <label class="help" for="mp-effort-${path}">Reasoning effort</label>
         <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>${effortOptions(levels, effort)}</select>
         <div class="mcost" data-reasoning-note="${path}">${reasoningHelpHtml(info)} ${AUTO_THINKING_HELP} Changes save immediately.</div></div></div>`;
@@ -234,7 +266,7 @@ function listHtml(models: Obj, configuredKeys?: ReadonlySet<string> | null): str
   const st = models.status || {};
   const issues = formatCatalogIssuesHtml(st, live.config, configuredKeys);
   return `<div class="field"><div class="lab">The list<small>${esc(st.count || 0)} models${st.updated ? `, listed ${dateTimeHtml(st.updated * 1000, "dateTime")}` : ""}.${issues ? ` ${issues}` : ""}</small></div>
-      <div class="ctl"><button class="btn" id="mp-refresh">${icon("refresh-cw")}Refresh the list</button><span class="help">Spent this session: $${per(models.spent_usd || 0)}</span></div></div>`;
+      <div class="ctl"><button class="btn" id="mp-refresh">${icon("refresh-cw")}Refresh the list</button><span class="help" data-session-spent>Spent this session: ${esc(sessionCostText(models.spent_usd, models.cost_coverage))}</span></div></div>`;
 }
 
 export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<void> {

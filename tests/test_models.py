@@ -52,8 +52,9 @@ path = os.path.join(tmp, "models.json")
 cat = models.Catalog(path, "ak", None, fetchers={"anthropic": lambda k: models.fetch_anthropic(k, getter=fake_get),
                                                  "openrouter": lambda k: models.fetch_openrouter(k, getter=fake_get)})
 st = cat.refresh()
-assert st["count"] == 4 and st["errors"] == {"gemini": "no GEMINI_API_KEY"}, st
-assert st["keys"] == {"anthropic": True, "gemini": False, "openrouter": False}, st
+assert st["count"] == 4 and st["errors"] == {"gemini": "no GEMINI_API_KEY",
+                                          "opencode": "ValueError: no OPENCODE_API_KEY"}, st
+assert st["keys"] == {"anthropic": True, "gemini": False, "openrouter": False, "opencode": False}, st
 assert cat.price("google/gemini-2.5-flash")["in"] == 0.3 and cat.price("claude-opus-5-5")["in"] == 4.0
 assert cat.supports_tools("some/no-tools") is False and cat.supports_tools("unknown/x") is True
 assert models.Catalog(path).get("google/gemini-2.5-flash")["name"] == "Gemini 2.5 Flash", "cached on disk"

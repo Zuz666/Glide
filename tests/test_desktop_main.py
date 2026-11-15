@@ -22,7 +22,7 @@ try:
     # the check runs the main process from <tmp>/desktop/dist/main (paths.devRoot is <tmp>) and writes beside it
     shutil.copytree(desktop_ts.main(), os.path.join(tmp, "desktop", "dist"))
     env = os.environ.copy()
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"):
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_API_KEY"):
         env[key] = ""
     r = subprocess.run([node, os.path.join(HERE, "desktop_main_check.cjs"), tmp], capture_output=True, text=True, encoding="utf-8",
                        timeout=120, env=env)
