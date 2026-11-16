@@ -425,7 +425,6 @@ button.log-category { cursor: help; }
    6 calls, 7 cache hits & STT chip.
    The activity (bar, step, CPU and memory) outranks everything but the cost. */
 #sessionbar { container: sessionbar / inline-size; gap: 8px; overflow: hidden; user-select: none; }
-#sessionbar:has(#sb-task:not([hidden])) > [data-sb="grow"] { display: none; }
 /* every piece drags left or right along the bar (session-bar-order.ts) */
 #sessionbar > div[data-sb]:not([data-sb="grow"]):not([data-sb="models"]) { cursor: grab; }
 #sessionbar > [data-sb] { touch-action: none; }
