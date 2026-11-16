@@ -159,6 +159,64 @@ try {
   check(deepBtn.title.includes('Reasoning effort: auto') && !deepBtn.title.includes('spoken'),
     'Expected Deep tooltip to include reasoning effort without spoken PTT when voice_question=fast: ' + deepBtn.title);
 
+  const { live } = await import('/renderer/state.js');
+  const providerConfig = live.config;
+  live.config = {companion: {llm: {endpoints: [{id: 'local', label: 'LM Studio'}]}}};
+  const providerCases = [
+    ['claude-haiku-5-5', 'Claude Haiku 5.5', 'Claude Haiku 5.5', 'Anthropic'],
+    ['gemini:gemini-3.8-flash', 'Gemini 3.8 Flash', 'Gemini 3.8 Flash', 'Gemini'],
+    ['google/gemini-3.8-flash', 'Gemini 3.8 Flash', 'Gemini 3.8 Flash', 'OpenRouter'],
+    ['opencode:claude-haiku-5-5', 'Claude Haiku 5.5', 'Claude Haiku 5.5', 'OpenCode'],
+    ['opencode:vendor/long-model-id', 'A very long conversational model name', 'A very long conversational model name', 'OpenCode'],
+    ['ep:openai:gpt-6.1-terra', 'gpt-6.1-terra (OpenAI)', 'gpt-6.1-terra', 'OpenAI'],
+    ['ep:ollama:vendor/model:v2', 'vendor/model:v2 (Ollama (local))', 'vendor/model:v2', 'Ollama (local)'],
+    ['ep:local:custom-model', 'Friendly model name', 'Friendly model name', 'LM Studio'],
+    ['ep:unconfigured:model', null, 'ep:unconfigured:model', 'unconfigured'],
+    ['ep:long:model', 'model (A very long endpoint service name with extra environment and region details)', 'model',
+      'A very long endpoint service name with extra environment and region details'],
+  ];
+  for (const [id, name, expectedName, provider] of providerCases) {
+    sb.sessionBar({models: {fast: id, fast_name: name, deep: 'ep:openai:gpt-6.1-terra',
+      deep_name: 'gpt-6.1-terra (OpenAI)'}});
+    for (const [role, modelName, providerName] of [['fast', expectedName, provider], ['deep', 'gpt-6.1-terra', 'OpenAI']]) {
+      const badge = document.getElementById('sb-' + role + '-provider');
+      const badgeBox = badge.getBoundingClientRect(), buttonBox = document.getElementById('sb-' + role + '-btn').getBoundingClientRect();
+      check(document.getElementById('sb-' + role).textContent === modelName,
+        'Provider decoration was left in the model name or the model name was damaged: ' + id);
+      check(!badge.hidden && badge.textContent === providerName && badge.title === providerName
+        && badgeBox.width > 0 && badgeBox.right <= buttonBox.right,
+        'Serving provider identity was missing, misclassified or clipped: ' + id);
+    }
+  }
+  live.config = providerConfig;
+  const recognitionCases = [
+    ['whisper small', 'Whisper', 'small'],
+    ['OpenAI gpt-4o-mini-transcribe', 'OpenAI', 'gpt-4o-mini-transcribe'],
+    ['Groq whisper-large-v3-turbo', 'Groq', 'whisper-large-v3-turbo'],
+    ['Deepgram nova-3', 'Deepgram', 'nova-3'],
+    ['windows speech', 'Windows', 'speech'],
+    ['off', 'Push-to-talk', 'off'],
+    ['loading', 'Loading…', ''],
+    ['', '–', ''],
+  ];
+  for (const [listen, engine, model] of recognitionCases) {
+    sb.sessionBar({models: {listen, listen_fallback: 'windows speech'}});
+    const top = document.getElementById('sb-listen'), sub = document.getElementById('sb-listen-model');
+    check(top.textContent === engine && sub.textContent === model && sub.hidden === !model,
+      'Recognition engine/model split lost information for ' + listen);
+    if (model) {
+      check(sub.getBoundingClientRect().top >= top.getBoundingClientRect().bottom,
+        'Recognition model must be below the engine, not beside it');
+    }
+    const fullLabel = model ? engine + ' ' + model : engine;
+    check(sttEl.title.includes(fullLabel) && sttEl.title.includes('falls back to Windows speech'),
+      'Recognition tooltip lost the full label or fallback');
+  }
+  sb.sessionBar(null);
+  check(document.getElementById('sb-fast-provider').hidden && document.getElementById('sb-deep-provider').hidden,
+    'Disconnected statusbar kept stale provider identity');
+  check(document.getElementById('sb-listen-model').hidden, 'Disconnected statusbar kept a stale recognition model');
+
   // Explicit reasoning overrides (low / medium -> med / minimal -> min) + voice_question: 'deep' routing update live.
   sb.sessionBar({
     session_minutes: 42,
@@ -1370,12 +1428,71 @@ try {
   window.__restoreDates = () => { regionalRevision = 0; emit('app:datesChanged'); };
   window.__dateLog = (line) => emit('engine:logline', line);
   window.__datePreviousUrl = previousUrl;
+  const activity = await import('/renderer/activity.js');
+  activity.wireActivity();
+  window.__loadingStatusbar = async (state) => {
+    const previous = {engineState: live.engineState, refresh: live.refresh};
+    live.engineState = state;
+    sb.sessionBar({session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'},
+      refresh: {state: 'kb', started: Date.now() / 1000 - 35, force: true},
+      models: {fast: 'opencode:claude-haiku-5-5', fast_name: 'Claude Haiku 5.5',
+        deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)',
+        listen: 'whisper small', translation: {language: 'ru', available: true}}});
+    activity.taskBar();
+    emit('res:sample', {cpu: 7.1, memMB: 1945, processes: 3});
+    return () => { live.engineState = previous.engineState; live.refresh = previous.refresh; activity.taskBar(); };
+  };
   return 'main-ok';
 })()`,
   });
   if (mainResult.exceptionDetails) {
     throw Error(mainResult.exceptionDetails.exception?.description || mainResult.exceptionDetails.text);
   }
+  const loadingSizes = [2560, 1920, 1568, 1440, 1280, 1100, 960, 800];
+  for (const [state, width] of ['building', 'running'].flatMap(state => loadingSizes.map(width => [state, width]))) {
+    const loading = await send("Runtime.evaluate", {awaitPromise: true, expression: `
+      (async () => {
+        window.__restoreLoadingStatusbar?.();
+        window.__restoreLoadingStatusbar = await window.__loadingStatusbar('${state}');
+      })()`});
+    if (loading.exceptionDetails) throw Error(loading.exceptionDetails.exception?.description || loading.exceptionDetails.text);
+    await send("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
+    const geometry = await send("Runtime.evaluate", {returnByValue: true, expression: `(() => {
+      const bar = document.getElementById('sessionbar'), bounds = bar.getBoundingClientRect();
+      const visible = el => getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;
+      if (document.getElementById('sb-task').hidden) throw Error('Loading fixture did not show the real task bar');
+      const items = [...bar.children].filter(el => el.dataset.sb !== 'grow' && visible(el));
+      for (let i = 0; i < items.length; i++) {
+        const r = items[i].getBoundingClientRect();
+        if (r.left < bounds.left - 1 || r.right > bounds.right + 1)
+          throw Error('Statusbar item outside footer at ${width}px: ' + items[i].dataset.sb);
+        for (const other of items.slice(i + 1)) {
+          const b = other.getBoundingClientRect();
+          if (Math.min(r.right, b.right) - Math.max(r.left, b.left) > 1)
+            throw Error('Overlapping statusbar items at ${width}px: ' + items[i].dataset.sb + '/' + other.dataset.sb);
+        }
+      }
+      for (const container of [document.getElementById('sb-task'), ...document.querySelectorAll('.sb-stack-row')]) {
+        if (!visible(container) || !container.getBoundingClientRect().height) continue;
+        const r = container.getBoundingClientRect();
+        for (const child of container.children) {
+          if (!visible(child)) continue;
+          const c = child.getBoundingClientRect();
+          if (c.left < r.left - 1 || c.right > r.right + 1)
+            throw Error('Statusbar content escaped its item at ${width}px: ' + container.id + '/' + (child.id || child.className));
+        }
+      }
+      return 'ok';
+    })()`});
+    if (geometry.exceptionDetails) throw Error(geometry.exceptionDetails.exception?.description || geometry.exceptionDetails.text);
+    if (process.env.GLIDE_STATUSBAR_PROOF_DIR && [2560, 1568, 1100].includes(width)) {
+      fs.mkdirSync(process.env.GLIDE_STATUSBAR_PROOF_DIR, {recursive: true});
+      const image = await send("Page.captureScreenshot", {format: "png", captureBeyondViewport: false});
+      fs.writeFileSync(path.join(process.env.GLIDE_STATUSBAR_PROOF_DIR, `loading-${state}-${width}.png`), Buffer.from(image.data, "base64"));
+    }
+  }
+  await send("Runtime.evaluate", {expression: "window.__restoreLoadingStatusbar();"});
+  await send("Emulation.setDeviceMetricsOverride", {width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false});
   if (process.env.GLIDE_NATIVE_LOG_PROOF) {
     const records = JSON.parse(fs.readFileSync(process.env.GLIDE_NATIVE_LOG_PROOF, "utf8"));
     const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
@@ -1395,6 +1512,25 @@ try {
     if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
     const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     fs.writeFileSync(`${process.env.GLIDE_NATIVE_LOG_PROOF}.png`, Buffer.from(image.data, "base64"));
+  }
+  if (process.env.GLIDE_STATUSBAR_PROOF_DIR) {
+    fs.mkdirSync(process.env.GLIDE_STATUSBAR_PROOF_DIR, { recursive: true });
+    const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+      (async () => {
+        const sb = await import('/renderer/session-bar.js');
+        sb.sessionBar({session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'},
+          models: {fast: 'opencode:claude-haiku-5-5', fast_name: 'Claude Haiku 5.5', deep: 'ep:openai:gpt-6.1-terra',
+            deep_name: 'gpt-6.1-terra (OpenAI)', listen: 'Whisper small', translation: {language: 'ru', available: true}}});
+        sb.showTtsStatus({provider: 'edge', phase: 'ready', voiceLabel: 'Edge · Svetlana',
+          fullVoice: 'Edge-TTS (ru-RU-SvetlanaNeural)', readySlots: 6, totalSlots: 6, updatedAt: Date.now()});
+      })()` });
+    if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
+    for (const [width, height] of [[2560, 1440], [1440, 900]]) {
+      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(path.join(process.env.GLIDE_STATUSBAR_PROOF_DIR, `statusbar-${width}.png`), Buffer.from(image.data, "base64"));
+    }
+    await send("Emulation.setDeviceMetricsOverride", { width: 2560, height: 1440, deviceScaleFactor: 1, mobile: false });
   }
   if (process.env.GLIDE_NATIVE_STATUS_PROOF) {
     const nativeStatus = JSON.parse(fs.readFileSync(process.env.GLIDE_NATIVE_STATUS_PROOF, "utf8"));
