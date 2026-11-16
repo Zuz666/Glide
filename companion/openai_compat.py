@@ -83,17 +83,6 @@ def endpoints(cfg):
     return out
 
 
-def gemini_effort(model, deep):
-    """reasoning_effort for Gemini's OpenAI endpoint: live callouts and spoken answers think as little as the model
-    allows (2.5 models can turn thinking off; 3.x models go to minimal); deep calls use the model's default."""
-    if deep:
-        return {}
-    m = model[len(GEMINI_PREFIX):] if is_gemini(model) else model
-    if "pro" in m:
-        return {"reasoning_effort": "low"}
-    return {"reasoning_effort": "none" if m.startswith("gemini-2.") else "minimal"}
-
-
 META_BLOCK = "openai_meta"          # carries OpenRouter reasoning_details across a tool loop (never sent to Anthropic)
 # Google's documented placeholder for a function call whose thought signature wasn't kept
 DUMMY_SIGNATURE = "skip_thought_signature_validator"

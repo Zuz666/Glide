@@ -119,7 +119,7 @@ export function fieldHtml(f: Field): string {
   const pttToggle = f.key === "app:engineArgs.noPtt";
   const hasKeyNote = f.key === "companion.ptt.engine" || f.key === "companion.llm.recall_meaning";
   const help = thinking
-    ? esc(f.help).replace("model-specific levels", `<button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">model-specific levels</button>`)
+    ? `${esc(f.help)} <button type="button" class="reset thinking-help-term" data-thinking-help aria-describedby="thinking-policy-help">Effort rule</button>`
     : pttToggle
       ? esc(f.help).replace("Voice settings", `<button type="button" class="reset settings-jump" data-jump-tab="voice" data-jump-target="stt">Voice settings</button>`)
       : esc(f.help);

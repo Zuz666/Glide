@@ -9,14 +9,14 @@ import { engineGet, enginePost, live } from "../state.js";
 import { Obj } from "../types.js";
 import { edits, getPath } from "./fields.js";
 import { formatCatalogIssuesHtml, loadConfiguredKeys, modelRequirementHtml } from "./key-links.js";
-import { AUTO_THINKING_HELP } from "./thinking-help.js";
+import { AUTO_THINKING_HELP, providerDefaultEffort } from "./thinking-help.js";
 
 const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3, opencode: 4 };
 const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter", opencode: "OpenCode API (pay-as-you-go)" };
 const ROLES: [string, string, string, string][] = [
   ["fast", "fast_model", "Fast role", "Callouts, quest briefings and translation. Spoken questions use the role selected below."],
   ["deep", "deep_model", "Deep role", "Typed questions and pace reviews. Spoken questions use the role selected below."]];
-const EFFORT_HELP = "Explicit effort bypasses automatic tuning. Effort is not a universal thinking on/off switch: native defaults apply. For OpenCode explicit effort, Output Budget stays unchanged; higher effort can use it before a visible answer. New explicit OpenCode choices need a connected coach for validation before saving.";
+const EFFORT_HELP = "Explicit effort is unaffected by automatic tuning. For OpenCode explicit effort, Output Budget stays unchanged; higher effort can use it before a visible answer. New explicit OpenCode choices need a connected coach for validation before saving.";
 const per = (v: number | null | undefined) => (v == null ? "?" : v < 0.01 && v > 0 ? v.toFixed(4) : (+v).toFixed(v < 1 ? 3 : 2));
 const pickerRenders = new WeakMap<HTMLElement, AbortController>();
 const reasoningBindings = new WeakMap<HTMLElement, AbortController>();
@@ -154,13 +154,13 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
       if (!summary) return;
       const effort = draft(effortKey), tuning = tuningSwitch?.checked ?? draft("tune_thinking") === "true";
       const selected = effort !== "auto" ? `${effort} effort (${capability && !capability.levels.includes(effort) ? "unavailable; " : ""}explicit; switch has no effect)`
-        : !tuning ? "provider default (tuning Off)"
-        : !available ? "automatic level unavailable — connect the coach to resolve"
-        : automatic?.effort ? `${automatic.effort} effort requested${automatic.thinking ? `; thinking: ${automatic.thinking}` : ""}`
-        : "provider default (no automatic override)";
+        : !tuning ? providerDefaultEffort("off")
+        : !available ? `automatic level unavailable — ${providerDefaultEffort("unknown")}; connect the coach to resolve`
+        : automatic?.source === "automatic" && automatic.effort ? `${automatic.effort} effort requested (Auto)`
+        : providerDefaultEffort(automatic?.reason);
       summary.textContent = `${path === "fast" ? "Fast" : "Deep"} · ${draft(modelKey)}: ${selected}.`;
-      summary.title = capability?.note || "";
-      summary.classList.toggle("ok", effort === "auto" && tuning && available && !!(automatic?.effort || automatic?.thinking));
+      summary.title = automatic?.profile?.note || capability?.note || "";
+      summary.classList.toggle("ok", effort === "auto" && tuning && available && automatic?.source === "automatic" && !!automatic.effort);
     };
     tuningSwitch?.addEventListener("change", syncSummary, { signal });
     select?.addEventListener("change", syncSummary, { signal });

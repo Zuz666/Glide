@@ -90,16 +90,13 @@ def read_stream(resp, on_text, url=""):
 
 
 class Provider(Protocol):
-    """What the client needs from a provider. name: models.provider()'s id ("anthropic", "gemini", "openrouter",
-    "endpoint"); label: how messages name it ("Claude API", an endpoint's own label); quiet_fallback: a refused
-    option set falls back to the next without telling the player (Gemini's effort probing)."""
+    """What the client needs from a provider. Native effort encoding is independent of role selection."""
     name: str
     label: str
-    quiet_fallback: bool
 
-    def option_sets(self, model, opts, deep, effort="auto") -> list: ...
+    def options(self, model, effort) -> dict: ...
 
-    def request(self, body, attempt, on_text) -> tuple: ...
+    def request(self, body, attempt, on_text, profile=None) -> tuple: ...
 
     def fetch(self, req, stream, on_text, timeout) -> dict: ...
 
@@ -108,8 +105,6 @@ class Provider(Protocol):
     def fatal_reason(self, code, detail) -> "str | None": ...
 
     def caching(self, model) -> str: ...
-
-    def accepted(self, model, attempt, deep=False) -> None: ...
 
 
 def _json_request(url, body, headers):
@@ -127,22 +122,16 @@ class _HTTP:
 
 
 class AnthropicProvider(_HTTP):
-    """The Claude API: Messages requests as they are, the tuning options (thinking/effort) merged in, streamed
-    when a caller wants the text as it arrives."""
-    name, label, quiet_fallback = "anthropic", API_LABEL["anthropic"], False
+    """The Claude API: Messages requests with native effort, streamed when callers want arriving text."""
+    name, label = "anthropic", API_LABEL["anthropic"]
 
     def __init__(self, cfg, key):
         self.cfg, self.key = cfg, key
 
-    def option_sets(self, model, opts, deep, effort="auto"):
-        """Explicit effort overrides automatic tuning, never the reply's structured-output schema."""
-        if effort != "auto":
-            selected = {k: v for k, v in opts.items() if k != "thinking"}
-            selected["output_config"] = dict(opts.get("output_config") or {}, effort=effort)
-            return [selected]
-        return [opts, {}] if opts else [{}]
+    def options(self, model, effort):
+        return {"output_config": {"effort": effort}} if effort is not None else {}
 
-    def request(self, body, attempt, on_text):
+    def request(self, body, attempt, on_text, profile=None):
         """-> (urllib Request, whether the reply is streamed)."""
         messages = body.get("messages") or []
         private = (openai_compat.META_BLOCK, openai_responses.META_BLOCK, opencode.META_BLOCK)
@@ -175,38 +164,21 @@ class AnthropicProvider(_HTTP):
     def caching(self, model):
         return "explicit"
 
-    def accepted(self, model, attempt, deep=False):
-        pass
-
 
 class OpenAICompatProvider(_HTTP):
-    """An OpenAI-style chat/completions API (openai_compat translates both ways). flavor "openrouter", "gemini" or
-    "endpoint" (then url and label are the endpoint's own). Gemini remembers the reasoning effort each model
-    accepted, so later calls send it straight away."""
+    """An OpenAI-style API; the resolved request profile freezes transport and token-limit encoding."""
 
     def __init__(self, flavor, cfg, key, url=None, label=None):
         self.name = self.flavor = flavor
         self.cfg, self.key, self.url = cfg, key, url
         self.label = label or API_LABEL[flavor]
-        self.quiet_fallback = flavor == "gemini"
-        self.effort_ok = {}                   # (Gemini model, path) -> accepted automatic tuning
 
-    def option_sets(self, model, opts, deep, effort="auto"):
-        """An explicit level has no fallback; Auto keeps Gemini's existing low-latency tuning."""
-        if effort != "auto":
-            return [{"reasoning": {"effort": effort}}] if self.flavor == "openrouter" else [{"reasoning_effort": effort}]
-        if self.flavor != "gemini" or not settings.Settings("llm", self.cfg).get("tune_thinking"):
-            return [{}]
-        if (model, deep) in self.effort_ok:
-            return [self.effort_ok[model, deep]]
-        first = openai_compat.gemini_effort(model, deep)
-        attempts = [first]
-        if first.get("reasoning_effort") in ("minimal", "none"):
-            attempts.append({"reasoning_effort": "low"})
-        attempts.append({})
-        return [a for i, a in enumerate(attempts) if a not in attempts[:i]]
+    def options(self, model, effort):
+        if effort is None:
+            return {}
+        return {"reasoning": {"effort": effort}} if self.flavor == "openrouter" else {"reasoning_effort": effort}
 
-    def request(self, body, attempt, on_text):
+    def request(self, body, attempt, on_text, profile=None):
         """-> (urllib Request, False): these replies are never streamed."""
         if self.flavor == "gemini":
             return _json_request(self.cfg.get("gemini_url", openai_compat.GEMINI_URL),
@@ -219,7 +191,7 @@ class OpenAICompatProvider(_HTTP):
         headers = {"content-type": "application/json"}
         if self.key:
             headers["authorization"] = "Bearer " + self.key
-        profile = reasoning.describe(body["model"], self.cfg)
+        profile = profile if profile is not None else reasoning.describe(body["model"], self.cfg)
         if profile["transport"] == "responses":
             assert self.url is not None
             url = self.url.removesuffix("/chat/completions") + "/responses"
@@ -244,10 +216,6 @@ class OpenAICompatProvider(_HTTP):
             return "explicit"
         return "implicit"
 
-    def accepted(self, model, attempt, deep=False):
-        if self.flavor == "gemini":
-            self.effort_ok[model, deep] = attempt
-
 
 class OpenCodeProvider(OpenAICompatProvider):
     """Fixed-origin pay-as-you-go gateway, never selected by upstream model heuristics."""
@@ -263,23 +231,10 @@ class OpenCodeProvider(OpenAICompatProvider):
             return "API access denied"
         return super().fatal_reason(code, detail)
 
-    def option_sets(self, model, opts, deep, effort="auto"):
-        native = opencode.claude_model(model)
-        if effort != "auto":
-            return [opencode_reasoning.options(model, effort)]
-        # The caller snapshots tuning for the turn by supplying its policy, or {} when Off.
-        if native is None or not opts:
-            return [{}]
-        if (model, deep) in self.effort_ok:
-            return [self.effort_ok[model, deep]]
-        return [opts, {}] if opts else [{}]
+    def options(self, model, effort):
+        return opencode_reasoning.options(model, effort) if effort is not None else {}
 
-    def accepted(self, model, attempt, deep=False):
-        # Off must not overwrite an accepted On policy with its intentionally plain request.
-        if opencode.claude_model(model):
-            self.effort_ok[model, deep] = attempt
-
-    def request(self, body, attempt, on_text):
+    def request(self, body, attempt, on_text, profile=None):
         if not self.key:
             raise ValueError("no " + opencode.KEY_ENV)
         if not (body.get("model") or "").startswith(opencode.PREFIX):
@@ -287,8 +242,8 @@ class OpenCodeProvider(OpenAICompatProvider):
         headers = {"authorization": "Bearer " + self.key, "content-type": "application/json",
                    "user-agent": "glide-companion"}
         model = body["model"]
-        transport = "anthropic" if opencode.claude_model(model) else \
-            opencode_reasoning.transport(model) if attempt else "chat"
+        transport = profile["transport"] if profile is not None else \
+            "anthropic" if opencode.claude_model(model) else "chat"
         url = {"anthropic": opencode.MESSAGES_URL, "responses": opencode.RESPONSES_URL,
                "gemini": opencode.GEMINI_URL + urllib.parse.quote(model.removeprefix(opencode.PREFIX), safe="")
                + ":generateContent", "chat": opencode.CHAT_URL}[transport]

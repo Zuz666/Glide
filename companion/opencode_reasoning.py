@@ -81,15 +81,13 @@ def describe(model, entry=None):
                     "thinking keeps its native default and the output token limit is unchanged.")
             if not levels:
                 note = "No advertised OpenCode effort matches this model's reviewed controls; use Auto."
-            elif native == "claude-haiku-5-5":
-                note += " Manual low leaves adaptive thinking on; Fast Auto tuning requests low with thinking disabled."
         if entry.get("pricing_stale"):
             note += " Catalog is stale; these are the last successfully imported capabilities."
     return {"levels": levels, "note": note, "transport": api, "known": known}
 
 
 def options(model, effort):
-    """The explicit native field; caller validates catalog availability before dispatch."""
+    """The native effort field; caller resolves route capabilities before dispatch."""
     api, levels = _PROFILES.get(model.removeprefix(opencode.PREFIX), ("chat", ()))
     if effort not in levels:
         raise ValueError("Unverified OpenCode effort %r for %s" % (effort, model))

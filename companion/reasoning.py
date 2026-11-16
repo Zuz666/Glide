@@ -132,13 +132,40 @@ def describe(model, cfg, entry=None) -> dict:
     return _result(levels, note, "anthropic", True)
 
 
-def validate(model, cfg, value, entry=None) -> None:
-    """Reject invalid explicit settings without changing them or falling back to another effort."""
-    if isinstance(value, str) and value == "auto":
-        return
-    choices = describe(model, cfg, entry)
-    if isinstance(value, str) and value in choices["levels"]:
+def _validate(model, value, choices):
+    if isinstance(value, str) and (value == "auto" or value in choices["levels"]):
         return
     allowed = ", ".join(["auto", *choices["levels"]])
     raise ValueError("Reasoning effort %r is not supported for %s. Allowed values: %s. %s"
                      % (value, model, allowed, choices["note"]))
+
+
+def validate(model, cfg, value, entry=None) -> None:
+    """Reject invalid explicit settings without changing them or falling back to another effort."""
+    if value == "auto":
+        return
+    _validate(model, value, describe(model, cfg, entry))
+
+
+def resolve(model, cfg, deep=False, effort="auto", tuning=True, entry=None) -> dict:
+    """One request decision for a role, reused by the wire adapters and UI projections."""
+    entry = _catalog_entry(model, entry)
+    profile = describe(model, cfg, entry)
+    selected = None
+    if effort != "auto":
+        _validate(model, effort, profile)
+        selected, source, reason = effort, "explicit", "explicit"
+    else:
+        source = "provider_default"
+        target = "medium" if deep else "low"
+        if not tuning:
+            reason = "off"
+        elif profile.get("suitability") == "excluded" or (entry or {}).get("excluded_reason"):
+            reason = "unsupported"
+        elif not profile["known"]:
+            reason = "unknown"
+        elif target not in profile["levels"]:
+            reason = "unsupported"
+        else:
+            selected, source, reason = target, "automatic", "automatic"
+    return {"effort": selected, "source": source, "reason": reason, "profile": profile}

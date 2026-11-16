@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-"""Coach API call: thinking/effort options per model, retry without them on a 400, and an error
-(not silence) when the model returns no answer text."""
+"""Coach answers and errors through local HTTP, including effort refusal without a silent downgrade."""
 import json, os, sys, threading, time, http.server
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "companion"))
 from coach import Coach
-from llm_client import LLMClient
-from providers import AnthropicProvider
 from glidedb import GlideDB
 from state import GameState
-
-o = LLMClient.model_options
-assert o("claude-haiku-4-5-20251001", False) == {}
-assert o("claude-sonnet-5-5", False) == {"output_config": {"effort": "low"}, "thinking": {"type": "between_tools"}}
-assert o("claude-opus-5-5", False) == {"output_config": {"effort": "low"}, "thinking": {"type": "adaptive"}}
-assert o("claude-opus-4-5", False)["thinking"] == {"type": "disabled"}
-assert AnthropicProvider.fatal_reason(400, '{"error":{"message":"\\"thinking.type.disabled\\" is not supported for this model."}}') is None
-assert o("claude-opus-5-5", True) == {"output_config": {"effort": "medium"}}
 
 mode = {"v": "reject"}
 class H(http.server.BaseHTTPRequestHandler):
@@ -23,8 +12,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         b = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         H.bodies.append(b)
-        if mode["v"] == "reject" and "thinking" in b:
-            out = b'{"type":"error","error":{"message":"thinking type not supported"}}'
+        if mode["v"] == "reject":
+            out = b'{"type":"error","error":{"message":"effort not supported"}}'
             self.send_response(400); self.send_header("content-length", str(len(out))); self.end_headers(); self.wfile.write(out); return
         if mode["v"] == "empty":
             out = json.dumps({"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "max_tokens", "usage": {"output_tokens": 600}}).encode()
@@ -37,7 +26,7 @@ port = srv.server_address[1]
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 os.environ["ANTHROPIC_API_KEY"] = "test"
 msgs = []
-c = Coach({"api_url": "http://127.0.0.1:%d/v1/messages" % port, "fast_model": "claude-sonnet-5-5", "deep_model": "claude-opus-5-5"},
+c = Coach({"api_url": "http://127.0.0.1:%d/v1/messages" % port, "fast_model": "claude-opus-5-5", "deep_model": "claude-opus-5-5"},
           GlideDB("/x.db"), msgs.append)
 c.state = GameState()
 c.start()
@@ -46,13 +35,17 @@ def wait(n):
         if len([m for m in msgs if m["kind"] in ("answer", "error")]) >= n: return
         time.sleep(0.1)
 c.ask("do I have battle shout", voice=True); wait(1)
-assert H.bodies[0]["thinking"] == {"type": "between_tools"} and "thinking" not in H.bodies[1], H.bodies
+assert len(H.bodies) == 1 and H.bodies[0]["output_config"]["effort"] == "low", H.bodies
+assert any(m["kind"] == "error" and "effort not supported" in m["text"] for m in msgs), msgs
+mode["v"] = "answer"
+c.ask("do I have battle shout", voice=True); wait(2)
+assert H.bodies[1]["output_config"]["effort"] == "low" and "thinking" not in H.bodies[1], H.bodies
 ans = [m for m in msgs if m["kind"] == "answer"]
 assert ans and ans[0]["text"].startswith("Battle Shout") and ans[0]["speak"], msgs
 mode["v"] = "empty"
-c.ask("and now?", voice=True); wait(2)
+c.ask("and now?", voice=True); wait(3)
 err = [m for m in msgs if m["kind"] == "error"]
-assert err and "no answer text" in err[0]["text"], msgs
+assert any("no answer text" in m["text"] for m in err), msgs
 print("OK")
 
 # length cap: whole sentences while they fit, a run-on first sentence is cut

@@ -12,6 +12,7 @@ import { getPath } from "./settings/fields.js";
 import { TTS_PROVIDER_KEY } from "./settings/key-links.js";
 import { openSettingsTab } from "./settings/page.js";
 import { refreshWalkMapPanel } from "./settings/walk-map.js";
+import { providerDefaultEffort } from "./settings/thinking-help.js";
 import { wireSessionBarOrder } from "./session-bar-order.js";
 import { live } from "./state.js";
 import { CoachStats, LiteState, Models, TtsStatus } from "./types.js";
@@ -70,9 +71,9 @@ function shortEffort(effort: string): string {
 function setEffortBadge(role: "fast" | "deep", m: Partial<Models>, effort: string): void {
   const el = $(`sb-${role}-eff`);
   const automatic = effort === "auto" && m.tune_thinking === true ? m.automatic_reasoning?.[role] : undefined;
-  const override = automatic?.effort || automatic?.thinking;
+  const override = automatic?.source === "automatic" ? automatic.effort : null;
   el.hidden = !(m[role] || m[role === "fast" ? "fast_name" : "deep_name"]);
-  el.textContent = override ? `auto→${shortEffort(override === "disabled" ? "off" : override)}` : shortEffort(effort);
+  el.textContent = override ? `auto→${shortEffort(override)}` : shortEffort(effort);
   el.dataset.auto = effort === "auto" ? "1" : "0";
   el.dataset.tuned = override ? "1" : "0";
 }
@@ -82,19 +83,16 @@ function fmtRoleModel(name: string | null | undefined, id: string | null | undef
   return name || id || "not configured";
 }
 
-function automaticThinkingHint(m: Partial<Models>, role: "fast" | "deep", effort: string): string {
+function automaticEffortHint(m: Partial<Models>, role: "fast" | "deep", effort: string): string {
   const state = m.tune_thinking === true ? "On" : m.tune_thinking === false ? "Off" : "unavailable";
-  const label = `Automatic thinking tuning: ${state}`;
-  if (effort !== "auto") return `${label} — not applied (explicit ${effort} effort).`;
-  if (m.tune_thinking === false) return `${label} — provider default (no automatic override).`;
-  const automatic = m.automatic_reasoning?.[role];
-  if (m.tune_thinking !== true || !automatic) return `${label} — automatic level unavailable.`;
-  const controls = [
-    automatic.effort ? `${automatic.effort} effort requested` : "",
-    automatic.thinking ? `thinking: ${automatic.thinking}` : "",
-  ].filter(Boolean).join("; ");
-  return controls ? `${label} — ${controls}.\nAutomatic options may fall back if rejected.`
-    : `${label} — provider default (no automatic override).`;
+  const label = `Automatic effort tuning: ${state}`;
+  if (effort !== "auto") return `${label} — not applied (explicit ${effort} effort; switch has no effect).`;
+  if (m.tune_thinking === false) return `${label} — ${providerDefaultEffort("off")}.`;
+  const automatic = m.tune_thinking === true ? m.automatic_reasoning?.[role] : undefined;
+  const control = automatic?.source === "automatic" && automatic.effort
+    ? `${automatic.effort} effort requested (Auto)`
+    : providerDefaultEffort(automatic?.reason);
+  return `${label} — ${control}.${automatic?.profile?.note ? `\n${automatic.profile.note}` : ""}`;
 }
 
 /** Show the serving route separately; a gateway's upstream model family is not its provider. */
@@ -139,8 +137,8 @@ function showModels(m: Partial<Models>): void {
   const deepUses = pttDeep
     ? "Typed & spoken (push-to-talk) questions, pace reviews and memory reflection."
     : "Typed questions, pace reviews and memory reflection.";
-  $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${automaticThinkingHint(m, "fast", fastEff)}\n${fastUses}\nClick to open Fast model settings.`;
-  $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${automaticThinkingHint(m, "deep", deepEff)}\n${deepUses}\nClick to open Deep model settings.`;
+  $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${automaticEffortHint(m, "fast", fastEff)}\n${fastUses}\nClick to open Fast model settings.`;
+  $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${automaticEffortHint(m, "deep", deepEff)}\n${deepUses}\nClick to open Deep model settings.`;
   const listen = String(m.listen || ""), fb = m.listen_fallback ? String(m.listen_fallback) : "";
   const listenLabel = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
   const listenParts = /^(\S+)\s+(.+)$/.exec(listenLabel);

@@ -217,9 +217,6 @@ assert models.provider("gemini:gemini-2.5-flash") == "gemini" and models.provide
 assert models.fetch_gemini(None) == []
 og = openai_compat.to_openai(dict(body, model="gemini:gemini-2.5-flash"), "gemini")
 assert og["model"] == "gemini-2.5-flash" and "usage" not in og and og["messages"][0] == {"role": "system", "content": "SYS"}
-assert openai_compat.gemini_effort("gemini:gemini-2.5-flash", False) == {"reasoning_effort": "none"}
-assert openai_compat.gemini_effort("gemini:gemini-3.8-flash", False) == {"reasoning_effort": "minimal"}
-assert openai_compat.gemini_effort("gemini:gemini-3.8-flash", True) == {}
 assert openai_compat.gemini_fatal(400, "API key not valid. Please pass a valid API key.") == "API key rejected"
 assert openai_compat.gemini_fatal(429, "RESOURCE_EXHAUSTED quota") is None
 
@@ -239,9 +236,6 @@ class G(http.server.BaseHTTPRequestHandler):
             data = json.dumps([{"error": {"code": 503, "message": "This model is currently experiencing high demand.",
                                           "status": "UNAVAILABLE"}}]).encode()
             self.send_response(503)
-        elif b.get("reasoning_effort") == "minimal":
-            data = json.dumps([{"error": {"code": 400, "message": "Invalid reasoning_effort"}}]).encode()
-            self.send_response(400)
         else:
             data = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": "Turn in Harmony in Balance."}}],
                                "usage": {"prompt_tokens": 6000, "completion_tokens": 9}}).encode()
@@ -266,13 +260,12 @@ assert gc.llm.keys["gemini"] == "gm-test" and gc.enabled
 gc.state = gs
 res = gc.answer_once("what now?", state=gs, voice=True)
 assert res["answer"] and res["answer"]["text"] == "Turn in Harmony in Balance.", (res, gmsgs)
-(a1, b1), (a2, b2) = G.bodies[0], G.bodies[1]
-assert a1 == "Bearer gm-test" and b1["model"] == "gemini-3.8-flash" and b1["reasoning_effort"] == "minimal", b1
+(a1, b1) = G.bodies[0]
+assert len(G.bodies) == 1 and a1 == "Bearer gm-test" and b1["model"] == "gemini-3.8-flash", G.bodies
+assert b1["reasoning_effort"] == "low" and "usage" not in b1, b1
 assert "cache_control" not in json.dumps(b1), "Gemini caches implicitly: no markers sent"
-assert b2["reasoning_effort"] == "low" and "usage" not in b2, "a rejected effort level falls back to low"
-assert not any("refused" in m.get("text", "") for m in gmsgs), "the Gemini effort fallback is silent"
 assert abs(gc.stats["cost_usd"] - (6000 * 0.75 + 9 * 3.75) / 1e6) < 1e-9, gc.stats["cost_usd"]
-# the accepted level is remembered: the next call is one request
+# Every new automatic operation resolves the same role target without learned fallback state.
 G.bodies.clear()
 gc.answer_once("and then?", state=gs, voice=True)
 assert len(G.bodies) == 1 and G.bodies[0][1]["reasoning_effort"] == "low", G.bodies
