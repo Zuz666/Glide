@@ -1,13 +1,13 @@
 // The session bar's order: each piece (data-sb) drags left or right along the bar, and the order is saved with the
-// app settings (sessionBarOrder), so it outlives a restart. The spacer between the left and the right pieces stays
-// where it is: a piece dropped on its left half ends the left group, on its right half starts the right one.
+// app settings (sessionBarOrder), so it outlives a restart. The center activity region stays between the groups:
+// a piece dropped on its left half ends the left group, on its right half starts the right one.
 import { call } from "./bridge.js";
 import { $ } from "./dom.js";
 
 const pieces = () => [...$("sessionbar").children] as HTMLElement[];
 const keys = () => pieces().map((p) => p.dataset.sb || "");
 
-/** Put the pieces in the saved order; migrate split stt/tts chips right after models when upgrading from older arrays. */
+/** Restore root pieces only; old draggable-task positions are ignored now that activity lives in the center. */
 export function orderSessionBar(order: string[] | undefined): void {
   if (!Array.isArray(order) || !order.length) return;
   const normalized = [...order];

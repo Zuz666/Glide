@@ -425,6 +425,8 @@ button.log-category { cursor: help; }
    6 calls, 7 cache hits & STT chip.
    The activity (bar, step, CPU and memory) outranks everything but the cost. */
 #sessionbar { container: sessionbar / inline-size; gap: 8px; overflow: hidden; user-select: none; }
+.sb-center { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.sb-center:has(.sb-task:not([hidden])) { min-width: 200px; }
 /* every piece drags left or right along the bar (session-bar-order.ts) */
 #sessionbar > div[data-sb]:not([data-sb="grow"]):not([data-sb="models"]) { cursor: grab; }
 #sessionbar > [data-sb] { touch-action: none; }
@@ -442,7 +444,7 @@ button.log-category { cursor: help; }
 .sb-mode b { white-space: nowrap; }
 .sb-mode.offline .icon, .sb-mode.offline b { color: var(--warn); }
 .sb-mode.paused .icon, .sb-mode.paused b { color: var(--behind); }
-.sb-task { flex: 0 1 360px; min-width: 200px; max-width: 360px; }
+.sb-task { flex: 0 1 360px; min-width: 0; width: 100%; max-width: 360px; }
 .sb-task-ic { grid-column: 1; grid-row: 1 / 3; width: 15px; height: 15px; color: var(--gold); }
 .sb-task .sb-res { grid-column: 3; grid-row: 2; gap: 6px; padding: 0; border: 0; font-size: 10.5px; }
 .sb-task .sb-res b { font-size: 10.5px; }
