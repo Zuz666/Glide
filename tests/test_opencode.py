@@ -179,6 +179,24 @@ class CostTests(unittest.TestCase):
         self.assertIs(listed["cost_estimated"], True)
         self.assertIsNone(opencode.estimate_cost({"pricing": TARIFF}, provider.parse({})["usage"]))
 
+    def test_native_messages_usage_keeps_exclusive_input_cache_durations_and_charge(self):
+        provider = providers.OpenCodeProvider({}, "test-key")
+        parsed = provider.parse({"type": "message", "model": "claude-haiku-5-5", "content": [],
+                                 "usage": {"input_tokens": 100, "output_tokens": 30,
+                                           "cache_read_input_tokens": 50, "cache_creation_input_tokens": 20,
+                                           "cache_creation": {"ephemeral_5m_input_tokens": 15,
+                                                              "ephemeral_1h_input_tokens": 5}, "cost": 0}})
+        usage = parsed["usage"]
+        self.assertEqual(usage["input_tokens"], 100)
+        self.assertEqual(usage["cache_read_input_tokens"], 50)
+        self.assertEqual(usage["cache_creation_input_tokens"], 20)
+        self.assertEqual(usage["cache_write_tokens_by_duration"], {"5m": 15, "1h": 5})
+        self.assertEqual((usage["cost_usd"], usage["cost_estimated"]), (0, False))
+        self.assertNotIn("tokens_unknown", usage)
+        estimate = provider.parse({"type": "message", "content": [], "usage": {
+            "input_tokens": 100, "output_tokens": 30, "opencode": {"list_cost": 0.005}}})["usage"]
+        self.assertEqual((estimate["cost_usd"], estimate["cost_estimated"]), (0.005, True))
+
 
 class ProviderTests(unittest.TestCase):
     def test_fixed_origin_native_id_and_two_round_private_reasoning_continuity(self):
@@ -223,6 +241,39 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn("opaque", native_req.data.decode())
         self.assertNotIn(opencode.META_BLOCK, native_req.data.decode())
         self.assertEqual(reasoning.describe(body["model"], {}, {"reasoning": {"effort": ["high"]}})["levels"], [])
+
+    def test_native_thinking_is_private_to_gateway_model_and_native_transport(self):
+        provider = providers.OpenCodeProvider({"opencode_url": "https://attacker.invalid"}, "test-key")
+        thought = {"type": "thinking", "thinking": "", "signature": "gateway-only"}
+        redacted = {"type": "redacted_thinking", "data": "gateway-redacted"}
+        tool = {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
+        first = provider.parse({"type": "message", "model": "claude-haiku-5-5",
+                                "content": [thought, redacted, tool], "stop_reason": "tool_use"})
+        body = {"model": "opencode:claude-haiku-5-5", "max_tokens": 50,
+                "messages": [{"role": "assistant", "content": first["content"]}]}
+        req, stream = provider.request(body, opencode.model_options(body["model"], True), None)
+        self.assertEqual(req.full_url, "https://opencode.ai/inference/anthropic/v1/messages")
+        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
+        self.assertFalse(stream)
+        self.assertEqual(json.loads(req.data)["messages"][0]["content"], [thought, redacted, tool])
+        native_req, _ = providers.AnthropicProvider({}, "native-key").request(
+            {**body, "model": "claude-haiku-5-5"}, {}, None)
+        changed_model, _ = provider.request({**body, "model": "opencode:claude-sonnet-5-5"}, {}, None)
+        foreign_blocks = [{"type": "thinking", "thinking": "", "signature": "foreign-native"},
+                          {"type": "openai_meta", "reasoning_details": ["foreign-router"]},
+                          {"type": "openai_responses_output", "items": ["foreign-responses"]},
+                          {**tool, "extra_content": {"google": {"thought_signature": "foreign-google"}}}]
+        imported, _ = provider.request({**body, "messages": [{"role": "assistant", "content": foreign_blocks}]},
+                                      {}, None)
+        for other in (native_req, changed_model, imported):
+            self.assertNotIn("gateway-only", other.data.decode())
+            self.assertNotIn("gateway-redacted", other.data.decode())
+        self.assertNotIn("foreign-", imported.data.decode())
+        for flavor, model in (("openrouter", "vendor/model"), ("gemini", "gemini:test"),
+                              ("endpoint", "ep:local:test"), ("opencode", "opencode:unknown")):
+            wire = openai_compat.to_openai({**body, "model": model}, flavor)
+            self.assertNotIn("gateway-only", json.dumps(wire))
+            self.assertNotIn("gateway-redacted", json.dumps(wire))
 
     def test_missing_key_and_vendor_secret_host_protection(self):
         with self.assertRaisesRegex(ValueError, "OPENCODE_API_KEY"):

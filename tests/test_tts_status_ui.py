@@ -5,6 +5,9 @@ Verifies the 48 px single-tier session bar, stacked Fast/Deep buttons, independe
 reserved-width TTS chips, direct Settings section/field scrolling, sessionBarOrder migration,
 0 px horizontal neighbor shift across TtsStatus transitions, and 0 px vertical height bounce
 on the click-through game overlay (#step + #tts) in both expanded and collapsed modes.
+Selected-model thinking previews consume real App.on_models payloads, including native
+OpenCode Haiku 5.5 Fast/Deep Auto controls, tuning Off and remembered fallback.
+Existing direct-provider explicit overrides remain independent of the tuning switch.
 """
 import functools
 import http.server
@@ -16,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 
 import types
 import desktop_ts
@@ -125,6 +129,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
         if self.path == "/resizes":
             return self.send_data(resize_heights)
+        if self.path.startswith("/reasoning-fixture?"):
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            fixture = _reasoning_fixtures.get(query.get("scenario", ["default"])[0], {})
+            model = query.get("reasoning_model", [""])[0]
+            if model not in fixture:
+                return self.send_data({"error": "unknown reasoning fixture"}, 404)
+            return self.send_data(fixture[model])
         return super().do_GET()
 
     def do_POST(self):
@@ -280,6 +291,46 @@ _ms = companion_app.App._model_status(_stub_app)
 assert _ms["deep_reasoning"] == "high" and "deep" not in _ms["automatic_reasoning"], _ms
 _cfg["tune_thinking"] = False
 assert companion_app.App._model_status(_stub_app)["automatic_reasoning"] == {}
+
+# The real renderer consumes App.on_models payloads, not a second JS copy of model policy.
+_preview_cfg = {"tune_thinking": True}
+_preview_gemini = providers.OpenAICompatProvider("gemini", _preview_cfg, "")
+_preview_opencode = providers.OpenCodeProvider(_preview_cfg, "")
+_preview_app = types.SimpleNamespace(
+    catalog=types.SimpleNamespace(raw_get=lambda model: {
+        "id": model, "capabilities": {"effort": {"supported": True,
+            "low": {"supported": True}, "medium": {"supported": True}, "high": {"supported": True}}},
+    } if model == "claude-sonnet-5-5" else None),
+    coach=types.SimpleNamespace(
+        cfg=_preview_cfg,
+        llm=types.SimpleNamespace(provider_for=lambda model: (
+            _preview_opencode if model.startswith("opencode:")
+            else _preview_gemini if model.startswith("gemini:") else None)),
+    ),
+)
+_preview_models = (
+    "claude-sonnet-5-5", "gemini:gemini-3-flash",
+    "opencode:claude-haiku-5-5", "opencode:claude-haiku-4-5",
+    "opencode:unverified-model",
+)
+_reasoning_fixtures = {"default": {
+    model: companion_app.App.on_models(_preview_app, reasoning_model=model)
+    for model in _preview_models
+}}
+_haiku_preview = _reasoning_fixtures["default"]["opencode:claude-haiku-5-5"]
+assert _haiku_preview["automatic"]["fast"] == {"effort": "low", "thinking": "disabled"}, _haiku_preview
+assert _haiku_preview["automatic"]["deep"]["effort"] == "medium", _haiku_preview
+assert not _haiku_preview["reasoning"]["levels"], _haiku_preview
+assert not _reasoning_fixtures["default"]["opencode:unverified-model"]["reasoning"]["levels"]
+_preview_opencode.effort_ok["opencode:claude-haiku-5-5", False] = {}
+_reasoning_fixtures["fallback"] = {
+    "opencode:claude-haiku-5-5": companion_app.App.on_models(
+        _preview_app, reasoning_model="opencode:claude-haiku-5-5"),
+}
+_fallback_preview = _reasoning_fixtures["fallback"]["opencode:claude-haiku-5-5"]["automatic"]
+assert not _fallback_preview["fast"].get("effort") and not _fallback_preview["fast"].get("thinking"), _fallback_preview
+assert _fallback_preview["deep"]["effort"] == "medium", _fallback_preview
+
 # Game-link check boundary: shared between Status (/health) and overlay state.coach.link_issue.
 def _link_app(*, sim=False, frames=0, last_frame_t=0.0, strip_other=None, decoded=10, attempts=10):
     return types.SimpleNamespace(

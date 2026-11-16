@@ -13,7 +13,54 @@ KEY_ENV = "OPENCODE_API_KEY"
 BASE_URL = "https://opencode.ai/inference/openai/v1"
 MODELS_URL = BASE_URL + "/models"
 CHAT_URL = BASE_URL + "/chat/completions"
+MESSAGES_URL = "https://opencode.ai/inference/anthropic/v1/messages"
 META_BLOCK = "opencode_meta"
+
+# Native Messages controls, not assumptions about the gateway's Chat translation.
+# https://opencode.ai/docs/console/models/#endpoints
+# https://platform.claude.com/docs/en/build-with-claude/thinking#configuring-thinking
+# https://platform.claude.com/docs/en/build-with-claude/effort#effort-levels
+# (automatic effort supported, Fast thinking mode); this does not enable explicit choices.
+CLAUDE_POLICIES = {
+    "claude-fable-5-2": (True, None),
+    "claude-fable-5-1": (True, None),
+    "claude-fable-5": (True, None),
+    "claude-opus-5-5": (True, "adaptive"),
+    "claude-opus-5": (True, "adaptive"),
+    "claude-opus-4-8": (True, "disabled"),
+    "claude-opus-4-7": (True, "disabled"),
+    "claude-opus-4-6": (True, "disabled"),
+    "claude-opus-4-5": (True, "disabled"),
+    "claude-opus-4-5-20251101": (True, "disabled"),
+    "claude-sonnet-5-5": (True, "between_tools"),
+    "claude-sonnet-5": (True, "disabled"),
+    "claude-sonnet-4-6": (True, "disabled"),
+    "claude-sonnet-4-5": (False, None),
+    "claude-sonnet-4-5-20250929": (False, None),
+    "claude-haiku-5-5": (True, "disabled"),
+    "claude-haiku-4-5": (False, None),
+    "claude-haiku-4-5-20251001": (False, None),
+}
+
+
+def claude_model(model):
+    """Only verified native IDs select Messages; catalog URLs and aliases never do."""
+    native = model.removeprefix(PREFIX) if isinstance(model, str) and model.startswith(PREFIX) else None
+    return native if native in CLAUDE_POLICIES else None
+
+
+def model_options(model, deep):
+    """The verified native Claude low-latency policy; other gateway models remain default."""
+    native = claude_model(model)
+    if native is None:
+        return {}
+    supported, thinking = CLAUDE_POLICIES[native]
+    if not supported:
+        return {}
+    opts = {"output_config": {"effort": "medium" if deep else "low"}}
+    if not deep and thinking:
+        opts["thinking"] = {"type": thinking}
+    return opts
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -60,8 +107,7 @@ def catalog_entry(model):
                      "cache_read": _rate(cache.get("read")), "cache_write": _rate(cache.get("write"))}
                     if isinstance(text, dict) else None,
            "pricing": pricing, "reasoning": copy.deepcopy(capabilities.get("reasoning"))}
-    # Capability metadata is retained, but native effort arrays alone do not establish
-    # how the translated Chat API maps explicit effort. Auto remains the safe policy.
+    # Preserve discovery metadata without treating native controls as translated Chat controls.
     modalities = model.get("modalities") or {}
     outputs, inputs = modalities.get("output"), modalities.get("input")
     kind = model.get("type")
@@ -107,6 +153,24 @@ def normalize_usage(raw):
             usage["tokens_unknown"] = True
         if counts["reasoning"] is not None:
             usage["reasoning_tokens"] = counts["reasoning"]
+    elif "input_tokens" in raw or "output_tokens" in raw:
+        # Messages input_tokens already excludes cache reads and writes, unlike Chat prompt_tokens.
+        inp, out = number(raw.get("input_tokens")), number(raw.get("output_tokens"))
+        cached = number(raw.get("cache_read_input_tokens")) or 0
+        written = number(raw.get("cache_creation_input_tokens")) or 0
+        usage = {"input_tokens": inp or 0, "output_tokens": out or 0,
+                 "cache_read_input_tokens": cached, "cache_creation_input_tokens": written}
+        if inp is None or out is None:
+            usage["tokens_unknown"] = True
+        creation = raw.get("cache_creation") or {}
+        for duration in ("5m", "1h"):
+            field = "ephemeral_" + duration + "_input_tokens"
+            value = number(creation.get(field))
+            if value is not None:
+                durations[duration] = value
+        for field in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            if field in raw and number(raw[field]) is None:
+                usage["tokens_unknown"] = True
     else:
         total, output = number(raw.get("prompt_tokens")), number(raw.get("completion_tokens"))
         cached = number(details.get("cached_tokens")) or 0

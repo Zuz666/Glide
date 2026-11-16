@@ -184,4 +184,17 @@ assert "none" in reasoning.describe(router["id"], {}, unrestricted)["levels"]
 assert "xhigh" in reasoning.describe(router["id"], {}, unrestricted)["levels"]
 assert reasoning.describe(router["id"], {}, {**entry, "reasoning": {}})["levels"] == []
 
+# OpenCode native Messages is an automatic-tuning transport, not new explicit effort availability.
+for model in ("opencode:claude-haiku-5-5", "opencode:claude-sonnet-5-5", "opencode:claude-opus-5-5",
+              "opencode:claude-haiku-4-5"):
+    caps = reasoning.describe(model, {})
+    assert caps["known"] and caps["transport"] == "anthropic" and caps["levels"] == [], caps
+    reasoning.validate(model, {}, "auto")
+    rejected(model, {}, "low")
+for model in ("opencode:gemini-3.8-flash", "opencode:gpt-6.1-sol", "opencode:claude-private",
+              "opencode:claude-haiku-5-5-custom"):
+    caps = reasoning.describe(model, {}, {"id": model, "reasoning": {"effort": ["low", "high"]}})
+    assert not caps["known"] and caps["transport"] == "chat" and caps["levels"] == [], caps
+    rejected(model, {}, "low")
+
 print("reasoning capabilities: ok")

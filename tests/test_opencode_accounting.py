@@ -68,6 +68,11 @@ class OpenCodeAccounting(unittest.TestCase):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if owner.chat_status != 200:
                     return self.reply(owner.chat_status, {"error": {"message": "Models Request permission required"}})
+                if self.path == "/inference/anthropic/v1/messages":
+                    return self.reply(200, {"type": "message", "model": body["model"],
+                                           "stop_reason": "end_turn",
+                                           "content": [{"type": "text", "text": "Go north."}],
+                                           "usage": owner.usage})
                 self.reply(200, {"model": body["model"], "choices": [
                     {"finish_reason": "stop", "message": {"content": "Go north."}}],
                     "usage": owner.usage})
@@ -174,6 +179,34 @@ class OpenCodeAccounting(unittest.TestCase):
         self.assertFalse(text)
         self.assertEqual(self.posts, 1)
         self.assertEqual(self.leaks, [])
+
+    def test_native_messages_redirect_never_retries_plain_or_forwards_credentials(self):
+        self.redirect_to = self.local.replace("127.0.0.1", "localhost") + "/exfiltration"
+        text, _ = self.client.call_once("opencode:claude-haiku-5-5", "Where next?", 600)
+        self.assertFalse(text)
+        self.assertEqual(self.posts, 1)
+        self.assertEqual(self.leaks, [])
+        self.assertEqual(self.client.stats["calls"], 0)
+
+    def test_native_messages_fallback_usage_and_cache_tariff_are_accounted_once(self):
+        self.model["id"] = "claude-haiku-5-5"
+        self.catalog.refresh()
+        self.usage = {"input_tokens": 100, "output_tokens": 30, "cache_read_input_tokens": 50,
+                      "cache_creation_input_tokens": 20,
+                      "cache_creation": {"ephemeral_5m_input_tokens": 15, "ephemeral_1h_input_tokens": 5}}
+        self.answer("opencode:claude-haiku-5-5")
+        # (100*2 + 50*.2 + 15*2.5 + 5*4 + 30*4)/1e6 = .0003875
+        self.assertAlmostEqual(self.client.stats["cost_usd"], 0.0003875)
+        self.assertEqual(self.client.stats["uncached_in_tokens"], 100)
+        self.assertEqual(self.client.stats["cache_read_tokens"], 50)
+        self.assertEqual(self.client.stats["cache_write_tokens"], 20)
+        self.assertEqual(self.logs[-1]["cost_basis"], "estimated")
+        self.usage["cost"] = 0
+        self.answer("opencode:claude-haiku-5-5")
+        self.assertEqual(self.logs[-1]["cost"], 0)
+        self.assertEqual(self.logs[-1]["cost_basis"], "reported")
+        self.assertEqual(self.client.stats["cost_coverage"],
+                         {"reported": 1, "estimated": 1, "unknown": 0, "stale_estimates": 0})
 
     def test_read_only_key_holds_automatic_work_but_allows_an_explicit_retry(self):
         self.assertNotIn("opencode", self.catalog.status()["errors"])

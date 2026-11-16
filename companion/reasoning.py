@@ -97,8 +97,12 @@ def describe(model, cfg, entry=None) -> dict:
     """Return explicit choices (excluding auto), documentation confidence and tool-capable transport."""
     entry = _catalog_entry(model, entry)
     if (model or "").startswith(opencode.PREFIX):
-        return _result((), "OpenCode native reasoning metadata does not establish translated Chat effort controls; "
-                       "use auto.", "chat", False)
+        native = opencode.claude_model(model)
+        if native is not None:
+            return _result((), "OpenCode automatic tuning uses native Anthropic Messages controls; "
+                           "explicit effort selection remains Auto-only.", "anthropic", True)
+        return _result((), "OpenCode translated Chat reasoning controls are not verified for this model; "
+                       "Auto leaves provider defaults unchanged.", "chat", False)
     if openai_compat.is_endpoint(model):
         contract = openai_capabilities.describe_endpoint_model(model, cfg, entry)
         return _result(contract.efforts, contract.note, contract.transport, contract.known,

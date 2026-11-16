@@ -44,18 +44,22 @@ class ReasoningRequests(unittest.TestCase):
         self.local = "http://127.0.0.1:%d" % self.server.server_address[1]
         real_open = urllib.request.urlopen
 
-        def local_open(request, *args, **kwargs):
+        def local_open(request, timeout=None):
             # Keep the production endpoint identity for routing, but never allow an external request.
             path = urllib.parse.urlsplit(request.full_url).path
             local_request = urllib.request.Request(self.local + path, data=request.data,
                                                   headers=request.headers, method=request.method)
-            return real_open(local_request, *args, **kwargs)
+            return real_open(local_request, timeout=timeout)
 
         self.network = patch("urllib.request.urlopen", side_effect=local_open)
         self.network.start()
         self.addCleanup(self.network.stop)
+        gateway = patch("opencode.open_request", side_effect=local_open)
+        gateway.start()
+        self.addCleanup(gateway.stop)
         self.env = patch.dict(os.environ, {key: "" for key in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY")})
+            "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY",
+            "OPENCODE_API_KEY")})
         self.env.start()
         self.addCleanup(self.env.stop)
 
@@ -222,6 +226,115 @@ class ReasoningRequests(unittest.TestCase):
         client.cfg["fast_reasoning_effort"] = "auto"
         self.assertEqual(client.call_once(model, "Automatic again", 600)[0], "Continue.")
         self.assertEqual([b.get("reasoning_effort") for _, b in self.requests], ["minimal", "low", None, "high", "low"])
+
+    def test_opencode_haiku_fast_deep_and_off_use_native_messages(self):
+        model = "opencode:claude-haiku-5-5"
+        client = self.client(fast_model=model, deep_model=model, stream_speech=False)
+        client.providers["opencode"].key = "isolated-fixture-key"
+
+        def respond(path, body):
+            self.assertEqual(path, "/inference/anthropic/v1/messages")
+            self.assertEqual(body["model"], "claude-haiku-5-5")
+            self.assertNotIn("reasoning_effort", body)
+            return 200, {"type": "message", "model": body["model"], "stop_reason": "end_turn",
+                         "content": [{"type": "text", "text": "East."}],
+                         "usage": {"input_tokens": 10, "output_tokens": 2, "cost": 0}}
+
+        self.respond = respond
+        for deep in (False, True):
+            self.assertEqual(client.call_once(model, "Where?", 600, deep=deep)[0], "East.")
+        client.cfg["tune_thinking"] = False
+        self.assertEqual(client.call_once(model, "Off", 600)[0], "East.")
+        client.cfg["fast_reasoning_effort"] = "high"
+        self.assertIsNone(client.call_once(model, "Unsupported explicit", 600)[0])
+        fast, deep, off = [body for _, body in self.requests]
+        self.assertEqual((fast["output_config"], fast["thinking"]),
+                         ({"effort": "low"}, {"type": "disabled"}))
+        self.assertEqual(deep["output_config"], {"effort": "medium"})
+        self.assertNotIn("thinking", deep)
+        self.assertNotIn("output_config", off)
+        self.assertNotIn("thinking", off)
+        self.assertEqual(client.stats["cost_coverage"]["reported"], 3)
+        client.cfg["fast_reasoning_effort"] = "auto"
+        client.cfg["tune_thinking"] = True
+        self.assertEqual(client.call_once(model, "On again", 600)[0], "East.")
+        self.assertEqual(self.requests[-1][1]["thinking"], {"type": "disabled"})
+
+    def test_opencode_auto_refusal_is_remembered_per_path_and_explicit_does_not_become_auto(self):
+        model = "opencode:claude-haiku-5-5"
+        client = self.client(fast_model=model, deep_model=model)
+        provider = client.providers["opencode"]
+        provider.key = "isolated-fixture-key"
+
+        def respond(path, body):
+            if body.get("output_config"):
+                return 400, {"error": {"message": "Unsupported effort"}}
+            return 200, {"type": "message", "model": body["model"], "stop_reason": "end_turn",
+                         "content": [{"type": "text", "text": "Continue."}],
+                         "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+        self.respond = respond
+        self.assertEqual(client.call_once(model, "Fast", 600)[0], "Continue.")
+        self.assertEqual(provider.effort_ok[(model, False)], {})
+        self.assertNotIn((model, True), provider.effort_ok)
+        self.assertEqual(client.call_once(model, "Fast again", 600)[0], "Continue.")
+        self.assertEqual(client.call_once(model, "Deep", 1200, deep=True)[0], "Continue.")
+        client.cfg["fast_reasoning_effort"] = "high"
+        self.assertIsNone(client.call_once(model, "Explicit", 600)[0])
+        self.assertEqual([body.get("output_config", {}).get("effort") for _, body in self.requests],
+                         ["low", None, None, "medium", None])
+        self.assertEqual(provider.effort_ok[(model, False)], {})
+        self.assertEqual(client.stats["calls"], 3)
+
+    def test_opencode_unverified_families_and_unknown_claude_aliases_stay_plain_chat(self):
+        client = self.client()
+        client.providers["opencode"].key = "isolated-fixture-key"
+
+        def respond(path, body):
+            self.assertEqual(path, "/inference/openai/v1/chat/completions")
+            for field in ("reasoning", "reasoning_effort", "thinking", "output_config"):
+                self.assertNotIn(field, body)
+            return 200, self.chat("Continue.")
+
+        self.respond = respond
+        for native in ("gemini-3.8-flash", "gpt-6.1-sol", "vendor/paid", "claude-haiku-5-5-custom"):
+            for deep in (False, True):
+                self.assertEqual(client.call_once("opencode:" + native, "Where?", 600, deep=deep)[0], "Continue.")
+                self.assertEqual(self.requests[-1][1]["model"], native)
+
+    def test_opencode_native_tool_round_preserves_private_thinking_and_billed_categories(self):
+        model = "opencode:claude-haiku-5-5"
+        client = self.client(fast_model=model, deep_model=model)
+        client.providers["opencode"].key = "isolated-fixture-key"
+        thought = {"type": "thinking", "thinking": "", "signature": "gateway-only-signature"}
+        tool = {"type": "tool_use", "id": "call_quest", "name": "quest", "input": {"id": 42}}
+
+        def respond(path, body):
+            self.assertEqual(path, "/inference/anthropic/v1/messages")
+            self.assertNotIn("thinking", body)
+            self.assertEqual(body["output_config"], {"effort": "medium"})
+            if len(self.requests) == 1:
+                content, stop = [thought, tool], "tool_use"
+            else:
+                self.assertEqual(body["messages"][-2]["content"], [thought, tool])
+                self.assertEqual(body["messages"][-1]["content"][0]["tool_use_id"], "call_quest")
+                content, stop = [{"type": "text", "text": "East."}], "end_turn"
+            return 200, {"type": "message", "model": "claude-haiku-5-5",
+                         "content": content, "stop_reason": stop, "usage": {
+                             "input_tokens": 999, "output_tokens": 999, "cost": 0.012,
+                             "opencode": {"tokens": {"input": 100, "output": 30, "reasoning": 20,
+                                                    "cache_read": 50, "cache_write_5m": 10}}}}
+
+        self.respond = respond
+        client.run_tool = lambda *args: {"east": 80}
+        answer, meta = client.call_tools(model, [{"role": "user", "content": "Where?"}],
+                                        [{"name": "quest", "input_schema": {"type": "object"}}], 1, 10, deep=True)
+        self.assertEqual((answer, meta["tool_calls"]), ("East.", 1))
+        self.assertEqual(client.stats["uncached_in_tokens"], 200)
+        self.assertEqual(client.stats["cache_read_tokens"], 100)
+        self.assertEqual(client.stats["cache_write_tokens"], 20)
+        self.assertEqual(client.stats["out_tokens"], 60)
+        self.assertAlmostEqual(client.stats["cost_usd"], 0.024)
 
     def test_native_effort_preserves_schema_without_foreign_reasoning_metadata(self):
         client = self.client(fast_reasoning_effort="high", stream_speech=False)

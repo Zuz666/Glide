@@ -58,6 +58,18 @@ assert LLMClient.model_options("claude-haiku-4-5", deep=False) == {}, "Haiku 4.5
 assert LLMClient.model_options("claude-sonnet-5-5", deep=False)["thinking"] == {"type": "between_tools"}
 assert LLMClient.model_options("claude-opus-5-5", deep=False)["thinking"] == {"type": "adaptive"}
 assert LLMClient.model_options("ep:local:llama3", deep=False) == {}
+assert LLMClient.model_options("opencode:claude-haiku-5-5", False) == fast
+assert LLMClient.model_options("opencode:claude-haiku-5-5", True) == deep
+for native, thinking in (("claude-sonnet-5-5", "between_tools"), ("claude-opus-5-5", "adaptive"),
+                         ("claude-sonnet-5", "disabled"), ("claude-sonnet-4-6", "disabled"),
+                         ("claude-opus-4-8", "disabled"), ("claude-opus-4-5", "disabled")):
+    assert LLMClient.model_options("opencode:" + native, False) == {
+        "output_config": {"effort": "low"}, "thinking": {"type": thinking}}
+    assert LLMClient.model_options("opencode:" + native, True) == {"output_config": {"effort": "medium"}}
+for native in ("claude-haiku-4-5", "claude-sonnet-4-5", "claude-haiku-5-5-private", "gemini-3.8-flash"):
+    assert LLMClient.model_options("opencode:" + native, False) == {}
+    assert LLMClient.model_options("opencode:" + native, True) == {}
+assert LLMClient.model_options("opencode:claude-fable-5-2", False) == {"output_config": {"effort": "low"}}
 
 # the retry: an empty, cut-off answer is asked for again with more room
 notes = []
