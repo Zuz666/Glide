@@ -56,10 +56,10 @@ export function showCharacterMemory(coach: Partial<CoachStats> | null): void {
   $("sb-recall").querySelector("use")!.setAttribute("href", value?.recall.method === "meaning" ? "#i-sparkles" : "#i-search");
   $("cm-ai").textContent = ai;
   $("cm-character").textContent = character;
-  $("cm-learning").textContent = learning;
+  $("cm-learning").textContent = value?.learning.enabled && value.learning.available ? "Enabled" : learning;
   $("cm-recall").textContent = recall;
   $("cm-source").textContent = source;
-  $("cm-source").hidden = $("cm-source-label").hidden = !source;
+  $("cm-source-row").hidden = !source;
   const summary = `Coach: ${ai}\nCharacter: ${character}\nMemory Learning: ${learning}\nMemory Recall: ${recall}${source ? `\nRecall source / model: ${source}` : ""}`;
   $("sb-mode-wrap").title = `${summary}\nOpen Character and Memory details.`;
   $("sb-mode-wrap").setAttribute("aria-label", `${summary}. Open Character and Memory details.`);
@@ -71,16 +71,22 @@ export function wireCharacterMemory(): void {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && popup.matches(":popover-open")) event.stopPropagation();
   }, true);
-  $("character-memory-roleplay").onclick = () => {
-    popup.hidePopover();
-    openSettingsTab("coach", "companion.llm.persona");
-  };
-  $("character-memory-memory").onclick = () => {
-    popup.hidePopover();
-    show("memory");
-    // Unlike Settings' field target, Memory has no editable field to focus on entry.
-    const heading = document.querySelector<HTMLElement>("#page-memory h2, #page-memory h1");
+  const openPage = (page: string) => {
+    show(page);
+    const heading = document.querySelector<HTMLElement>(`#page-${page} h2, #page-${page} h1`);
     if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+  };
+  const links: [string, () => void][] = [
+    ["character-memory-status", () => openPage("status")],
+    ["character-memory-roleplay", () => openSettingsTab("coach", "companion.llm.persona")],
+    ["character-memory-memory", () => openPage("memory")],
+    ["character-memory-recall", () => openSettingsTab("coach", "companion.llm.recall_meaning")],
+    ["character-memory-source", () => openSettingsTab("coach", "companion.llm.recall_embed_model")],
+  ];
+  for (const [id, navigate] of links) $(id).onclick = (event) => {
+    event.preventDefault();
+    popup.hidePopover();
+    navigate();
   };
   showCharacterMemory(null);
 }

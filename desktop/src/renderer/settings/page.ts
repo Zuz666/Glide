@@ -73,7 +73,7 @@ function scrollTargetIntoBody(body: HTMLElement, target: string, settle = false)
   if (target.startsWith("key:")) {
     const input = el.matches("input") ? (el as HTMLInputElement) : el.querySelector<HTMLInputElement>("input[data-env]");
     input?.focus({ preventScroll: true });
-  } else if (target === "companion.llm.persona") {
+  } else if (["companion.llm.persona", "companion.llm.recall_meaning", "companion.llm.recall_embed_model"].includes(target)) {
     el.querySelector<HTMLInputElement>("input, textarea")?.focus({ preventScroll: true });
   }
 }
