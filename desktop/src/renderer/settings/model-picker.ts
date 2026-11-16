@@ -16,7 +16,7 @@ const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini
 const ROLES: [string, string, string, string][] = [
   ["fast", "fast_model", "Fast role", "Callouts, quest briefings and translation. Spoken questions use the role selected below."],
   ["deep", "deep_model", "Deep role", "Typed questions and pace reviews. Spoken questions use the role selected below."]];
-const EFFORT_HELP = "Choices use advertised capabilities where available, or known model/provider profiles otherwise. Auto is safest when support is unverified.";
+const EFFORT_HELP = "Explicit effort bypasses automatic tuning. Effort is not a universal thinking on/off switch: native defaults apply. For OpenCode explicit effort, Output Budget stays unchanged; higher effort can use it before a visible answer. New explicit OpenCode choices need a connected coach for validation before saving.";
 const per = (v: number | null | undefined) => (v == null ? "?" : v < 0.01 && v > 0 ? v.toFixed(4) : (+v).toFixed(v < 1 ? 3 : 2));
 const pickerRenders = new WeakMap<HTMLElement, AbortController>();
 const reasoningBindings = new WeakMap<HTMLElement, AbortController>();
@@ -82,8 +82,8 @@ function tariffHtml(model?: Obj): string {
 
 function effortOptions(levels: string[], effort: string): string {
   return `<option value="auto" ${effort === "auto" ? "selected" : ""}>Auto</option>` +
-    (effort !== "auto" && !levels.includes(effort) ? `<option value="${esc(effort)}" selected disabled>${esc(effort)} (not in available choices)</option>` : "") +
-    levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level === "none" ? "None (no reasoning)" : level)}</option>`).join("");
+    (effort !== "auto" && !levels.includes(effort) ? `<option value="${esc(effort)}" selected disabled>${esc(effort)} (unavailable)</option>` : "") +
+    levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level)}</option>`).join("");
 }
 
 /** Only the backend's dedicated exclusion reason carries this canonical availability date. */
@@ -94,12 +94,12 @@ function shutdownDate(info?: Obj): string | undefined {
 
 function reasoningHelpHtml(info?: Obj): string {
   if (!info) return `Checking reasoning choices… ${EFFORT_HELP}`;
-  if (info.unavailable) return `Reasoning lookup is unavailable. Refresh the model list to retry, or use Auto. ${EFFORT_HELP}`;
+  if (info.unavailable) return `Reasoning lookup is unavailable. ${info.retained ? "Keeping the last known choices for this model; they could not be refreshed." : "Explicit support cannot be verified; a saved explicit choice is not changed to Auto."} ${info.note ? `${esc(info.note)} ` : ""}${EFFORT_HELP}`;
   if (info.suitability === "excluded" && info.reason) {
     const date = shutdownDate(info);
     return `Excluded official OpenAI model (${date ? `shut down on ${dateTimeHtml(date, "date")}` : esc(info.reason)}); pick a conversational coach model.`;
   }
-  return `${EFFORT_HELP}${!info.levels.length ? " No explicit levels are available for this model." : ""}`;
+  return `${info.note ? `${esc(info.note)} ` : !info.known ? "Explicit effort support is unverified for this model. " : !info.levels.length ? "This model has no selectable effort control. " : ""}${EFFORT_HELP}`;
 }
 
 function bindReasoningTitle(el: HTMLElement, info?: Obj): void {
@@ -148,26 +148,31 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
     const summary = tuningSummary?.querySelector<HTMLElement>(`[data-thinking-role="${path}"]`);
     let automatic: Obj | undefined;
     let available = false;
+    let capability: Obj | undefined;
+    let lastKnown: { id: string; info: Obj } | undefined;
     const syncSummary = () => {
       if (!summary) return;
       const effort = draft(effortKey), tuning = tuningSwitch?.checked ?? draft("tune_thinking") === "true";
-      const selected = effort !== "auto" ? `${effort} effort (explicit; switch has no effect)`
+      const selected = effort !== "auto" ? `${effort} effort (${capability && !capability.levels.includes(effort) ? "unavailable; " : ""}explicit; switch has no effect)`
         : !tuning ? "provider default (tuning Off)"
         : !available ? "automatic level unavailable — connect the coach to resolve"
         : automatic?.effort ? `${automatic.effort} effort requested${automatic.thinking ? `; thinking: ${automatic.thinking}` : ""}`
         : "provider default (no automatic override)";
       summary.textContent = `${path === "fast" ? "Fast" : "Deep"} · ${draft(modelKey)}: ${selected}.`;
+      summary.title = capability?.note || "";
       summary.classList.toggle("ok", effort === "auto" && tuning && available && !!(automatic?.effort || automatic?.thinking));
     };
     tuningSwitch?.addEventListener("change", syncSummary, { signal });
     select?.addEventListener("change", syncSummary, { signal });
     let revision = 0, timer: number | undefined;
+    let previousModel = draft(modelKey);
     const load = async () => {
       syncModelReq();
       const version = ++revision, id = draft(modelKey), url = live.engineUrl, token = live.engineToken, state = live.engineState;
       const current = () => !signal.aborted && host.isConnected && version === revision && id === draft(modelKey) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
       const show = (info?: Obj) => {
         const levels: string[] = info?.levels || [], effort = draft(effortKey);
+        capability = info;
         if (select) {
           select.innerHTML = effortOptions(levels, effort);
           select.disabled = !levels.length && effort === "auto";
@@ -176,6 +181,7 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
           note.innerHTML = `${reasoningHelpHtml(info)} ${AUTO_THINKING_HELP} Save to apply.`;
           bindReasoningTitle(note, info);
         }
+        syncSummary();
       };
       automatic = undefined;
       available = false;
@@ -190,20 +196,24 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
         const data = await response.json();
         if (!current() || live.engineState !== "running") return;
         if (!response.ok || data.model !== id || !Array.isArray(data.reasoning?.levels)) throw new Error("Capabilities unavailable");
+        lastKnown = { id, info: data.reasoning };
         show(data.reasoning);
         automatic = data.automatic?.[path];
         available = !!automatic;
         syncSummary();
       } catch {
-        if (current()) show({ levels: [], unavailable: true });
+        if (current()) show({ ...(lastKnown?.id === id ? lastKnown.info : { levels: [] }), unavailable: true, retained: lastKnown?.id === id });
       }
     };
     select?.addEventListener("model-capabilities-refresh", () => { void load(); }, { signal });
     input?.addEventListener("input", () => {
+      if (previousModel === draft(modelKey)) return;
+      previousModel = draft(modelKey);
       ++revision;
       clearTimeout(timer);
       syncModelReq();
       automatic = undefined;
+      capability = undefined;
       available = false;
       syncSummary();
       if (select) {

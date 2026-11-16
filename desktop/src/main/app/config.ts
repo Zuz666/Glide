@@ -243,7 +243,7 @@ function prepareWindowsProcessVoice(home: string): Promise<void> {
 /** Save a patch of config.json. The engine owns the file (docs/REFACTOR-CONTRACTS.md, contract 5): while it runs,
  * it saves the patch (POST /settings {"save": patch}), so its own writes and the app's never cross.
  * Explicit live changes require an engine-confirmed combined save: rejection/disconnection must not become a
- * local save for restart. Ordinary save-only callers retain the existing local fallback. */
+ * local save for restart. New explicit OpenCode choices also require backend capability validation. */
 export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}): Promise<Obj> {
   return serializeSettingsWrite(async () => {
     const projection = await destinationPatch(deepMerge(readConfig(), patch), settings.current);
@@ -253,6 +253,16 @@ export async function saveConfig(patch: Obj, engine: RunningEngine, liveChanges:
 
 async function saveConfigNow(patch: Obj, engine: RunningEngine, liveChanges: Obj = {}, requireEngineSave = false): Promise<Obj> {
   const applying = Object.keys(liveChanges).length > 0;
+  const llmPatch = (patch.companion as Obj | undefined)?.llm as Obj | undefined;
+  const explicitRoles = ["fast", "deep"].filter(role =>
+    typeof llmPatch?.[`${role}_reasoning_effort`] === "string" && llmPatch[`${role}_reasoning_effort`] !== "auto");
+  const nextLlm = explicitRoles.length
+    ? (deepMerge(readConfig(), patch).companion as Obj | undefined)?.llm as Obj | undefined : undefined;
+  const validatingOpenCode = explicitRoles.some(role => String(nextLlm?.[`${role}_model`] || "").startsWith("opencode:"));
+  if (validatingOpenCode && (engine.state !== "running" || !engine.url)) {
+    throw new Error("Connect the coach to validate explicit OpenCode effort before saving; your edits are kept.");
+  }
+  requireEngineSave ||= validatingOpenCode;
   if (applying && (engine.state !== "running" || !engine.url)) throw new Error("The coach is not connected; your edits are kept.");
   if (requireEngineSave && engine.state === "running" && !engine.url) throw new Error("The coach is not connected; your edits are kept.");
   if (engine.state === "running" && engine.url) {

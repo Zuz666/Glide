@@ -184,17 +184,40 @@ assert "none" in reasoning.describe(router["id"], {}, unrestricted)["levels"]
 assert "xhigh" in reasoning.describe(router["id"], {}, unrestricted)["levels"]
 assert reasoning.describe(router["id"], {}, {**entry, "reasoning": {}})["levels"] == []
 
-# OpenCode native Messages is an automatic-tuning transport, not new explicit effort availability.
-for model in ("opencode:claude-haiku-5-5", "opencode:claude-sonnet-5-5", "opencode:claude-opus-5-5",
-              "opencode:claude-haiku-4-5"):
-    caps = reasoning.describe(model, {})
-    assert caps["known"] and caps["transport"] == "anthropic" and caps["levels"] == [], caps
-    reasoning.validate(model, {}, "auto")
-    rejected(model, {}, "low")
-for model in ("opencode:gemini-3.8-flash", "opencode:gpt-6.1-sol", "opencode:claude-private",
-              "opencode:claude-haiku-5-5-custom"):
-    caps = reasoning.describe(model, {}, {"id": model, "reasoning": {"effort": ["low", "high"]}})
-    assert not caps["known"] and caps["transport"] == "chat" and caps["levels"] == [], caps
-    rejected(model, {}, "low")
+# OpenCode requires exact gateway metadata and a reviewed native field, not vendor-name inference.
+gateway_cases = (
+    ("claude-haiku-5-5", "messages", ["low", "medium", "high", "xhigh", "max"], "none"),
+    ("claude-opus-4-6", "messages", ["low", "medium", "high", "max"], "xhigh"),
+    ("claude-opus-4-5", "messages", ["low", "medium", "high"], "max"),
+    ("gpt-5.5-pro", "responses", ["medium", "high", "xhigh"], "low"),
+    ("gpt-6.1-sol", "responses", ["low", "medium", "high", "xhigh", "max"], "none"),
+    ("gemini-3.8-flash", "generate-content", ["low", "medium", "high"], "minimal"),
+    ("gemini-4-hydrogen", "generate-content", ["low", "medium", "high", "xhigh"], "none"),
+    ("deepseek-v4-pro", "chat-completions", ["high", "max"], "medium"),
+    ("kimi-k3", "chat-completions", ["low", "high", "max"], "none"),
+)
+for native_id, api, expected, forbidden in gateway_cases:
+    model = "opencode:" + native_id
+    entry = {"id": model, "api": {api: {}},
+             "reasoning": {"supported": True, "effort": [*expected, forbidden]}}
+    caps = reasoning.describe(model, {}, entry)
+    assert caps["known"] and caps["levels"] == expected, caps
+    for level in expected:
+        reasoning.validate(model, {}, level, entry)
+    assert reasoning.describe(model, {}, {**entry, "api": {}})["levels"] == []
+    assert reasoning.describe(model, {})["levels"] == []
+    assert reasoning.describe(model + "-unknown", {}, entry)["levels"] == []
+    assert reasoning.describe(model, {}, {**entry, "reasoning": {"supported": False}})["levels"] == []
+    try:
+        reasoning.validate(model, {}, forbidden, entry)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError((model, forbidden))
+for native_id in ("claude-haiku-4-5", "kimi-k2.6", "minimax-m3", "mistral-large-4", "qwen3.8-flash"):
+    model = "opencode:" + native_id
+    entry = {"id": model, "api": {"messages": {}, "chat-completions": {}},
+             "reasoning": {"supported": True, "toggle": True, "budget": {}, "effort": ["none", "high"]}}
+    assert reasoning.describe(model, {}, entry)["levels"] == [], model
 
 print("reasoning capabilities: ok")

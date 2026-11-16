@@ -166,18 +166,18 @@ class CostTests(unittest.TestCase):
 
     def test_reported_zero_estimate_invalid_charge_and_missing_usage_remain_distinct(self):
         provider = providers.OpenCodeProvider({}, "test-key")
-        zero = provider.parse({"usage": {"cost": 0, "opencode": {"list_cost": 5}}})["usage"]
+        zero = provider.parse({"usage": {"cost": 0, "opencode": {"list_cost": 5}}}, "opencode:paid")["usage"]
         self.assertEqual(zero["cost_usd"], 0)
         self.assertIs(zero["cost_estimated"], False)
-        estimated = provider.parse({"usage": {"cost": 0.25, "opencode": {"estimated": True}}})["usage"]
+        estimated = provider.parse({"usage": {"cost": 0.25, "opencode": {"estimated": True}}}, "opencode:paid")["usage"]
         self.assertEqual(estimated["cost_usd"], 0.25)
         self.assertIs(estimated["cost_estimated"], True)
         for value in (float("nan"), float("inf"), -1, True, "not-money"):
-            self.assertNotIn("cost_usd", provider.parse({"usage": {"cost": value}})["usage"])
-        listed = provider.parse({"usage": {"opencode": {"list_cost": 0.5}}})["usage"]
+            self.assertNotIn("cost_usd", provider.parse({"usage": {"cost": value}}, "opencode:paid")["usage"])
+        listed = provider.parse({"usage": {"opencode": {"list_cost": 0.5}}}, "opencode:paid")["usage"]
         self.assertEqual(listed["cost_usd"], 0.5)
         self.assertIs(listed["cost_estimated"], True)
-        self.assertIsNone(opencode.estimate_cost({"pricing": TARIFF}, provider.parse({})["usage"]))
+        self.assertIsNone(opencode.estimate_cost({"pricing": TARIFF}, provider.parse({}, "opencode:paid")["usage"]))
 
     def test_native_messages_usage_keeps_exclusive_input_cache_durations_and_charge(self):
         provider = providers.OpenCodeProvider({}, "test-key")
@@ -185,7 +185,7 @@ class CostTests(unittest.TestCase):
                                  "usage": {"input_tokens": 100, "output_tokens": 30,
                                            "cache_read_input_tokens": 50, "cache_creation_input_tokens": 20,
                                            "cache_creation": {"ephemeral_5m_input_tokens": 15,
-                                                              "ephemeral_1h_input_tokens": 5}, "cost": 0}})
+                                                              "ephemeral_1h_input_tokens": 5}, "cost": 0}}, "opencode:claude-haiku-5-5")
         usage = parsed["usage"]
         self.assertEqual(usage["input_tokens"], 100)
         self.assertEqual(usage["cache_read_input_tokens"], 50)
@@ -194,7 +194,7 @@ class CostTests(unittest.TestCase):
         self.assertEqual((usage["cost_usd"], usage["cost_estimated"]), (0, False))
         self.assertNotIn("tokens_unknown", usage)
         estimate = provider.parse({"type": "message", "content": [], "usage": {
-            "input_tokens": 100, "output_tokens": 30, "opencode": {"list_cost": 0.005}}})["usage"]
+            "input_tokens": 100, "output_tokens": 30, "opencode": {"list_cost": 0.005}}}, "opencode:claude-haiku-5-5")["usage"]
         self.assertEqual((estimate["cost_usd"], estimate["cost_estimated"]), (0.005, True))
 
 
@@ -218,11 +218,11 @@ class ProviderTests(unittest.TestCase):
                 "tools": [{"name": "lookup", "input_schema": {"type": "object"}}]}
         with patch("opencode.open_request", side_effect=urlopen):
             req, stream = provider.request(body, {}, None)
-            first = provider.parse(provider.fetch(req, stream, None, 10))
+            first = provider.parse(provider.fetch(req, stream, None, 10), body["model"])
             body["messages"] += [{"role": "assistant", "content": first["content"]},
                                  {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "result"}]}]
             req, stream = provider.request(body, {}, None)
-            final = provider.parse(provider.fetch(req, stream, None, 10))
+            final = provider.parse(provider.fetch(req, stream, None, 10), body["model"])
         self.assertEqual(final["content"], [{"type": "text", "text": "answer"}])
         self.assertEqual([r[0] for r in requests], [opencode.CHAT_URL, opencode.CHAT_URL])
         self.assertEqual([r[1] for r in requests], ["Bearer test-key", "Bearer test-key"])
@@ -248,7 +248,7 @@ class ProviderTests(unittest.TestCase):
         redacted = {"type": "redacted_thinking", "data": "gateway-redacted"}
         tool = {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
         first = provider.parse({"type": "message", "model": "claude-haiku-5-5",
-                                "content": [thought, redacted, tool], "stop_reason": "tool_use"})
+                                "content": [thought, redacted, tool], "stop_reason": "tool_use"}, "opencode:claude-haiku-5-5")
         body = {"model": "opencode:claude-haiku-5-5", "max_tokens": 50,
                 "messages": [{"role": "assistant", "content": first["content"]}]}
         req, stream = provider.request(body, opencode.model_options(body["model"], True), None)

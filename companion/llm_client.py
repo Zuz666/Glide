@@ -74,6 +74,9 @@ def _sent_reasoning(options):
         nested = options.get(key)
         if isinstance(nested, dict):
             effort = nested.get("effort", effort)
+    generation = options.get("generationConfig") or {}
+    if isinstance(generation, dict) and isinstance(generation.get("thinkingConfig"), dict):
+        effort = generation["thinkingConfig"].get("thinkingLevel", effort)
     if effort in levels:
         parts.append("effort=" + effort)
     thinking = options.get("thinking")
@@ -205,7 +208,8 @@ class LLMClient:
                        "reasoning": self.opt.get(path_of(deep) + "_reasoning_effort")}
         if selected := _model_id(model):
             attribution["model"] = selected
-        current = {"attribution": attribution, "started": time.monotonic(), "sent": []}
+        current = {"attribution": attribution, "started": time.monotonic(), "sent": [],
+                   "tune_thinking": self.opt.get("tune_thinking")}
         self._request.current = current
         try:
             yield current
@@ -337,12 +341,15 @@ class LLMClient:
             effort = current["attribution"]["reasoning"] if current is not None else \
                 self.opt.get(path + "_reasoning_effort")
         try:
-            reasoning.validate(model, self.cfg, effort, self.catalog.get(model) if self.catalog is not None else None)
+            if not (model.startswith(opencode.PREFIX) and current and current.get("opencode_options") is not None):
+                reasoning.validate(model, self.cfg, effort, self.catalog.get(model) if self.catalog is not None else None)
         except ValueError as e:
             self.stats["errors"] += 1
             self.emit({"kind": "error", "text": str(e), "speak": False})
             return None, opts
-        attempts = p.option_sets(model, opts, path == "deep", effort)
+        attempts = current.get("opencode_options") if model.startswith(opencode.PREFIX) and current else None
+        if attempts is None:
+            attempts = p.option_sets(model, opts, path == "deep", effort)
         i, retried = 0, False
         while i < len(attempts):            # if the API rejects the tuning options, the next set
             attempt = attempts[i]
@@ -353,7 +360,8 @@ class LLMClient:
                     current["sent"].append(sent)
                 current["attribution"]["sent_reasoning"] = " → ".join(current["sent"])
             try:
-                data = p.parse(p.fetch(req, stream, on_text, self.opt.get("timeout")))
+                raw = p.fetch(req, stream, on_text, self.opt.get("timeout"))
+                data = p.parse(raw, model) if isinstance(p, providers.OpenCodeProvider) else p.parse(raw)
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:300]
                 fatal = p.fatal_reason(e.code, detail)
@@ -380,13 +388,21 @@ class LLMClient:
                 self.emit({"kind": "error", "text": "%s %s (%s): %s" % (label, e.code, model, api_message(detail)),
                            "speak": False})
                 return None, attempt
+            except opencode.ResponseError as e:
+                self._account(model, body, e.usage, path)
+                self.stats["errors"] += 1
+                self.emit({"kind": "error", "text": "%s response (%s): %s" % (label, model, e), "speak": False})
+                return None, attempt
             except Exception as e:
                 self.stats["errors"] += 1
                 self._back_off(True, label)
                 self.emit({"kind": "error", "text": "%s unreachable (%.0fs): %s" % (label, time.time() - t0, e),
                            "speak": False})
                 return None, attempt
-            if effort == "auto":
+            if model.startswith(opencode.PREFIX) and current is not None:
+                current["opencode_options"] = [attempt]
+            tuning = current["tune_thinking"] if current is not None else self.opt.get("tune_thinking")
+            if effort == "auto" and (not model.startswith(opencode.PREFIX) or tuning):
                 p.accepted(model, attempt, path == "deep")
             self._recovered(p.name, label)
             if current is not None:
@@ -535,7 +551,7 @@ class LLMClient:
         body = {"model": model, "max_tokens": max(600, len(text)),
                 "system": [{"type": "text", "text": instruction}],
                 "messages": [{"role": "user", "content": json.dumps({"text": text}, ensure_ascii=False)}]}
-        opts = self.model_options(model, False) if self.opt.get("tune_thinking") else {}
+        opts = self.model_options(model, False) if self._request.current["tune_thinking"] else {}
         effort = self._request.current["attribution"]["reasoning"]
         data, opts = self.post(body, opts, "fast", effort=effort)
         data = self._retry_empty(body, opts, data, "fast", effort=effort)
@@ -613,7 +629,7 @@ class LLMClient:
         path = path_of(deep)
         effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
-        opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
+        opts = self.model_options(model, deep) if self._request.current["tune_thinking"] else {}
         if schema and models_mod.provider(model) == "anthropic" and self.opt.get("structured_outputs"):
             opts = dict(opts, output_config=dict(opts.get("output_config") or {},
                                                  format={"type": "json_schema", "schema": schema}))
@@ -637,6 +653,8 @@ class LLMClient:
     def _retry_empty(self, body, opts, data, path, effort=None, base=None, allowance=0):
         """An answer cut off at max_tokens before any text (a model that spent the budget thinking): ask once more
         with four times the room (at least 2,400 tokens) instead of showing an empty answer."""
+        if (body.get("model") or "").startswith(opencode.PREFIX) and effort not in (None, "auto"):
+            return data  # Explicit effort never authorizes increasing the player's output budget.
         if not data or data.get("stop_reason") != "max_tokens" or any(
                 isinstance(b, dict) and b.get("type") == "text" and (b.get("text") or "").strip()
                 for b in data.get("content") or []):
@@ -668,7 +686,7 @@ class LLMClient:
         path = path_of(deep)
         effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
-        opts = self.model_options(model, deep) if self.opt.get("tune_thinking") else {}
+        opts = self.model_options(model, deep) if self._request.current["tune_thinking"] else {}
         tools = [dict(t) for t in tools or ()]
         system = self.system_fn(self.cache_marker(model, deep))     # covers tools + system (one prefix)
         allowance = speech_policy.allowance if speech_policy is not None else 0

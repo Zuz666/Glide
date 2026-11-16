@@ -194,6 +194,12 @@ async function configChecks() {
   } } }, stopped);
   await config.saveConfig({ companion: { voice: { volume: 80 } } }, stopped);
   assert.strictEqual(config.readConfig().companion.llm.fast_reasoning_effort, "low");
+  const beforeOfflineGateway = read(p);
+  const gatewayEffort = { companion: { llm: { fast_model: "opencode:claude-haiku-5-5", fast_reasoning_effort: "high" } } };
+  await assert.rejects(config.saveConfig(gatewayEffort, stopped), /Connect the coach/);
+  assert.strictEqual(read(p), beforeOfflineGateway, "offline save must not bypass explicit gateway capability validation");
+  await config.saveConfig({ companion: { llm: { fast_model: "opencode:claude-haiku-5-5", fast_reasoning_effort: "auto" } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.fast_reasoning_effort, "auto");
   // Stopped-coach local save rejects excluded official OpenAI specialty models on the edited role,
   // while allowing edits to the other role and allowing the same name on non-OpenAI compatible origins.
   write(p, JSON.stringify({ companion: { llm: {
@@ -278,6 +284,9 @@ async function configChecks() {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+  const beforeDisconnectedGateway = read(p);
+  await assert.rejects(config.saveConfig(gatewayEffort, running));
+  assert.strictEqual(read(p), beforeDisconnectedGateway, "lost validation connection must not become a local explicit-effort write");
 }
 
 function overlayFocusChecks() {

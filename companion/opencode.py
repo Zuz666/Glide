@@ -14,13 +14,24 @@ BASE_URL = "https://opencode.ai/inference/openai/v1"
 MODELS_URL = BASE_URL + "/models"
 CHAT_URL = BASE_URL + "/chat/completions"
 MESSAGES_URL = "https://opencode.ai/inference/anthropic/v1/messages"
+RESPONSES_URL = BASE_URL + "/responses"
+GEMINI_URL = "https://opencode.ai/inference/google/v1beta/models/"
 META_BLOCK = "opencode_meta"
+
+
+class ResponseError(RuntimeError):
+    """A received but unusable response still carries its billable usage."""
+
+    def __init__(self, message, usage):
+        super().__init__(message)
+        self.usage = usage
+
 
 # Native Messages controls, not assumptions about the gateway's Chat translation.
 # https://opencode.ai/docs/console/models/#endpoints
 # https://platform.claude.com/docs/en/build-with-claude/thinking#configuring-thinking
 # https://platform.claude.com/docs/en/build-with-claude/effort#effort-levels
-# (automatic effort supported, Fast thinking mode); this does not enable explicit choices.
+# (automatic effort supported, Fast thinking mode); explicit choices live in opencode_reasoning.
 CLAUDE_POLICIES = {
     "claude-fable-5-2": (True, None),
     "claude-fable-5-1": (True, None),
@@ -106,7 +117,8 @@ def catalog_entry(model):
            "price": {"in": _rate(inp.get("price")), "out": _rate(out.get("price")),
                      "cache_read": _rate(cache.get("read")), "cache_write": _rate(cache.get("write"))}
                     if isinstance(text, dict) else None,
-           "pricing": pricing, "reasoning": copy.deepcopy(capabilities.get("reasoning"))}
+           "pricing": pricing, "reasoning": copy.deepcopy(capabilities.get("reasoning")),
+           "api": copy.deepcopy(model.get("api"))}
     # Preserve discovery metadata without treating native controls as translated Chat controls.
     modalities = model.get("modalities") or {}
     outputs, inputs = modalities.get("output"), modalities.get("input")
@@ -123,11 +135,23 @@ def catalog_entry(model):
     return row
 
 
-def normalize_usage(raw):
-    """Use gateway billed-token categories: input excludes cache, output includes reasoning."""
+def normalize_usage(raw, api="chat"):
+    """Gateway billed counts take priority; otherwise normalize the actual native API's token envelope."""
     raw = raw or {}
     meta = raw.get("opencode") or {}
     tokens = meta.get("tokens")
+    if not isinstance(tokens, dict) and api == "responses":
+        raw = {**raw, "prompt_tokens": raw.get("input_tokens"), "completion_tokens": raw.get("output_tokens"),
+               "prompt_tokens_details": raw.get("input_tokens_details"),
+               "completion_tokens_details": raw.get("output_tokens_details")}
+        raw.pop("input_tokens", None)
+        raw.pop("output_tokens", None)
+    elif not isinstance(tokens, dict) and api == "gemini":
+        visible, thought = number(raw.get("candidatesTokenCount")), number(raw.get("thoughtsTokenCount", 0))
+        raw = {**raw, "prompt_tokens": raw.get("promptTokenCount"),
+               "completion_tokens": visible + thought if visible is not None and thought is not None else None,
+               "prompt_tokens_details": {"cached_tokens": raw.get("cachedContentTokenCount", 0)},
+               "completion_tokens_details": {"reasoning_tokens": raw.get("thoughtsTokenCount", 0)}}
     details = raw.get("prompt_tokens_details") or {}
     durations = {}
     usage: dict[str, Any]
