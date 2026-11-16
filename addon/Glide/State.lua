@@ -206,8 +206,9 @@ end
 -- pages
 -- ---------------------------------------------------------------------------------------------
 local function stepWords(text)
-    -- Strip colors before escaping delimiters or cutting bytes; escaped pipes remain literal text.
+    -- Strip markup before escaping delimiters or cutting bytes; escaped pipes remain literal text.
     text = tostring(text or ""):gsub("||", "\001")
+    text = text:gsub("|T.-|t", ""):gsub("|A.-|a", "")
     text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cRXP_[A-Z]+_", ""):gsub("|cn[%w_]+:", "")
     return (text:gsub("|r", ""):gsub("\001", "|"))
 end

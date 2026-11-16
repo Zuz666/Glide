@@ -270,12 +270,18 @@ ns.RefreshPages()
 assert ns.NextPage(5) == ""
 assert ns.NextPage(1000).startswith("pg=S0;i=6;")
 
-# Step titles lose color markup before protocol escaping or the 60-byte budget consumes visible words.
+# Step titles lose markup before protocol escaping or the 60-byte budget consumes visible words.
 from app import App  # noqa: E402
 
 saved_step = G.RXP.currentGuide.steps[6]
 title = "If you see a Tornado, use it for faster travel."
 for raw, visible, quest in (
+        ("|Tinterface/worldmap/chatbubble_64grey.blp:20|tTalk to |cRXP_FRIENDLY_Innke|r",
+         "Talk to Innke", False),
+        ("|A:QuestNormal:20:20|aAccept the quest", "Accept the quest", True),
+        ("Use |TInterface\\Icons\\INV_Misc_Bag_08:16:16|t then |A:QuestTurnin:20:20|a return.",
+         "Use  then  return.", False),
+        ("Keep ||Ticon:20||t literal", "Keep ,Ticon:20,t literal", False),
         ("|cFFFCDC00" + title + "|r", title, False),
         ("|cRXP_WARN_Use |cRXP_ENEMY_the path|r safely|r", "Use the path safely", False),
         ("|cnWARNING_COLOR:Follow the road|r", "Follow the road", True),
@@ -294,7 +300,7 @@ for raw, visible, quest in (
     assert summary["steps"][0]["text"] == visible, summary["steps"]
     assert visible in App.step_line(summary), App.step_line(summary)
     assert element.text == raw, "Serialization must not alter the rich guide text"
-    if raw == "|cFFFCDC00" + title + "|r" and os.environ.get("GLIDE_STEP_TITLE_PROOF"):
+    if raw.startswith("|Tinterface/worldmap/chatbubble_64grey.blp:20|t") and os.environ.get("GLIDE_STEP_TITLE_PROOF"):
         import json
         with open(os.environ["GLIDE_STEP_TITLE_PROOF"], "w", encoding="utf-8") as fh:
             json.dump({"steps": summary["steps"], "level": summary["level"], "title": visible,
