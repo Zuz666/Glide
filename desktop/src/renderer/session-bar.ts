@@ -67,11 +67,14 @@ function shortEffort(effort: string): string {
   return effort;
 }
 
-function setEffortBadge(id: string, hasModel: boolean, effort: string): void {
-  const el = $(id);
-  el.hidden = !hasModel;
-  el.textContent = shortEffort(effort);
+function setEffortBadge(role: "fast" | "deep", m: Partial<Models>, effort: string): void {
+  const el = $(`sb-${role}-eff`);
+  const automatic = effort === "auto" && m.tune_thinking === true ? m.automatic_reasoning?.[role] : undefined;
+  const override = automatic?.effort || automatic?.thinking;
+  el.hidden = !(m[role] || m[role === "fast" ? "fast_name" : "deep_name"]);
+  el.textContent = override ? `auto→${shortEffort(override === "disabled" ? "off" : override)}` : shortEffort(effort);
   el.dataset.auto = effort === "auto" ? "1" : "0";
+  el.dataset.tuned = override ? "1" : "0";
 }
 
 function fmtRoleModel(name: string | null | undefined, id: string | null | undefined): string {
@@ -128,8 +131,8 @@ function showModels(m: Partial<Models>): void {
   const pttDeep = m.voice_question === "deep";
   $("sb-fast-ic").innerHTML = `<use href="#i-${pttDeep ? "zap" : "mic"}"/>`;
   $("sb-deep-ic").innerHTML = `<use href="#i-${pttDeep ? "mic" : "keyboard"}"/>`;
-  setEffortBadge("sb-fast-eff", Boolean(m.fast || m.fast_name), fastEff);
-  setEffortBadge("sb-deep-eff", Boolean(m.deep || m.deep_name), deepEff);
+  setEffortBadge("fast", m, fastEff);
+  setEffortBadge("deep", m, deepEff);
   const fastUses = pttDeep
     ? `Live callouts, quest briefings and translation (spoken questions routed to Deep).\nDeep model: ${fmtRoleModel(m.deep_name, m.deep)}; reasoning effort: ${deepEff}.`
     : "Live callouts, spoken (push-to-talk) questions, quest briefings and translation.";
