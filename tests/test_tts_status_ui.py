@@ -7,7 +7,10 @@ reserved-width TTS chips, direct Settings section/field scrolling, sessionBarOrd
 on the click-through game overlay (#step + #tts) in both expanded and collapsed modes.
 Selected-model effort previews and status consume real App model projections, including
 verified Fast-low / Deep-medium requests, unavailable and unknown targets, tuning Off,
-and explicit overrides independent of the tuning switch. No model requests are made.
+and explicit overrides independent of the tuning switch. Character/learning/recall states,
+stream lifecycle, native details keyboard/navigation, and fixed footer geometry are checked
+at 2560px and compact widths. No model requests are made. Set GLIDE_CHARACTER_MEMORY_PROOF_DIR
+to retain screenshots of the real rendered details.
 """
 import functools
 import http.server

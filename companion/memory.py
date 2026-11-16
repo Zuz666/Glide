@@ -140,6 +140,7 @@ class Memory:
         self.learning = True               # reflection on (the app's Memory page switch; saved with the notes)
         self.last_reflect = 0.0
         self.version = 0                   # bumped on every change (the prompt block is rebuilt then)
+        self._recall_texts = None          # immutable eligible text snapshot, rebuilt only after relevant changes
         self.bond_path = os.path.join(os.path.dirname(path), "coach_bond.json") if path else None
         self._foreign = []                 # notes of kinds this engine doesn't know: written back untouched
         self._extra = {}                   # top-level keys this engine doesn't know: written back untouched
@@ -292,6 +293,7 @@ class Memory:
         """coach_memory.json: the notes ("rapport" ones as facts with "rapport": true, so older engines keep them),
         then the notes and keys this engine doesn't know, as they were."""
         self.version += 1
+        self._recall_texts = None
         if not self.path:
             return
         notes = [dict(n, kind="fact", rapport=True) if n["kind"] == "rapport" else n for n in self.notes]
@@ -396,6 +398,7 @@ class Memory:
                 self.bond["first_seen"] = 0.0
                 self.diary, self.zones, self.characters = [], set(), {}
                 self.chapters, self.eras, self.threads, self.convo = [], [], [], []
+                self._recall_texts = None
                 self.cleared_t = time.time()
                 self._save_bond()
             return gone
@@ -411,6 +414,18 @@ class Memory:
             self._save()
 
     # ---- reading ----------------------------------------------------------------------------------------------
+    def recall_texts(self):
+        """Eligible texts for cheap recall observation (same notes, moments and story as recall.items).
+
+        The immutable snapshot is shared until a relevant mutation; no history copies on each state-stream tick.
+        """
+        with self.lock:
+            if self._recall_texts is None:
+                texts = [n["text"] for n in self.notes if n["kind"] in ("rapport", "fact", "goal")]
+                texts.extend(x["text"] for rows in (self.diary, self.eras, self.chapters) for x in rows)
+                self._recall_texts = tuple(dict.fromkeys(t for text in texts if (t := " ".join(text.split()))))
+            return self._recall_texts
+
     def list(self):
         with self.lock:
             return [dict(n) for n in sorted(self.notes, key=lambda n: (KINDS.index(n["kind"]), -n["updated"]))]
@@ -493,6 +508,7 @@ class Memory:
             self.diary.append({"t": time.time() if now is None else now, "kind": kind,
                                "text": " ".join(str(text).split())[:200], "session": self.bond["sessions"]})
             del self.diary[:-MAX_DIARY]
+            self._recall_texts = None
             self._save_bond()
 
     def diary_since(self, t):
@@ -519,6 +535,7 @@ class Memory:
             self.diary.append({"t": time.time() if now is None else now, "kind": "zone", "zone": zone,
                                "text": "First time in %s together" % zone, "session": self.bond["sessions"]})
             del self.diary[:-MAX_DIARY]
+            self._recall_texts = None
             self._save_bond()
         return True
 
@@ -690,6 +707,7 @@ class Memory:
                 self.eras.append({"t0": old[0]["t0"], "t1": old[-1]["t1"], "text": " ".join(firsts)[:1200],
                                   "topics": list(dict.fromkeys(topics))[:24]})
                 del self.eras[:-MAX_ERAS]
+            self._recall_texts = None
             self._save_bond()
         return dict(row)
 

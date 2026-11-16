@@ -248,10 +248,23 @@ export interface Models { fast: string | null; deep: string | null; fast_name: s
   translation?: { language: string; available: boolean } }
 /** Completed responses: stale_estimates is a subset of estimated; cost_usd sums known amounts only. */
 export interface CostCoverage { reported: number; estimated: number; unknown: number; stale_estimates: number }
+/** Applied Character and memory state; observing this projection never starts embedding work. */
+export interface CharacterMemoryStatus {
+  character: { enabled: boolean; name: string };
+  learning: { enabled: boolean; available: boolean; reason: string };
+  recall: {
+    method: "words" | "meaning";
+    state: "waiting_character" | "words" | "unavailable" | "unchecked" | "preparing" | "partial" | "ready" | "empty" | "error";
+    source: string;
+    model: string;
+    detail: string;
+  };
+}
 export interface CoachStats { mode: string; calls: number; errors: number; in_tokens: number; out_tokens: number;
   tool_calls: number; cited: number; unsupported: number; uncached_in_tokens: number; cache_read_tokens: number;
   cache_write_tokens: number; cost_usd: number; cost_coverage?: CostCoverage; web_searches?: number;
-  thinking?: string | null; link_issue?: string | null; link_status?: "warn" | "error" | null }
+  thinking?: string | null; link_issue?: string | null; link_status?: "warn" | "error" | null;
+  character_memory?: CharacterMemoryStatus }
 export interface KbStatus { ok: boolean; reason?: string; guides?: number }
 /** The step brief: why the route does this step now (knowledge/api; GameState and the knowledge pack). */
 export interface StepWhy { n?: number; kind?: string; unavailable?: string; stale?: boolean; xp_now?: number;

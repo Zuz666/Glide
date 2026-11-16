@@ -83,6 +83,16 @@ class Embedder:
         self.queries = OrderedDict()      # key -> vector of a query (the newest QUERIES_KEPT, in memory only)
         self.down_until = 0.0             # a failing query path waits until then
         self.warm_ok = None               # the last warm-up: True (all embedded), False (failed), None (none yet)
+        # Observation is separate from warm_ok/backoff (which retain their existing scheduling semantics).
+        self._warm_result = None          # (configuration fingerprint, success, dimensions); real requests only
+        self._query_result = None
+        self._warming = {}
+        self._docs_revision = 0
+        self._coverage_texts = None
+        self._coverage_revision = -1
+        self._coverage_count = 0
+        self._coverage_dimension = None
+        self._coverage_incompatible = 0
         self._load()
 
     @classmethod
@@ -100,6 +110,105 @@ class Embedder:
             return None
         path = os.path.join(memory_dir, "coach_embeddings.json") if memory_dir else None
         return cls(source, model, cfg, path)
+
+    def _configuration(self):
+        """Local service identity and a safe blocker; never expose credentials or endpoint URLs."""
+        reason = ""
+        if self.source == "openai":
+            url, key_env = OPENAI_URL, "OPENAI_API_KEY"
+            key = os.environ.get(key_env, "").strip()
+            if not key:
+                reason = "The OpenAI embedding API key is missing."
+        elif self.source == "gemini":
+            url, key_env = GEMINI_URL, "GEMINI_API_KEY"
+            key = (os.environ.get(key_env, "") or os.environ.get("GOOGLE_API_KEY", "")).strip()
+            if not key:
+                reason = "The Gemini embedding API key is missing."
+        else:
+            ep = openai_compat.endpoints(self.cfg).get(self.source[3:])
+            url, key_env = (ep["base_url"], ep["key_env"]) if ep else ("", "")
+            key = os.environ.get(key_env, "").strip()
+            if ep is None:
+                reason = "The custom embedding endpoint is missing or has an invalid URL."
+            elif not self.model:
+                reason = "An embedding model is required for the custom endpoint."
+        identity = hashlib.sha256(json.dumps([self.source, self.model, url, key_env, key]).encode("utf-8")).digest()
+        return identity, reason
+
+    def status(self, texts):
+        """Observe eligible-memory coverage and independent request outcomes without doing any I/O.
+
+        `texts` is an immutable snapshot from Memory.recall_texts; coverage is counted only when it or docs change.
+        Cache coverage is not proof of current service access. Success is historical evidence, not a health probe.
+        """
+        identity, blocker = self._configuration()
+        with self.lock:
+            warm_result = self._warm_result if self._warm_result and self._warm_result[0] == identity else None
+            query_result = self._query_result if self._query_result and self._query_result[0] == identity else None
+            warm = warm_result[1] if warm_result else None
+            query = query_result[1] if query_result else None
+            dimension = query_result[2] if query_result and query else warm_result[2] if warm_result and warm else None
+            if texts is not self._coverage_texts or self._coverage_revision != self._docs_revision \
+                    or dimension != self._coverage_dimension:
+                self._coverage_texts = texts
+                self._coverage_revision = self._docs_revision
+                self._coverage_dimension = dimension
+                covered = incompatible = 0
+                for text in texts:
+                    vector = self.docs.get(self._key(text, "doc"))
+                    if vector is not None:
+                        if dimension is not None and len(vector) != dimension:
+                            incompatible += 1
+                        else:
+                            covered += 1
+                self._coverage_count, self._coverage_incompatible = covered, incompatible
+            covered, incompatible, total = self._coverage_count, self._coverage_incompatible, len(texts)
+            preparing = bool(self._warming.get(identity))
+            backoff = time.time() < self.down_until
+        failures = []
+        if warm is False:
+            failures.append("Memory preparation failed")
+        if query is False:
+            failures.append("Query embedding failed" + ("; query retry backoff is active" if backoff else ""))
+        elif backoff:
+            failures.append("Query requests are paused by retry backoff from an earlier operation")
+        if failures:
+            state, detail = "error", ". ".join(failures) + ". Word-based fallback remains available."
+            if preparing:
+                detail += " Memory preparation is in progress; previous failures remain until their own path recovers."
+            if blocker:
+                detail += " " + blocker
+        elif blocker:
+            state, detail = "unavailable", blocker + " Word-based fallback remains available."
+        elif preparing:
+            state, detail = "preparing", "Memory preparation is in progress. Word-based matching remains available."
+        elif not total:
+            state, detail = "empty", "No eligible memories to prepare. Empty preparation does not verify service access."
+        elif not covered and incompatible:
+            state, detail = "unavailable", "Cached memories are incompatible with observed embedding vectors. Word-based fallback remains available."
+        elif 0 < covered < total:
+            state, detail = "partial", "Only some eligible memories have cached embeddings. Word-based matching remains available."
+        elif covered == total and (warm is True or query is True):
+            state, detail = "ready", "Eligible memories have cached embeddings; meaning-based recall has observed service evidence."
+        elif warm is True or query is True:
+            state, detail = "unchecked", "Eligible memories have not been prepared for meaning-based recall."
+        else:
+            state, detail = "unchecked", "Waiting for the first successful embedding request with these settings."
+        cache = "Memory cache ready" if total and covered == total else "Prepared memories"
+        detail = "%s: %d/%d. %s" % (cache, covered, total, detail)
+        if incompatible:
+            detail += " %d cached texts have a different vector dimension from the current service evidence." % incompatible
+        if warm is True:
+            detail += " Preparation requests succeeded for this configuration."
+        if query is True:
+            detail += " A query request succeeded for this configuration; no matching memory is a normal result."
+        if query is None and warm is True:
+            detail += " The query path has not yet been checked."
+        if state == "ready":
+            detail += " Service availability can change."
+        source = self.source if self.source in DEFAULT_MODEL or (
+            self.source.startswith("ep:") and openai_compat.ENDPOINT_ID_RE.fullmatch(self.source[3:])) else "unknown"
+        return {"state": state, "source": source, "model": self.model, "detail": detail}
 
     # ---- the documents' cache (on disk) --------------------------------------------------------------------------
     def _key(self, text, role):
@@ -137,6 +246,7 @@ class Embedder:
         with self.lock:
             self.docs.clear()
             self.queries.clear()
+            self._docs_revision += 1
         if self.cache_path:
             try:
                 os.remove(self.cache_path)
@@ -169,11 +279,17 @@ class Embedder:
                 return v
             if time.time() < self.down_until:
                 return None
+        identity, _ = self._configuration()
         got = self._request([t], "query", QUERY_TIMEOUT_S)
         if not got:
-            self.down_until = time.time() + BACKOFF_S
+            with self.lock:
+                self.down_until = time.time() + BACKOFF_S
+                if self._configuration()[0] == identity:
+                    self._query_result = (identity, False, None)
             return None
         with self.lock:
+            if self._configuration()[0] == identity:
+                self._query_result = (identity, True, len(got[0]))
             self.queries[k] = got[0]
             while len(self.queries) > QUERIES_KEPT:
                 self.queries.popitem(last=False)
@@ -188,24 +304,47 @@ class Embedder:
             pruned = [k for k in self.docs if k not in keep]
             for k in pruned:               # forgotten or changed memories
                 del self.docs[k]
+            if pruned:
+                self._docs_revision += 1
             todo = [t for t in texts if self._key(t, "doc") not in self.docs]
             snapshot = dict(self.docs)
-        ok = True
-        for i in range(0, len(todo), BATCH):
-            chunk = todo[i:i + BATCH]
-            got = self._request(chunk, "doc", WARM_TIMEOUT_S)
-            if not got:
-                ok = False
-                break
+        identity, _ = self._configuration()
+        if todo:
             with self.lock:
-                for t, v in zip(chunk, got):
-                    self.docs[self._key(t, "doc")] = v
-                snapshot = dict(self.docs)
-            self._save(snapshot)
-        if pruned and not todo:
-            self._save(snapshot)
-        self.warm_ok = ok
-        return ok
+                self._warming[identity] = self._warming.get(identity, 0) + 1
+        ok = True
+        requested_identity = None
+        dimension = None
+        try:
+            for i in range(0, len(todo), BATCH):
+                chunk = todo[i:i + BATCH]
+                requested_identity, _ = self._configuration()
+                got = self._request(chunk, "doc", WARM_TIMEOUT_S)
+                if not got:
+                    ok = False
+                    break
+                dimension = len(got[0])
+                with self.lock:
+                    for t, v in zip(chunk, got):
+                        self.docs[self._key(t, "doc")] = v
+                    self._docs_revision += 1
+                    snapshot = dict(self.docs)
+                self._save(snapshot)
+            if pruned and not todo:
+                self._save(snapshot)
+            with self.lock:
+                self.warm_ok = ok
+                if requested_identity is not None and self._configuration()[0] == requested_identity:
+                    self._warm_result = (requested_identity, ok, dimension)
+            return ok
+        finally:
+            if todo:
+                with self.lock:
+                    remaining = self._warming[identity] - 1
+                    if remaining:
+                        self._warming[identity] = remaining
+                    else:
+                        del self._warming[identity]
 
     # ---- the services ---------------------------------------------------------------------------------------------
     def _texts_for(self, texts, role):

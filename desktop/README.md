@@ -140,6 +140,16 @@ On top of those, **custom endpoints** (Settings > AI models) add any OpenAI-comp
 - **Picking one:** the endpoint's models appear under Settings > AI models > Choose models. You can also click one in the endpoint's test list.
 - **Keys:** set credentials in Settings > Credentials; a key is optional for local servers. After adding or editing endpoints, click **Save endpoints** first: endpoint-to-keys links stay disabled until saved, so navigation cannot discard those edits and new endpoint credentials appear in the key list.
 
+## Character and memory status
+
+The status bar's **AI live** item keeps the AI operating mode above three compact indicators: **Character**, **Learning**, and **Recall**. Click it, or activate it with the keyboard, to see details and open **Settings > Coaching > Roleplay** or **Memory**. These links do not toggle features or make embedding requests.
+
+Character indicates the applied portrayal, not every saved character. Learning indicates automatic reflection on sessions; turning it off does not erase saved notes, stop their use, or prevent explicit requests to remember something. Recall distinguishes word-based matching from meaning-based matching and its preparation or failure state. Shared-memory recall needs an active Character.
+
+Selecting an embedding provider is not proof that it works. The indicator observes normal operations: no memories, an untested service, cached vectors, partial preparation, and failures remain distinguishable. Preparation and query failures recover independently; words remain available when semantic lookup fails. AI pauses and lost connections do not leave a false active indication. Unsaved settings drafts never change these live indicators.
+Vectors incompatible with the current service's observed dimensions do not count as usable cached memories. The details popover takes priority over page-level Escape shortcuts while open; closing it returns normal shortcut behavior.
+The gray waiting mark does not mean recall is disabled: after a restart, the memory cache can be ready while Glide is still waiting for a successful embedding request with the current settings. Tooltip sentences separate the selected method, cache preparation and service confirmation.
+
 ## Overlay
 
 The overlay is click-through. To change it, hold **Alt** with the mouse over it, in game too:

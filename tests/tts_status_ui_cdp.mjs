@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runDateMetadataChecks } from './date_time_metadata_ui.mjs';
+import { runCharacterMemoryChecks } from './character_memory_status_ui.mjs';
 
 const [edge, profile, baseUrl] = process.argv.slice(2);
 const child = spawn(edge, [
@@ -2000,6 +2001,7 @@ try {
     throw Error('Desktop preference changes must update embedded labels without leaking into standalone Coach');
   await send('Runtime.evaluate', { expression: 'window.__restoreDates(); window.__dateStandalone.remove();' });
   await runDateMetadataChecks(send);
+  await runCharacterMemoryChecks(send);
   for (const width of [2560, 1280]) {
     await send("Emulation.setDeviceMetricsOverride", { width, height: 1440, deviceScaleFactor: 1, mobile: false });
     const jumps = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `

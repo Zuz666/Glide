@@ -3,6 +3,7 @@
 import { taskBar } from "./activity.js";
 import { call, glide } from "./bridge.js";
 import { $, cap } from "./dom.js";
+import { showCharacterMemory, wireCharacterMemory } from "./character-memory-status.js";
 import { sessionCostText } from "./cost-presentation.js";
 import { renderReminders } from "./memory.js";
 import { speech } from "./narrator.js";
@@ -32,6 +33,8 @@ export function sessionBar(d: LiteState | null): void {
     $("sb-fast-ic").innerHTML = '<use href="#i-mic"/>';
     $("sb-deep-ic").innerHTML = '<use href="#i-keyboard"/>';
     $("sb-mode").className = "";
+    showMode("");
+    showCharacterMemory(null);
     live.refresh = null;
     $("sb-translation").hidden = true;
     live.game = null;
@@ -52,6 +55,7 @@ export function sessionBar(d: LiteState | null): void {
   showModels(d.models || {});
   showTranslation(d.models || {});
   showMode(String((d.coach || {}).mode || ""));
+  showCharacterMemory(d.coach || null);
 }
 
 function showUsage(minutes: number | undefined, c: Partial<CoachStats>): void {
@@ -168,8 +172,8 @@ function showTranslation(m: Partial<Models>): void {
 function showMode(mode: string): void {
   $("sb-mode").textContent = mode.startsWith("offline:") ? `Paused: ${mode.slice(8).trim()}` : mode === "offline" ? "Offline, rules only" : mode ? "AI live" : "–";
   const modeCls = mode.startsWith("offline:") ? "paused" : mode === "offline" ? "offline" : "";
-  $("sb-mode-wrap").className = `sb-item sb-mode ${modeCls}`;
-  $("sb-mode-wrap").title = `Coach: ${$("sb-mode").textContent}`;
+  $("sb-mode-wrap").classList.toggle("paused", modeCls === "paused");
+  $("sb-mode-wrap").classList.toggle("offline", modeCls === "offline");
   $("sb-mode-ic").innerHTML = `<use href="#i-${modeCls ? "wifi-off" : "bot"}"/>`;
   $("sb-models").classList.toggle("idle", mode === "offline" || mode.startsWith("offline:"));
 }
@@ -217,6 +221,7 @@ export function wireSessionBar(): void {
   };
   $("sb-translation").onclick = () => openSettingsTab("language");
   glide.on("tts:status", showTtsStatus);
+  wireCharacterMemory();
   refreshTtsStatus();
   wireSessionBarOrder();
 }
