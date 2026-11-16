@@ -275,15 +275,16 @@
     <div class="sb-item cost" data-sb="cost" data-prio="1" title="AI cost this session" aria-label="AI cost this session"><svg class="icon" aria-hidden="true"><use href="#i-coins"/></svg><b id="sb-cost" class="figure">–</b><span class="sb-l">AI cost</span></div>
     <div class="sb-item" data-sb="calls" data-prio="6" title="AI calls this session" aria-label="AI calls this session"><svg class="icon" aria-hidden="true"><use href="#i-message-square"/></svg><b id="sb-calls" class="figure">–</b><span class="sb-l">calls</span></div>
     <div class="sb-item" data-sb="cache" data-prio="7" title="Prompt cache hits: the share of input read from cache, at a tenth of the price" aria-label="Prompt cache hits"><svg class="icon" aria-hidden="true"><use href="#i-zap"/></svg><b id="sb-cache" class="figure">–</b><span class="sb-l">cached</span></div>
-    <div class="sb-task" data-sb="task" id="sb-task" hidden role="status" aria-live="polite">
-      <svg class="icon sb-task-ic" aria-hidden="true"><use href="#i-refresh-cw"/></svg>
-      <span class="sb-task-label" id="sb-task-label"></span>
-      <div class="sb-bar" id="sb-bar"><i id="sb-fill"></i></div>
-      <span class="sb-task-meta" id="sb-task-meta"></span>
-      <span class="sb-res" id="sb-res" title="CPU and memory used by Glide: the app, the coach and the jobs it runs"></span>
-    </div>
     <button class="sb-update" data-sb="update" id="sb-update" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span id="sb-update-l">Restart to update</span></button>
-    <div class="grow" data-sb="grow"></div>
+    <div class="grow sb-center" data-sb="grow">
+      <div class="sb-task" id="sb-task" hidden role="status" aria-live="polite">
+        <svg class="icon sb-task-ic" aria-hidden="true"><use href="#i-refresh-cw"/></svg>
+        <span class="sb-task-label" id="sb-task-label"></span>
+        <div class="sb-bar" id="sb-bar"><i id="sb-fill"></i></div>
+        <span class="sb-task-meta" id="sb-task-meta"></span>
+        <span class="sb-res" id="sb-res" title="CPU and memory used by Glide: the app, the coach and the jobs it runs"></span>
+      </div>
+    </div>
     <div class="sb-models-stack" data-sb="models" data-prio="4" id="sb-models">
       <button class="sb-stack-row" id="sb-fast-btn" type="button" title="Fast role: callouts, quest briefings and translation. Click to open Fast model settings">
         <svg class="icon" id="sb-fast-ic" aria-hidden="true"><use href="#i-mic"/></svg><b id="sb-fast">–</b><span class="sb-provider" id="sb-fast-provider" hidden></span><span class="sb-effort" id="sb-fast-eff" hidden></span><span class="sb-idle" id="sb-idle">not in use</span>

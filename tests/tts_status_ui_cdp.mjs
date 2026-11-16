@@ -360,6 +360,16 @@ try {
   const modelsIdx = migrated.indexOf('models');
   check(migrated[modelsIdx + 1] === 'stt' && migrated[modelsIdx + 2] === 'tts',
     'Expected stt and tts right after models on migration, got: ' + JSON.stringify(migrated));
+  const centeredOrder = ['cost', 'time', 'models', 'stt', 'tts', 'grow', 'translation',
+    'mute', 'mode', 'calls', 'cache', 'update', 'ptt'];
+  sbOrder.orderSessionBar(centeredOrder);
+  for (const oldOrder of [['task', ...centeredOrder], [...centeredOrder, 'task']]) {
+    sbOrder.orderSessionBar(oldOrder);
+    check([...bar.children].map(el => el.dataset.sb).join() === centeredOrder.join(),
+      'A saved draggable activity position changed the other left/right controls');
+    check(document.getElementById('sb-task').parentElement.dataset.sb === 'grow',
+      'Legacy activity order pulled progress out of its center region');
+  }
 
   // Direct Settings navigation + viewport scroll checks for all 4 session-bar targets.
   const inSetBodyView = (selector) => {
@@ -1513,6 +1523,11 @@ try {
       const bar = document.getElementById('sessionbar'), bounds = bar.getBoundingClientRect();
       const visible = el => getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;
       if (document.getElementById('sb-task').hidden) throw Error('Loading fixture did not show the real task bar');
+      const center = bar.querySelector('[data-sb="grow"]').getBoundingClientRect();
+      const activity = document.getElementById('sb-task'), activityBounds = activity.getBoundingClientRect();
+      if (Math.abs((activityBounds.left + activityBounds.right) / 2 - (center.left + center.right) / 2) > 1
+          || activityBounds.left < center.left - 1 || activityBounds.right > center.right + 1)
+        throw Error('Loading activity is not centered inside the free middle region at ${width}px');
       const idle = window.__idleStatusbar;
       const rightmost = idle.items.at(-1);
       if (rightmost && Math.abs(document.getElementById(rightmost.id).getBoundingClientRect().right - rightmost.right) > 1)
@@ -1525,6 +1540,7 @@ try {
         }
       }
       const items = [...bar.children].filter(el => el.dataset.sb !== 'grow' && visible(el));
+      items.push(activity);
       for (let i = 0; i < items.length; i++) {
         const r = items[i].getBoundingClientRect();
         if (r.left < bounds.left - 1 || r.right > bounds.right + 1)
