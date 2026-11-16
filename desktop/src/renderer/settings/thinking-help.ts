@@ -1,5 +1,5 @@
 // Shared by catalogue picks and manual ids; explain policy without implying support for every provider.
-export const AUTO_THINKING_HELP = `Auto follows <button type="button" class="reset" data-thinking-settings>Automatic thinking tuning</button> for supported direct Claude/Gemini models and supported OpenCode Claude models via native Messages; otherwise it leaves reasoning to the provider. Explicit levels override tuning.`;
+export const AUTO_THINKING_HELP = `Auto follows <button type="button" class="reset" data-thinking-settings>Automatic thinking tuning</button> for supported direct Claude/Gemini models and supported OpenCode Claude models via native Messages; otherwise it leaves reasoning to the provider. Explicit levels bypass the entire tuning policy, not just its effort setting.`;
 
 export const THINKING_HELP = `<div id="thinking-policy-help" class="thinking-help-popup" popover="auto" role="tooltip">
   <b>Lightweight automatic reasoning</b>
@@ -16,7 +16,8 @@ export const THINKING_HELP = `<div id="thinking-policy-help" class="thinking-hel
     <tr><td>Other Gemini 2.x / newer Gemini</td><td>None / minimal reasoning</td><td>Provider default</td></tr>
     <tr><td>OpenAI-compatible endpoints / OpenRouter</td><td colspan="2">Unaffected by this switch</td></tr>
   </tbody></table>
-  <p>Off: Auto sends no automatic thinking override. Explicit effort always takes priority and does not fall back. Rejected automatic options can fall back to remembered provider defaults for that model and role; the selected-model preview reflects that fallback.</p>
+  <p>Off: Auto sends no automatic thinking override. Explicit effort bypasses the entire automatic policy, including thinking shaping and remembered fallback, and does not fall back after refusal. It leaves native thinking defaults in place: effort is not a universal thinking on/off switch. Haiku 5.5 Fast Auto requests low with thinking disabled; manual low leaves native adaptive thinking. On default-off Claude 4.x, manual high does not enable thinking.</p>
+  <p>OpenCode explicit effort keeps Output Budget unchanged; other providers retain their existing empty-answer retry policy. Higher effort can consume the budget before a visible answer; it is not a spending cap. Rejected automatic options can fall back to remembered provider defaults for that model and role; the selected-model preview reflects that separate automatic fallback.</p>
 </div>`;
 
 /** Native popover for Escape/outside click; hover and keyboard focus expose the same table. */

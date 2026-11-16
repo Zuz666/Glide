@@ -228,13 +228,8 @@ def from_openai(data, flavor="openrouter"):
         if c.get("extra_content") and flavor != "opencode":
             block["extra_content"] = c["extra_content"]           # Gemini thought signature: send it back
         content.append(block)
-    if any(b["type"] == "tool_use" for b in content):
-        if flavor == "opencode":
-            meta = {field: msg[field] for field in ("reasoning_content", "reasoning_details") if field in msg}
-            if meta:
-                content.append({"type": opencode.META_BLOCK, **meta})
-        elif msg.get("reasoning_details"):
-            content.append({"type": META_BLOCK, "reasoning_details": msg["reasoning_details"]})
+    if flavor != "opencode" and any(b["type"] == "tool_use" for b in content) and msg.get("reasoning_details"):
+        content.append({"type": META_BLOCK, "reasoning_details": msg["reasoning_details"]})
     finish = (choices[0].get("finish_reason") if choices else None) or ""
     stop = {"tool_calls": "tool_use", "length": "max_tokens", "stop": "end_turn"}.get(finish, "end_turn")
     if any(b["type"] == "tool_use" for b in content):

@@ -135,6 +135,34 @@ try:
     assert a.coach.cfg["fast_model"] == default_model and a.coach.cfg["fast_reasoning_effort"] == "auto"
     assert glideconfig.load(tmp)["llm"]["fast_model"] == default_model
 
+    # OpenCode effort is validated before both live Save and save-only/restart persistence.
+    gateway = "opencode:claude-haiku-5-5"
+    record = {"id": gateway, "api": {"messages": {}},
+              "reasoning": {"supported": True, "effort": ["low", "medium", "high"]}}
+    a_gateway = fake_app(sim=False)
+    a_gateway.coach.cfg.update(fast_model=gateway, fast_reasoning_effort="auto")
+    a_gateway.catalog = types.SimpleNamespace(get=lambda model: record if model == gateway else None,
+                                             raw_get=lambda model: record if model == gateway else None)
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": dict(a_gateway.coach.cfg)}}, fh)
+    gateway_before = open(p, encoding="utf-8").read()
+    for live in (False, True):
+        request = {"save": {"companion": {"llm": {"fast_reasoning_effort": "max"}, "ptt": {"key": "F10"}}}}
+        if live:
+            request["fast_reasoning_effort"] = "max"
+        try:
+            glide_app.App.on_settings(a_gateway, request)
+            raise AssertionError("saved unsupported OpenCode effort before restart")
+        except ValueError as exc:
+            assert "max" in str(exc)
+        assert open(p, encoding="utf-8").read() == gateway_before
+        assert a_gateway.coach.cfg["fast_reasoning_effort"] == "auto"
+    glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"fast_reasoning_effort": "high"}}}})
+    assert glideconfig.load(tmp)["llm"]["fast_reasoning_effort"] == "high"
+    assert a_gateway.coach.cfg["fast_reasoning_effort"] == "auto"
+    glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"fast_reasoning_effort": None}}}})
+    assert "fast_reasoning_effort" not in glideconfig.read(tmp)[0]["companion"]["llm"]
+
     # A failed combined write leaves the running selection untouched too.
     a = fake_app(sim=False)
     running_before = dict(a.coach.cfg)

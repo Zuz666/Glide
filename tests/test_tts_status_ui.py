@@ -129,9 +129,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
         if self.path == "/resizes":
             return self.send_data(resize_heights)
+        if self.path == "/reasoning-settings":
+            return self.send_data({"saved": glideconfig.read(tmp)[0]["companion"]["llm"],
+                                   "running": _settings_app.coach.cfg})
         if self.path.startswith("/reasoning-fixture?"):
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
             fixture = _reasoning_fixtures.get(query.get("scenario", ["default"])[0], {})
+            if query.get("scenario", ["default"])[0] == "unavailable":
+                return self.send_data({"error": "catalog refresh failed"}, 503)
             model = query.get("reasoning_model", [""])[0]
             if model not in fixture:
                 return self.send_data({"error": "unknown reasoning fixture"}, 404)
@@ -139,6 +144,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        if self.path == "/reasoning-save-fixture":
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if request.get("seed"):
+                legacy = {"fast_model": "opencode:claude-haiku-5-5", "fast_reasoning_effort": "max",
+                          "deep_model": "opencode:claude-opus-4-5", "deep_reasoning_effort": "max"}
+                _saved_reasoning_runtime.update(_settings_app.coach.cfg)
+                glideconfig.patch(("companion", "llm"), legacy, tmp)
+                _settings_app.coach.cfg.update(legacy)
+            if "low" in request:
+                _native_catalog["opencode:claude-haiku-5-5"]["reasoning"]["effort"] = (
+                    ["low"] if request["low"] else []) + ["medium", "high", "xhigh", "max"]
+            if request.get("restore"):
+                _settings_app.coach.cfg.clear()
+                _settings_app.coach.cfg.update(_saved_reasoning_runtime)
+            return self.send_data({"ok": True})
         if self.path != "/ipc":
             return self.send_data({"error": "unknown route"}, 404)
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -146,7 +166,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if channel == "config:get":
             return self.send_data(glideconfig.read(tmp)[0])
         if channel == "config:set":
-            glideconfig.patch((), args[0], tmp)
+            tunable = args[1] if len(args) > 1 and isinstance(args[1], dict) else {}
+            try:
+                companion_app.App.on_settings(_settings_app, {"save": args[0], **tunable})
+            except ValueError as exc:
+                return self.send_data({"error": str(exc)}, 400)
             return self.send_data(glideconfig.read(tmp)[0])
         if channel == "app:settings:get":
             return self.send_data(app_settings)
@@ -296,11 +320,27 @@ assert companion_app.App._model_status(_stub_app)["automatic_reasoning"] == {}
 _preview_cfg = {"tune_thinking": True}
 _preview_gemini = providers.OpenAICompatProvider("gemini", _preview_cfg, "")
 _preview_opencode = providers.OpenCodeProvider(_preview_cfg, "")
+_native_catalog = {
+    "opencode:" + model: {"id": "opencode:" + model, "reasoning": {"supported": True, "effort": levels},
+                         "api": {api: {}}}
+    for model, api, levels in (
+        ("claude-haiku-5-5", "messages", ["low", "medium", "high", "xhigh", "max"]),
+        ("claude-opus-4-6", "messages", ["low", "medium", "high", "max"]),
+        ("claude-opus-4-5", "messages", ["low", "medium", "high"]),
+        ("claude-haiku-4-5", "messages", []),
+        ("gpt-5.5-pro", "responses", ["medium", "high", "xhigh"]),
+        ("gemini-3.8-flash", "generate-content", ["low", "medium", "high"]),
+        ("gemini-3.6-flash", "generate-content", ["minimal", "low", "medium", "high"]),
+        ("deepseek-v4.1-flash", "chat-completions", ["low", "high", "max"]),
+        ("mistral-large-4", "chat-completions", ["none", "high"]),
+        ("qwen3.8-max", "chat-completions", ["low", "medium", "xhigh"]),
+    )
+}
 _preview_app = types.SimpleNamespace(
     catalog=types.SimpleNamespace(raw_get=lambda model: {
         "id": model, "capabilities": {"effort": {"supported": True,
             "low": {"supported": True}, "medium": {"supported": True}, "high": {"supported": True}}},
-    } if model == "claude-sonnet-5-5" else None),
+    } if model == "claude-sonnet-5-5" else _native_catalog.get(model)),
     coach=types.SimpleNamespace(
         cfg=_preview_cfg,
         llm=types.SimpleNamespace(provider_for=lambda model: (
@@ -310,8 +350,7 @@ _preview_app = types.SimpleNamespace(
 )
 _preview_models = (
     "claude-sonnet-5-5", "gemini:gemini-3-flash",
-    "opencode:claude-haiku-5-5", "opencode:claude-haiku-4-5",
-    "opencode:unverified-model",
+    *_native_catalog, "opencode:unverified-model",
 )
 _reasoning_fixtures = {"default": {
     model: companion_app.App.on_models(_preview_app, reasoning_model=model)
@@ -320,7 +359,7 @@ _reasoning_fixtures = {"default": {
 _haiku_preview = _reasoning_fixtures["default"]["opencode:claude-haiku-5-5"]
 assert _haiku_preview["automatic"]["fast"] == {"effort": "low", "thinking": "disabled"}, _haiku_preview
 assert _haiku_preview["automatic"]["deep"]["effort"] == "medium", _haiku_preview
-assert not _haiku_preview["reasoning"]["levels"], _haiku_preview
+assert _haiku_preview["reasoning"]["levels"] == ["low", "medium", "high", "xhigh", "max"], _haiku_preview
 assert not _reasoning_fixtures["default"]["opencode:unverified-model"]["reasoning"]["levels"]
 _preview_opencode.effort_ok["opencode:claude-haiku-5-5", False] = {}
 _reasoning_fixtures["fallback"] = {
@@ -330,6 +369,18 @@ _reasoning_fixtures["fallback"] = {
 _fallback_preview = _reasoning_fixtures["fallback"]["opencode:claude-haiku-5-5"]["automatic"]
 assert not _fallback_preview["fast"].get("effort") and not _fallback_preview["fast"].get("thinking"), _fallback_preview
 assert _fallback_preview["deep"]["effort"] == "medium", _fallback_preview
+for _scenario, _entry in (
+    ("metadata_missing", {"id": "opencode:claude-haiku-5-5", "api": {"messages": {}}}),
+    ("route_conflict", {**_native_catalog["opencode:claude-haiku-5-5"], "api": {"responses": {}}}),
+    ("removed", {**_native_catalog["opencode:claude-haiku-5-5"],
+                 "reasoning": {"supported": True, "effort": ["low", "medium", "high"]}}),
+    ("stale", {**_native_catalog["opencode:claude-haiku-5-5"], "pricing_stale": True}),
+):
+    _preview_app.catalog.raw_get = lambda model, entry=_entry: entry if model == entry["id"] else _native_catalog.get(model)
+    _reasoning_fixtures[_scenario] = {
+        "opencode:claude-haiku-5-5": companion_app.App.on_models(
+            _preview_app, reasoning_model="opencode:claude-haiku-5-5"),
+    }
 
 # Game-link check boundary: shared between Status (/health) and overlay state.coach.link_issue.
 def _link_app(*, sim=False, frames=0, last_frame_t=0.0, strip_other=None, decoded=10, attempts=10):
@@ -383,6 +434,13 @@ try:
             },
         },
     }, tmp)
+    companion_app.ROOT = tmp
+    _settings_app = types.SimpleNamespace(
+        args=types.SimpleNamespace(sim=True),
+        coach=types.SimpleNamespace(cfg=glideconfig.load(tmp)["llm"], announce_models=lambda _: None),
+        catalog=types.SimpleNamespace(get=_native_catalog.get, raw_get=_native_catalog.get),
+    )
+    _saved_reasoning_runtime = {}
     thread.start()
     result = subprocess.run(
         [

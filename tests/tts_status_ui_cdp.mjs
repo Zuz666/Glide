@@ -262,6 +262,12 @@ try {
   check(fastEff.textContent === 'auto→low' && fastBtn.title.includes('thinking: disabled')
     && deepEff.textContent === 'med' && getComputedStyle(fastEff).color !== getComputedStyle(deepEff).color,
     'OpenCode automatic low/thinking-disabled must be visible without changing explicit Deep effort');
+  sb.sessionBar({ models: { ...tuningModels, fast: 'opencode:claude-haiku-5-5',
+    fast_name: 'Claude Haiku 5.5', fast_reasoning: 'low', automatic_reasoning: {} } });
+  check(fastEff.textContent === 'low' && fastEff.dataset.auto === '0'
+    && getComputedStyle(fastEff).color === getComputedStyle(deepEff).color
+    && fastBtn.title.includes('explicit low effort') && !fastBtn.title.includes('thinking: disabled'),
+    'Manual Haiku low must be gold and explicit, not the green Auto-low/thinking-disabled request');
   sb.sessionBar({ models: { ...tuningModels, deep: 'claude-sonnet-5-5', deep_name: 'Claude Sonnet',
     deep_reasoning: 'auto', automatic_reasoning: {
       fast: { effort: 'minimal' }, deep: { effort: 'medium', thinking: 'adaptive' },
@@ -427,10 +433,17 @@ try {
     page.openSettingsTab('models');
     await page.renderSettings();
     live.engineUrl = 'http://reasoning.fixture'; live.engineState = 'running';
-    let scenario = 'default';
-    window.fetch = (url, ...args) => String(url).startsWith('http://reasoning.fixture/models?')
-      ? before.fetch('/reasoning-fixture?' + new URL(url).searchParams + '&scenario=' + scenario, ...args)
-      : before.fetch(url, ...args);
+    let scenario = 'default', delayModel = '', releaseLookup;
+    window.fetch = (url, ...args) => {
+      if (!String(url).startsWith('http://reasoning.fixture/models?')) return before.fetch(url, ...args);
+      const query = new URL(url).searchParams;
+      const response = before.fetch('/reasoning-fixture?' + query + '&scenario=' + scenario, ...args);
+      if (query.get('reasoning_model') === delayModel) {
+        delayModel = '';
+        return new Promise(resolve => { releaseLookup = async () => resolve(await response); });
+      }
+      return response;
+    };
     await bindModelReasoning(document.getElementById('set-body'), new Set());
     const summary = document.querySelector('[data-thinking-selection]');
     check(summary.textContent.includes(fastModel + ': low effort requested; thinking: ' + (openCode ? 'disabled' : 'between_tools'))
@@ -451,34 +464,74 @@ try {
       'Turning tuning off must remove the positive highlight from both roles');
     const effort = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');
     if (openCode) {
-      check(effort.disabled && [...effort.options].every(option => option.value === 'auto'),
-        'OpenCode automatic tuning must not broaden the existing Auto-only explicit choices');
-      toggle.click();
+      check(!effort.disabled && [...effort.options].map(option => option.value).join() === 'auto,low,medium,high,xhigh,max',
+        'OpenCode Haiku must expose its full native effort ladder, not Auto-only or a generic subset');
+      const note = effort.closest('.field').querySelector('.lab small');
+      check(note.textContent.includes('Output Budget stays unchanged') && note.textContent.includes('before a visible answer')
+        && note.title.includes('adaptive'),
+        'Native effort help must explain the unchanged budget and Haiku manual-thinking caveat');
     } else {
       check([...effort.options].some(option => option.value === 'high' && !option.disabled),
         'The direct Claude backend must continue to advertise high explicit effort');
-      effort.value = 'high'; effort.dispatchEvent(new Event('change', { bubbles: true }));
-      check(automaticRow.textContent.includes('high effort (explicit; switch has no effect)')
-        && deepRow.textContent.includes('provider default (tuning Off)'),
-        'An explicit effort must visibly override the automatic tuning switch for its own role only');
-      toggle.click();
-      check(automaticRow.textContent.includes('high effort (explicit; switch has no effect)')
-        && getComputedStyle(automaticRow).color === neutralColor,
-        'Explicit effort must stay explicit and neutral even while automatic tuning is On');
-      effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
-      check(getComputedStyle(automaticRow).color !== neutralColor,
-        'Returning to Auto must restore the highlight for the known automatic policy');
     }
+    effort.value = openCode ? 'low' : 'high'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+    const manual = openCode ? 'low' : 'high';
+    check(automaticRow.textContent.includes(manual + ' effort (explicit; switch has no effect)')
+      && deepRow.textContent.includes('provider default (tuning Off)'),
+      'An explicit effort must visibly bypass tuning for its own role only');
+    toggle.click();
+    check(automaticRow.textContent.includes(manual + ' effort (explicit; switch has no effect)')
+      && getComputedStyle(automaticRow).color === neutralColor
+      && (!openCode || deepRow.textContent.includes('medium effort requested')),
+      'Explicit Fast must remain independent from automatic Deep when tuning is On');
+    effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+    check(getComputedStyle(automaticRow).color !== neutralColor,
+      'Returning to Auto must restore the highlight for the known automatic policy');
     if (openCode) {
       const modelInput = document.querySelector('[data-key="companion.llm.deep_model"] input');
       const deepEffort = document.querySelector('[data-key="companion.llm.deep_reasoning_effort"] select');
+      deepEffort.value = 'max'; deepEffort.dispatchEvent(new Event('change', { bubbles: true }));
+      check(deepRow.textContent.includes('max effort (explicit; switch has no effect)')
+        && automaticRow.textContent.includes('low effort requested; thinking: disabled'),
+        'Manual Deep effort must leave the independent Fast automatic preview intact');
       for (const model of ['opencode:unverified-model', 'opencode:claude-haiku-4-5']) {
         modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
         await until(() => deepRow.textContent.includes(model + ': provider default (no automatic override)'),
           'Unsupported or unchanged OpenCode model must retain provider-default Auto: ' + model);
         check(getComputedStyle(deepRow).color === neutralColor && deepEffort.value === 'auto',
           'An OpenCode model with no automatic controls must not keep a stale highlight or explicit effort');
+        check(deepEffort.disabled && deepEffort.closest('.field').querySelector('.lab small').textContent.includes(
+          model.endsWith('unverified-model') ? 'metadata is unavailable' : 'no effort levels'),
+          'Unavailable metadata and known no-effort support need distinct visible explanations');
       }
+      const deepNote = deepEffort.closest('.field').querySelector('.lab small');
+      for (const [model, levels, explanation] of [
+        ['opencode:claude-opus-4-6', 'auto,low,medium,high,max', 'native effort'],
+        ['opencode:claude-opus-4-5', 'auto,low,medium,high', 'native effort'],
+        ['opencode:gpt-5.5-pro', 'auto,medium,high,xhigh', 'native effort'],
+        ['opencode:gemini-3.8-flash', 'auto,low,medium,high', 'native effort'],
+        ['opencode:gemini-3.6-flash', 'auto,minimal,low,medium,high', 'native effort'],
+        ['opencode:deepseek-v4.1-flash', 'auto,low,high,max', 'native effort'],
+        ['opencode:mistral-large-4', 'auto', 'conflict'],
+        ['opencode:qwen3.8-max', 'auto', 'not verified'],
+      ]) {
+        modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await until(() => deepRow.textContent.includes(model + ':')
+          && !deepRow.textContent.includes('automatic level unavailable'));
+        check([...deepEffort.options].map(option => option.value).join() === levels
+          && deepNote.textContent.includes(explanation),
+          'Choices and explanation must follow the exact OpenCode model record: ' + model);
+      }
+      delayModel = deepModel;
+      modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => !!releaseLookup, 'Expected delayed Haiku capability lookup');
+      modelInput.value = 'opencode:gpt-5.5-pro'; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => [...deepEffort.options].map(option => option.value).join() === 'auto,medium,high,xhigh');
+      await releaseLookup();
+      await new Promise(resolve => setTimeout(resolve, 30));
+      check([...deepEffort.options].map(option => option.value).join() === 'auto,medium,high,xhigh'
+        && !deepRow.textContent.includes('medium effort requested'),
+        'A stale Haiku response must not replace a newer model ladder or automatic policy');
       modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
       await until(() => deepRow.textContent.includes(deepModel + ': medium effort requested'));
       scenario = 'fallback';
@@ -489,6 +542,36 @@ try {
         && deepRow.textContent.includes('medium effort requested'),
         'An accepted fallback is role-specific and must not disable Deep tuning');
       scenario = 'default';
+      effort.dispatchEvent(new Event('model-capabilities-refresh'));
+      await until(() => automaticRow.textContent.includes('low effort requested; thinking: disabled'));
+      effort.value = 'max'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+      for (const [nextScenario, explanation] of [
+        ['stale', 'Catalog is stale'],
+        ['metadata_missing', 'metadata is unavailable'],
+        ['route_conflict', 'metadata is missing or conflicts'],
+        ['removed', 'native effort'],
+      ]) {
+        scenario = nextScenario;
+        effort.dispatchEvent(new Event('model-capabilities-refresh'));
+        const note = effort.closest('.field').querySelector('.lab small');
+        await until(() => note.textContent.includes(explanation),
+          'Metadata state must be visible: ' + nextScenario);
+        check(effort.value === 'max' && edits.get('companion.llm.fast_reasoning_effort') === 'max',
+          'Metadata refresh must never silently rewrite an explicit selection');
+        if (nextScenario !== 'stale') check(effort.selectedOptions[0].disabled
+          && effort.selectedOptions[0].textContent.includes('unavailable'),
+          'A removed or unverifiable explicit level must remain visibly unavailable');
+      }
+      scenario = 'default';
+      effort.dispatchEvent(new Event('model-capabilities-refresh'));
+      await until(() => !effort.selectedOptions[0].disabled);
+      scenario = 'unavailable';
+      effort.dispatchEvent(new Event('model-capabilities-refresh'));
+      await until(() => effort.closest('.field').querySelector('.lab small').textContent.includes('Keeping the last known choices'));
+      check(effort.value === 'max' && [...effort.options].map(option => option.value).join() === 'auto,low,medium,high,xhigh,max',
+        'A failed refresh must retain the last successful ladder and explicit selection');
+      scenario = 'default';
+      effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
       effort.dispatchEvent(new Event('model-capabilities-refresh'));
       await until(() => automaticRow.textContent.includes('low effort requested; thinking: disabled'));
     }
@@ -506,6 +589,80 @@ try {
   };
   (await window.__reasoningProof())();
   (await window.__reasoningProof(true))();
+  {
+    const { live } = await import('/renderer/state.js');
+    const { edits } = await import('/renderer/settings/fields.js');
+    const original = { url: live.engineUrl, state: live.engineState, fetch: window.fetch.bind(window),
+      invoke: window.glide.invoke, edits: new Map(edits), config: await window.glide.invoke('config:get') };
+    let saves = 0;
+    window.fetch = (url, ...args) => String(url).startsWith('http://reasoning.fixture/models?')
+      ? original.fetch('/reasoning-fixture?' + new URL(url).searchParams, ...args) : original.fetch(url, ...args);
+    window.glide.invoke = async (channel, ...args) => {
+      try { return await original.invoke(channel, ...args); }
+      finally { if (channel === 'config:set') saves++; }
+    };
+    live.engineUrl = 'http://reasoning.fixture'; live.engineState = 'running';
+    // Simulate a legacy saved selection whose catalog no longer supports its level.
+    await original.fetch('/reasoning-save-fixture', {method: 'POST', body: JSON.stringify({seed: true})});
+    edits.clear();
+    page.openSettingsTab('models'); await page.renderSettings();
+    const field = role => document.querySelector('[data-key="companion.llm.' + role + '_reasoning_effort"] select');
+    check(field('deep').value === 'max' && field('deep').selectedOptions[0].disabled
+      && field('deep').selectedOptions[0].textContent.includes('unavailable'),
+      'An invalid persisted effort must stay visible, never silently become Auto');
+    document.querySelector('[data-key="companion.llm.deep_model"] input').dispatchEvent(new Event('input', { bubbles: true }));
+    check(field('deep').value === 'max',
+      'An unchanged model-input event must not silently reset a persisted explicit effort');
+    const beforeRejected = await (await original.fetch('/reasoning-settings')).json();
+    field('fast').value = 'low'; field('fast').dispatchEvent(new Event('change', { bubbles: true }));
+    // The backend has refreshed since the UI lookup: reject the now-unsupported draft atomically.
+    await original.fetch('/reasoning-save-fixture', {method: 'POST', body: JSON.stringify({low: false})});
+    const configBeforeRejected = JSON.stringify(live.config);
+    document.getElementById('set-save').click();
+    await until(() => saves === 1);
+    const afterRejected = await (await original.fetch('/reasoning-settings')).json();
+    check(JSON.stringify(beforeRejected) === JSON.stringify(afterRejected)
+      && JSON.stringify(live.config) === configBeforeRejected
+      && edits.get('companion.llm.fast_reasoning_effort') === 'low'
+      && field('deep').value === 'max',
+      'A rejected combined save must leave persisted/running settings unchanged and retain drafts');
+    await original.fetch('/reasoning-save-fixture', {method: 'POST', body: JSON.stringify({low: true})});
+    field('deep').value = 'high'; field('deep').dispatchEvent(new Event('change', { bubbles: true }));
+    const beforeCombinedSave = field('deep');
+    document.getElementById('set-save').click();
+    await until(() => saves === 2 && !edits.has('companion.llm.fast_reasoning_effort'));
+    await until(() => field('deep') !== beforeCombinedSave && field('fast')?.value === 'low'
+      && field('deep')?.value === 'high' && [...field('deep').options].some(option => option.value === 'medium'),
+      'Combined save must finish rerendering its native capability choices');
+    const saved = await (await original.fetch('/reasoning-settings')).json();
+    check(saved.saved.fast_reasoning_effort === 'low' && saved.saved.deep_reasoning_effort === 'high'
+      && saved.running.fast_reasoning_effort === 'low' && saved.running.deep_reasoning_effort === 'high',
+      'Save must apply Fast and Deep efforts independently to disk and the running configuration');
+    field('deep').value = 'medium'; field('deep').dispatchEvent(new Event('change', { bubbles: true }));
+    const beforeDeepSave = field('deep');
+    document.getElementById('set-save').click();
+    await until(() => saves === 3 && !edits.has('companion.llm.deep_reasoning_effort'));
+    await until(() => field('deep') !== beforeDeepSave && field('fast')?.value === 'low'
+      && field('deep')?.value === 'medium' && [...field('deep').options].some(option => option.value === 'high'),
+      'Deep-only save must finish rerendering its native capability choices');
+    const deepOnly = await (await original.fetch('/reasoning-settings')).json();
+    check(deepOnly.saved.fast_reasoning_effort === 'low' && deepOnly.running.fast_reasoning_effort === 'low'
+      && deepOnly.saved.deep_reasoning_effort === 'medium' && deepOnly.running.deep_reasoning_effort === 'medium',
+      'Saving only Deep effort must not rewrite the Fast role');
+    field('fast').value = 'max'; field('fast').dispatchEvent(new Event('change', { bubbles: true }));
+    field('deep').value = 'high'; field('deep').dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('set-revert').click();
+    await until(() => field('fast')?.value === 'low' && field('deep')?.value === 'medium'
+      && !edits.has('companion.llm.fast_reasoning_effort') && !edits.has('companion.llm.deep_reasoning_effort'));
+    check(saves === 3, 'Revert must restore both saved role efforts without a write or inference request');
+    const restoredRoles = Object.fromEntries(['fast_model', 'deep_model', 'fast_reasoning_effort', 'deep_reasoning_effort']
+      .map(key => [key, original.config.companion?.llm?.[key] ?? null]));
+    live.config = await original.invoke('config:set', { companion: { llm: restoredRoles } });
+    await original.fetch('/reasoning-save-fixture', {method: 'POST', body: JSON.stringify({restore: true})});
+    live.engineUrl = original.url; live.engineState = original.state;
+    window.fetch = original.fetch; window.glide.invoke = original.invoke;
+    edits.clear(); for (const [key, value] of original.edits) edits.set(key, value);
+  }
   nav.show('coach');
   ttsEl.click();
   await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'voice'
@@ -1666,6 +1823,20 @@ try {
         const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
         const filename = openCode ? `reasoning-${kind}-${label}.png` : `reasoning-${label}.png`;
         fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, filename), Buffer.from(image.data, "base64"));
+        if (openCode) {
+          const manual = await send("Runtime.evaluate", { expression: `(() => {
+            const select = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');
+            select.value = 'low'; select.dispatchEvent(new Event('change', {bubbles: true}));
+            select.scrollIntoView({block: 'center', inline: 'nearest'});
+          })()` });
+          if (manual.exceptionDetails) throw Error(manual.exceptionDetails.exception?.description || manual.exceptionDetails.text);
+          const explicit = await send("Page.captureScreenshot", {format: "png", captureBeyondViewport: false});
+          fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, `reasoning-opencode-explicit-${label}.png`), Buffer.from(explicit.data, "base64"));
+          await send("Runtime.evaluate", { expression: `(() => {
+            const select = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');
+            select.value = 'auto'; select.dispatchEvent(new Event('change', {bubbles: true}));
+          })()` });
+        }
       }
       await send("Runtime.evaluate", { expression: `window.__restoreReasoningProof();` });
     }

@@ -8,11 +8,14 @@ import io
 import json
 import urllib.error
 import urllib.request
+import urllib.parse
 from typing import Protocol
 
 import openai_compat
 import openai_responses
 import opencode
+import opencode_reasoning
+import opencode_wire
 import reasoning
 import settings
 from log import log_once
@@ -263,8 +266,9 @@ class OpenCodeProvider(OpenAICompatProvider):
     def option_sets(self, model, opts, deep, effort="auto"):
         native = opencode.claude_model(model)
         if effort != "auto":
-            raise ValueError("OpenCode explicit effort selection is not enabled; use auto")
-        if native is None or not settings.Settings("llm", self.cfg).get("tune_thinking"):
+            return [opencode_reasoning.options(model, effort)]
+        # The caller snapshots tuning for the turn by supplying its policy, or {} when Off.
+        if native is None or not opts:
             return [{}]
         if (model, deep) in self.effort_ok:
             return [self.effort_ok[model, deep]]
@@ -272,7 +276,7 @@ class OpenCodeProvider(OpenAICompatProvider):
 
     def accepted(self, model, attempt, deep=False):
         # Off must not overwrite an accepted On policy with its intentionally plain request.
-        if opencode.claude_model(model) and settings.Settings("llm", self.cfg).get("tune_thinking"):
+        if opencode.claude_model(model):
             self.effort_ok[model, deep] = attempt
 
     def request(self, body, attempt, on_text):
@@ -282,37 +286,18 @@ class OpenCodeProvider(OpenAICompatProvider):
             raise ValueError("OpenCode requests require an opencode: model")
         headers = {"authorization": "Bearer " + self.key, "content-type": "application/json",
                    "user-agent": "glide-companion"}
-        native = opencode.claude_model(body["model"])
-        if native is not None:
-            private = (openai_compat.META_BLOCK, openai_responses.META_BLOCK, opencode.META_BLOCK,
-                       "thinking", "redacted_thinking")
-            messages = []
-            for message in body.get("messages") or ():
-                content = message.get("content")
-                if isinstance(content, list):
-                    blocks = []
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-                        if (message.get("role") == "assistant" and block.get("type") == opencode.META_BLOCK
-                                and block.get("model") == native and "anthropic_thinking" in block):
-                            blocks.append(block["anthropic_thinking"])
-                        elif block.get("type") not in private:
-                            blocks.append({k: v for k, v in block.items() if k != "extra_content"}
-                                          if block.get("type") == "tool_use" and "extra_content" in block else block)
-                    message = dict(message, content=blocks)
-                messages.append(message)
+        model = body["model"]
+        transport = "anthropic" if opencode.claude_model(model) else \
+            opencode_reasoning.transport(model) if attempt else "chat"
+        url = {"anthropic": opencode.MESSAGES_URL, "responses": opencode.RESPONSES_URL,
+               "gemini": opencode.GEMINI_URL + urllib.parse.quote(model.removeprefix(opencode.PREFIX), safe="")
+               + ":generateContent", "chat": opencode.CHAT_URL}[transport]
+        if transport == "anthropic":
             headers["anthropic-version"] = "2023-06-01"
-            return _json_request(opencode.MESSAGES_URL, {**body, **attempt, "model": native,
-                                                        "messages": messages}, headers), False
-        if attempt:
-            raise ValueError("OpenCode translated Chat reasoning controls are not established")
-        return _json_request(opencode.CHAT_URL, openai_compat.to_openai(body, "opencode"), headers), False
+        return _json_request(url, opencode_wire.encode(body, transport, attempt), headers), False
 
-    def parse(self, data):
-        if data.get("type") == "message":
-            content = [{"type": opencode.META_BLOCK, "model": data.get("model"), "anthropic_thinking": block}
-                       if block.get("type") in ("thinking", "redacted_thinking") else block
-                       for block in data.get("content") or ()]
-            return {**data, "content": content, "usage": opencode.normalize_usage(data.get("usage"))}
-        return openai_compat.from_openai(data, "opencode")
+    def parse(self, data, model=None):
+        transport = "anthropic" if data.get("type") == "message" else \
+            "responses" if data.get("object") == "response" else \
+            "gemini" if "candidates" in data or "promptFeedback" in data else "chat"
+        return opencode_wire.decode(data, model or "", transport)

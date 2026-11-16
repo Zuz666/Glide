@@ -667,6 +667,13 @@ class App:
             for mk in tuning.MODEL_KEYS:
                 if mk in patch_llm and patch_llm[mk] is not None:
                     tuning.validate_model_choice(patch_llm[mk], prospective_saved, catalog=self.catalog)
+            # Save-and-restart has no live changes, but must validate submitted gateway effort too.
+            for model_key, effort_key in zip(tuning.MODEL_KEYS, tuning.REASONING_KEYS):
+                for key in (model_key, effort_key):
+                    if key in patch_llm and patch_llm[key] is None:
+                        prospective_saved[key] = settings.default("llm." + key)
+                if effort_key in patch_llm and str(prospective_saved.get(model_key, "")).startswith("opencode:"):
+                    tuning.apply(prospective_saved, {effort_key: prospective_saved[effort_key]}, catalog=self.catalog)
             saved = glideconfig.patch((), patch, ROOT)  # the app's saves also land in sim
             saved_after = saved_llm(saved)
             self.coach.cfg.update(applied)
