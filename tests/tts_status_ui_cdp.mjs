@@ -152,6 +152,7 @@ try {
   check(fastEff && deepEff && !fastEff.hidden && !deepEff.hidden, 'Expected visible #sb-fast-eff and #sb-deep-eff badges');
   check(fastEff.textContent === 'auto' && fastEff.dataset.auto === '1', 'Expected default fast effort badge auto, got ' + fastEff.textContent);
   check(deepEff.textContent === 'auto' && deepEff.dataset.auto === '1', 'Expected default deep effort badge auto, got ' + deepEff.textContent);
+  const neutralAutoBadgeColor = getComputedStyle(fastEff).color;
   check(document.querySelector('#sb-fast-ic use')?.getAttribute('href') === '#i-mic', 'Expected #i-mic on Fast when voice_question defaults to fast');
   check(document.querySelector('#sb-deep-ic use')?.getAttribute('href') === '#i-keyboard', 'Expected #i-keyboard on Deep when voice_question defaults to fast');
   check(fastBtn.title.includes('Reasoning effort: auto') && fastBtn.title.includes('spoken (push-to-talk) questions'),
@@ -246,27 +247,47 @@ try {
     automatic_reasoning: { fast: { effort: 'low' } }, listen: 'whisper small',
   };
   sb.sessionBar({ models: tuningModels });
+  check(fastEff.textContent === 'auto→low'
+    && getComputedStyle(fastEff).color !== getComputedStyle(deepEff).color
+    && deepEff.textContent === 'med',
+    'Automatic tuning must show the requested low override distinctly from explicit medium');
   check(fastBtn.title.includes('low effort requested') && fastBtn.title.includes('gpt-6.1-terra')
     && fastBtn.title.includes('reasoning effort: medium'),
     'Fast tooltip must show its automatic request and identify the Deep model used for spoken questions');
   check(deepBtn.title.includes('Automatic thinking tuning: On')
     && deepBtn.title.includes('explicit medium effort') && !deepBtn.title.includes('low effort requested'),
     'Deep tooltip must explain why automatic tuning does not override its explicit effort');
+  sb.sessionBar({ models: { ...tuningModels, fast: 'opencode:claude-haiku-5-5',
+    fast_name: 'Claude Haiku 5.5', automatic_reasoning: { fast: { effort: 'low', thinking: 'disabled' } } } });
+  check(fastEff.textContent === 'auto→low' && fastBtn.title.includes('thinking: disabled')
+    && deepEff.textContent === 'med' && getComputedStyle(fastEff).color !== getComputedStyle(deepEff).color,
+    'OpenCode automatic low/thinking-disabled must be visible without changing explicit Deep effort');
   sb.sessionBar({ models: { ...tuningModels, deep: 'claude-sonnet-5-5', deep_name: 'Claude Sonnet',
     deep_reasoning: 'auto', automatic_reasoning: {
       fast: { effort: 'minimal' }, deep: { effort: 'medium', thinking: 'adaptive' },
     } } });
   check(deepBtn.title.includes('medium effort requested') && deepBtn.title.includes('thinking: adaptive'),
     'Deep Auto tooltip must use its own policy, not the Fast role policy');
+  check(fastEff.textContent === 'auto→min' && deepEff.textContent === 'auto→med',
+    'Automatic badges must follow their own Fast/Deep policy');
+  sb.sessionBar({ models: { ...tuningModels, automatic_reasoning: { fast: { thinking: 'disabled' } } } });
+  check(fastEff.textContent === 'auto→off' && fastBtn.title.includes('thinking: disabled'),
+    'A thinking-only override must not look like an unspecified provider default');
   sb.sessionBar({ models: { ...tuningModels, automatic_reasoning: { fast: { effort: null } } } });
   check(fastBtn.title.includes('provider default') && !fastBtn.title.includes('low effort requested'),
     'A learned empty override must clear the previously displayed automatic level');
-  sb.sessionBar({ models: { ...tuningModels, tune_thinking: false, automatic_reasoning: {} } });
+  check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
+    'An accepted empty override must restore the neutral Auto badge');
+  sb.sessionBar({ models: { ...tuningModels, tune_thinking: false } });
   check(fastBtn.title.includes('Automatic thinking tuning: Off') && !fastBtn.title.includes('low effort requested'),
     'Turning tuning off must clear automatic controls from the live tooltip');
-  sb.sessionBar({ models: { ...tuningModels, tune_thinking: undefined, automatic_reasoning: undefined } });
+  check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
+    'Turning tuning off must clear the visible automatic override');
+  sb.sessionBar({ models: { ...tuningModels, tune_thinking: undefined } });
   check(fastBtn.title.includes('unavailable') && !fastBtn.title.includes('low effort requested'),
     'An older engine without automatic policy data must not inherit or invent a level');
+  check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
+    'An older engine must not retain the visible automatic override');
 
   // Stopping coach hides effort badges cleanly, and re-emitting state restores them.
   sb.sessionBar(null);
@@ -1599,7 +1620,9 @@ try {
         const sb = await import('/renderer/session-bar.js');
         sb.sessionBar({session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'},
           models: {fast: 'opencode:claude-haiku-5-5', fast_name: 'Claude Haiku 5.5', deep: 'ep:openai:gpt-6.1-terra',
-            deep_name: 'gpt-6.1-terra (OpenAI)', listen: 'Whisper small', translation: {language: 'ru', available: true}}});
+            deep_name: 'gpt-6.1-terra (OpenAI)', fast_reasoning: 'auto', deep_reasoning: 'medium', tune_thinking: true,
+            automatic_reasoning: {fast: {effort: 'low', thinking: 'disabled'}},
+            listen: 'Whisper small', translation: {language: 'ru', available: true}}});
         sb.showTtsStatus({provider: 'edge', phase: 'ready', voiceLabel: 'Edge · Svetlana',
           fullVoice: 'Edge-TTS (ru-RU-SvetlanaNeural)', readySlots: 6, totalSlots: 6, updatedAt: Date.now()});
       })()` });
