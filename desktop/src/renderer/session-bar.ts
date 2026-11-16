@@ -8,6 +8,7 @@ import { renderReminders } from "./memory.js";
 import { speech } from "./narrator.js";
 import { currentPage } from "./nav.js";
 import { liveGameChanged } from "./rxp-browser.js";
+import { getPath } from "./settings/fields.js";
 import { TTS_PROVIDER_KEY } from "./settings/key-links.js";
 import { openSettingsTab } from "./settings/page.js";
 import { refreshWalkMapPanel } from "./settings/walk-map.js";
@@ -23,6 +24,10 @@ export function sessionBar(d: LiteState | null): void {
     for (const id of ["sb-time", "sb-cost", "sb-calls", "sb-cache", "sb-fast", "sb-deep", "sb-listen", "sb-mode"]) $(id).textContent = "–";
     $("sb-fast-eff").hidden = true;
     $("sb-deep-eff").hidden = true;
+    $("sb-fast-provider").hidden = true;
+    $("sb-deep-provider").hidden = true;
+    $("sb-listen-model").textContent = "";
+    $("sb-listen-model").hidden = true;
     $("sb-fast-ic").innerHTML = '<use href="#i-mic"/>';
     $("sb-deep-ic").innerHTML = '<use href="#i-keyboard"/>';
     $("sb-mode").className = "";
@@ -89,14 +94,38 @@ function automaticThinkingHint(m: Partial<Models>, role: "fast" | "deep", effort
     : `${label} — provider default (no automatic override).`;
 }
 
+/** Show the serving route separately; a gateway's upstream model family is not its provider. */
+function showRoleModel(role: "fast" | "deep", name: string | null | undefined, id: string | null | undefined): void {
+  let label = name || id || "–", provider = "";
+  if (id?.startsWith("ep:")) {
+    const [, endpointId, ...parts] = id.split(":");
+    const nativeId = parts.join(":");
+    const endpoints = getPath(live.config, "companion.llm.endpoints");
+    const endpoint = Array.isArray(endpoints) ? endpoints.find((ep) => ep?.id?.toLowerCase() === endpointId) : null;
+    provider = endpoint?.label || endpointId;
+    // The catalog decorates endpoint ids as "<native id> (<configured label>)".
+    // It remains authoritative while the renderer's config is still loading.
+    if (name?.startsWith(`${nativeId} (`) && name.endsWith(")")) {
+      label = nativeId;
+      provider = name.slice(nativeId.length + 2, -1);
+    }
+  } else if (id) {
+    provider = id.startsWith("opencode:") ? "OpenCode" : id.startsWith("gemini:") ? "Gemini"
+      : id.includes("/") ? "OpenRouter" : "Anthropic";
+  }
+  $(`sb-${role}`).textContent = label;
+  const badge = $(`sb-${role}-provider`);
+  badge.textContent = provider;
+  badge.title = provider;
+  badge.hidden = !provider;
+}
+
 function showModels(m: Partial<Models>): void {
-  const fastLabel = m.fast_name || m.fast || "–";
-  const deepLabel = m.deep_name || m.deep || "–";
+  showRoleModel("fast", m.fast_name, m.fast);
+  showRoleModel("deep", m.deep_name, m.deep);
   const fastEff = (m.fast_reasoning || "auto").trim().toLowerCase() || "auto";
   const deepEff = (m.deep_reasoning || "auto").trim().toLowerCase() || "auto";
   const pttDeep = m.voice_question === "deep";
-  $("sb-fast").textContent = fastLabel;
-  $("sb-deep").textContent = deepLabel;
   $("sb-fast-ic").innerHTML = `<use href="#i-${pttDeep ? "zap" : "mic"}"/>`;
   $("sb-deep-ic").innerHTML = `<use href="#i-${pttDeep ? "mic" : "keyboard"}"/>`;
   setEffortBadge("sb-fast-eff", Boolean(m.fast || m.fast_name), fastEff);
@@ -110,9 +139,13 @@ function showModels(m: Partial<Models>): void {
   $("sb-fast-btn").title = `Fast role: ${fmtRoleModel(m.fast_name, m.fast)}\nReasoning effort: ${fastEff}\n${automaticThinkingHint(m, "fast", fastEff)}\n${fastUses}\nClick to open Fast model settings.`;
   $("sb-deep-btn").title = `Deep role: ${fmtRoleModel(m.deep_name, m.deep)}\nReasoning effort: ${deepEff}\n${automaticThinkingHint(m, "deep", deepEff)}\n${deepUses}\nClick to open Deep model settings.`;
   const listen = String(m.listen || ""), fb = m.listen_fallback ? String(m.listen_fallback) : "";
-  $("sb-listen").textContent = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
+  const listenLabel = listen === "off" ? "Push-to-talk off" : listen === "loading" ? "Loading…" : listen ? cap(listen) : "–";
+  const listenParts = /^(\S+)\s+(.+)$/.exec(listenLabel);
+  $("sb-listen").textContent = listenParts ? listenParts[1] : listenLabel;
+  $("sb-listen-model").textContent = listenParts ? listenParts[2] : "";
+  $("sb-listen-model").hidden = !listenParts;
   $("sb-listen-wrap").classList.toggle("off", listen === "off");
-  $("sb-listen-wrap").title = `Speech-to-text for push-to-talk: ${$("sb-listen").textContent}${fb ? `, falls back to ${cap(fb)}` : ""}\nClick to open Push-to-talk settings.`;
+  $("sb-listen-wrap").title = `Speech-to-text for push-to-talk: ${listenLabel}${fb ? `, falls back to ${cap(fb)}` : ""}\nClick to open Push-to-talk settings.`;
 }
 
 function showTranslation(m: Partial<Models>): void {
