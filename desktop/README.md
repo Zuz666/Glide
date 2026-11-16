@@ -142,7 +142,7 @@ On top of those, **custom endpoints** (Settings > AI models) add any OpenAI-comp
 
 ## Character and memory status
 
-The status bar's **AI live** item keeps the AI operating mode above three compact indicators: **Character**, **Learning**, and **Recall**. Click it, or activate it with the keyboard, to see details and open **Settings > Coaching > Roleplay** or **Memory**. These links do not toggle features or make embedding requests.
+The status bar's **AI live** item keeps the AI operating mode above three compact indicators: **Character**, **Learning**, and **Recall**. Click it, or activate it with the keyboard, to see compact **section: state** rows. Each section name is a link: **AI availability** opens Status, **Character** opens its Roleplay field, **Memory Learning** opens Memory, **Memory Recall** opens Remember by meaning, and **Source / model** opens Embedding model. Settings links highlight and focus the target field. These links do not toggle features or make embedding requests.
 
 Character indicates the applied portrayal, not every saved character. Learning indicates automatic reflection on sessions; turning it off does not erase saved notes, stop their use, or prevent explicit requests to remember something. Recall distinguishes word-based matching from meaning-based matching and its preparation or failure state. Shared-memory recall needs an active Character.
 

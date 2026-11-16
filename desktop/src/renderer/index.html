@@ -319,13 +319,12 @@
 <div id="character-memory-details" class="character-memory-popup" popover role="dialog" aria-labelledby="character-memory-title">
   <header><h3 id="character-memory-title">Character and Memory</h3><button class="btn" type="button" popovertarget="character-memory-details" popovertargetaction="hide" aria-label="Close Character and Memory" autofocus><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button></header>
   <dl>
-    <dt>AI availability</dt><dd id="cm-ai">Unknown — waiting for engine state.</dd>
-    <dt>Character</dt><dd id="cm-character">Unknown — waiting for engine state.</dd>
-    <dt>Memory Learning</dt><dd id="cm-learning">Unknown — waiting for engine state.</dd>
-    <dt>Memory Recall</dt><dd id="cm-recall">Unknown — waiting for engine state.</dd>
-    <dt id="cm-source-label" hidden>Recall source / model</dt><dd id="cm-source" hidden></dd>
+    <div class="cm-row"><dt><a id="character-memory-status" href="#page-status" title="Open Status"><svg class="icon" aria-hidden="true"><use href="#i-bot"/></svg>AI availability</a>:</dt> <dd id="cm-ai">Unknown — waiting for engine state.</dd></div>
+    <div class="cm-row"><dt><a id="character-memory-roleplay" href="#page-settings" title="Open Character settings"><svg class="icon" aria-hidden="true"><use href="#i-user"/></svg>Character</a>:</dt> <dd id="cm-character">Unknown — waiting for engine state.</dd></div>
+    <div class="cm-row"><dt><a id="character-memory-memory" href="#page-memory" title="Open Memory and learning controls"><svg class="icon" aria-hidden="true"><use href="#i-brain"/></svg>Memory Learning</a>:</dt> <dd id="cm-learning">Unknown — waiting for engine state.</dd></div>
+    <div class="cm-row"><dt><a id="character-memory-recall" href="#page-settings" title="Open Remember by meaning settings"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>Memory Recall</a>:</dt> <dd id="cm-recall">Unknown — waiting for engine state.</dd></div>
+    <div class="cm-row" id="cm-source-row" hidden><dt><a id="character-memory-source" href="#page-settings" title="Open Embedding model settings"><svg class="icon" aria-hidden="true"><use href="#i-cpu"/></svg>Source / model</a>:</dt> <dd id="cm-source"></dd></div>
   </dl>
-  <nav aria-label="Character and Memory pages"><button class="btn" id="character-memory-roleplay" type="button">Roleplay settings</button><button class="btn" id="character-memory-memory" type="button">Memory page</button></nav>
 </div>
 <section id="setup" class="setup" hidden aria-labelledby="su-title">
   <aside class="su-side">

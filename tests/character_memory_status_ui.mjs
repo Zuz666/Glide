@@ -79,25 +79,30 @@ export async function runCharacterMemoryChecks(send) {
       await send('Input.dispatchKeyEvent', {type: 'keyDown', key: name, code, windowsVirtualKeyCode: virtualKey, ...(name === 'Enter' ? {text: '\r'} : {})});
       await send('Input.dispatchKeyEvent', {type: 'keyUp', key: name, code, windowsVirtualKeyCode: virtualKey});
     };
-    await key('Tab', 'Tab', 9);
-    await evaluate(() => {
-      if (document.activeElement?.id !== 'character-memory-roleplay') throw Error('Details Tab order did not reach Roleplay settings');
-    });
-    await key('Enter', 'Enter', 13);
-    await evaluate(async () => {
-      const {until, nav} = window.__characterMemoryFixture;
-      await until(() => nav.currentPage() === 'settings' && document.activeElement?.closest('[data-key="companion.llm.persona"]'),
-        'Keyboard Roleplay navigation did not focus Character field');
-      if (document.getElementById('character-memory-details').matches(':popover-open')) throw Error('Roleplay navigation left details open');
-      document.getElementById('sb-mode-wrap').focus();
-    });
-    await key('Enter', 'Enter', 13);
-    await key('Tab', 'Tab', 9);
-    await key('Tab', 'Tab', 9);
-    await evaluate(() => {
-      if (document.activeElement?.id !== 'character-memory-memory') throw Error('Details Tab order did not reach Memory page');
-    });
-    await key('Enter', 'Enter', 13);
+    const destinations = [
+      ['character-memory-status', 1, 'status', '#page-status h1, #page-status h2'],
+      ['character-memory-roleplay', 2, 'settings', '[data-key="companion.llm.persona"]'],
+      ['character-memory-memory', 3, 'memory', '#page-memory h1, #page-memory h2'],
+      ['character-memory-recall', 4, 'settings', '[data-key="companion.llm.recall_meaning"]'],
+      ['character-memory-source', 5, 'settings', '[data-key="companion.llm.recall_embed_model"]'],
+    ];
+    for (const [id, tabs, page, focusTarget] of destinations) {
+      for (let i = 0; i < tabs; i++) await key('Tab', 'Tab', 9);
+      await evaluate(id => {
+        if (document.activeElement?.id !== id || document.activeElement.tagName !== 'A')
+          throw Error('Keyboard navigation did not reach status link ' + id);
+      }, id);
+      await key('Enter', 'Enter', 13);
+      await evaluate(async (page, focusTarget) => {
+        const {until, nav} = window.__characterMemoryFixture;
+        await until(() => nav.currentPage() === page && document.activeElement?.closest(focusTarget),
+          'Status link did not focus its destination: ' + focusTarget);
+        if (document.getElementById('character-memory-details').matches(':popover-open'))
+          throw Error('Status link left details open');
+        document.getElementById('sb-mode-wrap').focus();
+      }, page, focusTarget);
+      if (id !== destinations.at(-1)[0]) await key('Enter', 'Enter', 13);
+    }
     await evaluate(checkCharacterMemoryNavigation);
   } finally {
     await evaluate(async () => { await window.__characterMemoryFixture.restore(); delete window.__characterMemoryFixture; });
@@ -201,6 +206,10 @@ async function checkCharacterMemoryStates(width) {
     button.click();
     check(popup.matches(':popover-open') && popup.textContent.includes(value.character.name), 'Details lost the current Character name');
     if (labels[2]) check(popup.textContent.includes(labels[2]), 'Details omitted recall state ' + labels[2]);
+    const aiLabel = document.getElementById('character-memory-status').getClientRects()[0];
+    const aiValue = document.getElementById('cm-ai').getClientRects()[0];
+    check(Math.abs(aiLabel.top - aiValue.top) < 3, 'Compact AI label and state must share one line');
+    check(popup.scrollWidth <= popup.clientWidth + 1, 'Status details overflow horizontally');
     if (value.recall.method === 'meaning') check(popup.textContent.includes(value.recall.source) && popup.textContent.includes(value.recall.model), 'Details lost safe recall source/model');
     if (value.recall.detail) check(popup.textContent.includes(value.recall.detail), 'Independent operation details were hidden');
     const p = popup.getBoundingClientRect();
@@ -236,7 +245,7 @@ async function checkCharacterMemoryStates(width) {
   });
   const top = document.getElementById('sb-mode').getBoundingClientRect(), bottom = document.getElementById('sb-character-memory').getBoundingClientRect();
   check(bottom.top >= top.bottom && bottom.bottom <= bounds.bottom && Math.round(bounds.height) === 48, 'AI must fit two stable lines in the 48px footer');
-  sb.sessionBar(state({...base, recall: {...base.recall, state: 'error', detail: 'Preparation failed. Query failed; word-based fallback.'}}));
+  sb.sessionBar(state({...base, recall: {...base.recall, state: 'unchecked', detail: 'Memory cache ready: 96/96. Waiting for the first successful embedding request with these settings.'}}));
 }
 
 async function checkCharacterMemoryLifecycle() {
@@ -288,7 +297,6 @@ async function prepareCharacterMemoryNavigation() {
 
 async function checkCharacterMemoryNavigation() {
   const {check, calls, requests, fields, nav, navigationBefore: before} = window.__characterMemoryFixture;
-  check(nav.currentPage() === 'memory' && !document.getElementById('character-memory-details').matches(':popover-open'), 'Keyboard Memory link did not navigate/dismiss');
   const configAfter = await window.glide.invoke('config:get');
   check(JSON.stringify(before.config) === JSON.stringify(configAfter) && JSON.stringify([...fields.edits]) === before.edits, 'Details navigation mutated config or drafts');
   check(!calls.slice(before.calls).some(channel => channel.endsWith(':set') || /restart|:start|:test/.test(channel)), 'Details navigation sent a mutating IPC');
