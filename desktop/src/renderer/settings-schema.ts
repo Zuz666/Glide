@@ -94,8 +94,8 @@ export const SCHEMA: Tab[] = [
         { key: L + "timeout", label: "AI request timeout (s)", type: "number",
           help: "Timeout for each request to an AI model, including coach answers and message translation. Retries and multi-step answers can take longer overall. This is not the local coach's settings-save timeout." },
         { key: L + "busy_retry_s", label: "Retry a busy model after (s)", type: "number", step: 0.5 },
-        { key: L + "tune_thinking", label: "Automatic thinking tuning", type: "bool",
-          help: "With Auto effort, request the model-specific levels shown below. Explicit effort overrides this switch. Provider defaults are not fixed levels; automatic requests may fall back if rejected." },
+        { key: L + "tune_thinking", label: "Automatic effort tuning", type: "bool",
+          help: "With On + Auto, Fast requests low and Deep requests medium only when the selected serving route verifies that exact level. Otherwise, provider defaults apply. Explicit effort is unaffected." },
       ] },
       { title: "Prompt caching", fields: [
         { key: L + "prompt_cache", label: "Prompt caching", type: "bool",

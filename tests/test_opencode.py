@@ -234,7 +234,7 @@ class ProviderTests(unittest.TestCase):
             wire = openai_compat.to_openai({**body, "model": model}, flavor)
             self.assertNotIn("private reasoning", json.dumps(wire))
             self.assertNotIn("opaque", json.dumps(wire))
-        self.assertEqual(provider.option_sets(body["model"], {}, False), [{}])
+        self.assertEqual(provider.options(body["model"], None), {})
         native_req, _ = providers.AnthropicProvider({}, "native-test-key").request(
             {**body, "model": "claude-sonnet-5-5"}, {}, None)
         self.assertNotIn("private reasoning", native_req.data.decode())
@@ -251,7 +251,7 @@ class ProviderTests(unittest.TestCase):
                                 "content": [thought, redacted, tool], "stop_reason": "tool_use"}, "opencode:claude-haiku-5-5")
         body = {"model": "opencode:claude-haiku-5-5", "max_tokens": 50,
                 "messages": [{"role": "assistant", "content": first["content"]}]}
-        req, stream = provider.request(body, opencode.model_options(body["model"], True), None)
+        req, stream = provider.request(body, provider.options(body["model"], "medium"), None)
         self.assertEqual(req.full_url, "https://opencode.ai/inference/anthropic/v1/messages")
         self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
         self.assertFalse(stream)

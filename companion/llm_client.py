@@ -1,7 +1,7 @@
 """Talking to the model providers: Claude, Gemini, OpenRouter, OpenCode and custom OpenAI-compatible endpoints
 (providers.py sends each one's requests; openai_compat.py translates compatible chat requests). Every request goes through
 the billing guard (a fatal error suspends that provider, transient ones back off), prompt caching markers,
-thinking/effort options per model, streamed replies, the tool-use loop, and the token and cost accounting the
+native effort controls, streamed replies, the tool-use loop, and the token and cost accounting the
 dashboard shows.
 
 The coach holds one LLMClient and hands it its system prompt (system_fn), the runner for the tools a model calls
@@ -79,14 +79,6 @@ def _sent_reasoning(options):
         effort = generation["thinkingConfig"].get("thinkingLevel", effort)
     if effort in levels:
         parts.append("effort=" + effort)
-    thinking = options.get("thinking")
-    if isinstance(thinking, dict):
-        mode = thinking.get("type")
-        if mode in ("disabled", "enabled", "adaptive", "between_tools"):
-            parts.append("thinking=" + mode)
-        budget = thinking.get("budget_tokens")
-        if isinstance(budget, int) and not isinstance(budget, bool) and budget >= 0:
-            parts.append("thinking budget=%d" % budget)
     return "; ".join(parts) or "provider default"
 
 
@@ -209,7 +201,7 @@ class LLMClient:
         if selected := _model_id(model):
             attribution["model"] = selected
         current = {"attribution": attribution, "started": time.monotonic(), "sent": [],
-                   "tune_thinking": self.opt.get("tune_thinking")}
+                   **self._reasoning_request(model, deep, attribution["reasoning"])}
         self._request.current = current
         try:
             yield current
@@ -280,39 +272,35 @@ class LLMClient:
             last["content"] = list(c[:-1]) + [dict(c[-1], cache_control={"type": "ephemeral"})]
         return list(messages[:-1]) + [last]
 
-    @staticmethod
-    def model_options(model, deep):
-        """Thinking/effort settings per model. Sonnet/Opus 5.x think by default and thinking tokens count
-        against max_tokens, which can leave no room for the answer. Live callouts and spoken answers turn
-        up-front thinking off and use low effort (fast); reviews and typed questions keep adaptive
-        thinking at medium effort."""
-        if model.startswith(opencode.PREFIX):
-            return opencode.model_options(model, deep)
-        m = model.lower()
-        if models_mod.provider(m) != "anthropic":
-            return {}
-        if "haiku" in m and not any(v in m for v in ("haiku-5", "haiku5")):
-            return {}                      # Haiku 4.5 and older: no adaptive thinking or effort (400 on effort)
-        opts = {"output_config": {"effort": "medium" if deep else "low"}}
-        if not deep:
-            if "haiku" in m:
-                # Haiku 5.x thinks by default (effort medium) and thinking counts against max_tokens: a short
-                # callout could spend all of it thinking. "disabled" is accepted at effort high or below.
-                opts["thinking"] = {"type": "disabled"}
-            elif "opus" in m:
-                # Opus 5.x rejects thinking.type "disabled" (400): adaptive + low effort keeps it fast.
-                opts["thinking"] = {"type": "disabled"} if "opus-4" in m else {"type": "adaptive"}
-            elif "sonnet" in m:
-                opts["thinking"] = {"type": "between_tools"}
-        return opts
+    def _reasoning_request(self, model, deep, effort) -> dict[str, Any]:
+        """Resolve once per operation, including validation, native effort and the serving route."""
+        entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
+        if entry is not None and entry.get("id", model) != model:
+            entry = None
+        try:
+            decision = reasoning.resolve(model, self.cfg, deep=deep, effort=effort,
+                                         tuning=self.opt.get("tune_thinking"), entry=entry)
+            profile = dict(decision["profile"])
+            exclusion = profile.get("reason") if profile.get("suitability") == "excluded" else \
+                (entry or {}).get("excluded_reason")
+            if exclusion:
+                raise ValueError("%s cannot be used as a coach model (%s)." % (model, exclusion))
+            provider = self.provider_for(model)
+            options = provider.options(model, decision["effort"]) if provider is not None else {}
+            if model.startswith(opencode.PREFIX) and decision["effort"] is None:
+                # Without a selected native control, retain the established baseline route.
+                profile["transport"] = "anthropic" if opencode.claude_model(model) else "chat"
+            return {"decision": decision, "profile": profile, "options": options}
+        except ValueError as e:
+            return {"reasoning_error": str(e)}
 
     def post(self, body, opts, path, on_text=None, effort=None):
-        """One API request under the billing guard, for model path `path` ("fast" | "deep": its cost split and, on
-        Gemini, its reasoning effort). Tuning options (`opts`) first; if the API rejects them (400), the next
-        option set (Gemini: minimal -> low -> none), then plain; the set a Gemini model accepted is remembered. A
-        busy model (429/5xx) gets one quick retry. `on_text(chunk)`: stream the reply (Claude API) and hand each
-        piece of answer text to it as it arrives (early speech); the result is the same message dict.
-        Returns (response dict or None, the options used)."""
+        """One request under the billing guard using the operation's frozen effort and transport.
+
+        `opts` carries structured-output formatting only. Effort refusal is an error, never a fallback;
+        busy-provider retries and optional web-tool refusal handling retain the same request controls.
+        Direct callers without an operation resolve current settings once for this request.
+        Returns (response dict or None, the formatting options)."""
         t0 = time.time()
         model = body.get("model") or ""
         p = self.provider_for(model)
@@ -322,38 +310,19 @@ class LLMClient:
                        % (openai_compat.split_endpoint(model)[0], model), "speak": False})
             return None, {}
         label = p.label
-        exclusion = None
-        if openai_compat.is_endpoint(model):
-            raw_entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
-            contract = openai_capabilities.describe_endpoint_model(model, self.cfg, raw_entry)
-            if contract.suitability == "excluded":
-                exclusion = contract.reason
-        elif model.startswith(opencode.PREFIX):
-            raw_entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
-            exclusion = (raw_entry or {}).get("excluded_reason")
-        if exclusion:
-            self.stats["errors"] += 1
-            self.emit({"kind": "error", "text": "%s cannot be used as a coach model (%s)."
-                       % (model, exclusion), "speak": False})
-            return None, opts
         current = getattr(self._request, "current", None)
-        if effort is None:
-            effort = current["attribution"]["reasoning"] if current is not None else \
-                self.opt.get(path + "_reasoning_effort")
-        try:
-            if not (model.startswith(opencode.PREFIX) and current and current.get("opencode_options") is not None):
-                reasoning.validate(model, self.cfg, effort, self.catalog.get(model) if self.catalog is not None else None)
-        except ValueError as e:
+        selected = current if current is not None else self._reasoning_request(
+            model, path == "deep", effort if effort is not None else self.opt.get(path + "_reasoning_effort"))
+        if error := selected.get("reasoning_error"):
             self.stats["errors"] += 1
-            self.emit({"kind": "error", "text": str(e), "speak": False})
+            self.emit({"kind": "error", "text": error, "speak": False})
             return None, opts
-        attempts = current.get("opencode_options") if model.startswith(opencode.PREFIX) and current else None
-        if attempts is None:
-            attempts = p.option_sets(model, opts, path == "deep", effort)
-        i, retried = 0, False
-        while i < len(attempts):            # if the API rejects the tuning options, the next set
-            attempt = attempts[i]
-            req, stream = p.request(body, attempt, on_text)
+        retried = False
+        while True:
+            attempt = {**opts, **selected["options"]}
+            if opts.get("output_config") and selected["options"].get("output_config"):
+                attempt["output_config"] = {**opts["output_config"], **selected["options"]["output_config"]}
+            req, stream = p.request(body, attempt, on_text, profile=selected["profile"])
             if current is not None:
                 sent = _sent_reasoning(attempt)
                 if sent not in current["sent"]:
@@ -367,16 +336,23 @@ class LLMClient:
                 fatal = p.fatal_reason(e.code, detail)
                 if fatal:
                     self._suspend(fatal, e.code, detail, model)
-                    return None, attempt
+                    return None, opts
                 without = self._without_refused_web_tool(e.code, detail, body)
                 if without is not None:
                     body = without
                     continue
-                if e.code == 400 and attempt and i + 1 < len(attempts):
-                    if not p.quiet_fallback:
-                        self.emit({"kind": "info", "text": "%s refused tuning options (%s); retrying plain"
-                                   % (label, detail[:120]), "speak": False})
-                    i += 1
+                formatting = opts.get("output_config") or {}
+                refusal = detail.lower()
+                schema_refusal = any(marker in refusal for marker in ("schema", "structured output", "output_config.format"))
+                if (e.code == 400 and p.name == "anthropic" and formatting.get("format")
+                        and selected["decision"]["source"] != "explicit" and "effort" not in refusal
+                        and (selected["decision"]["effort"] is None or schema_refusal)):
+                    # Recover the optional format only; the operation's effort/route cannot change.
+                    opts = {**opts, "output_config": {k: v for k, v in formatting.items() if k != "format"}}
+                    if not opts["output_config"]:
+                        opts.pop("output_config")
+                    self.emit({"kind": "info", "text": "%s refused structured output; retrying without its schema "
+                               "(requested effort unchanged)." % label, "speak": False})
                     continue
                 busy = e.code in (429, 500, 502, 503, 504, 529)
                 if busy and not retried and time.time() - t0 < 8:
@@ -387,31 +363,25 @@ class LLMClient:
                 self._back_off(busy, label)
                 self.emit({"kind": "error", "text": "%s %s (%s): %s" % (label, e.code, model, api_message(detail)),
                            "speak": False})
-                return None, attempt
+                return None, opts
             except opencode.ResponseError as e:
                 self._account(model, body, e.usage, path)
                 self.stats["errors"] += 1
                 self.emit({"kind": "error", "text": "%s response (%s): %s" % (label, model, e), "speak": False})
-                return None, attempt
+                return None, opts
             except Exception as e:
                 self.stats["errors"] += 1
                 self._back_off(True, label)
                 self.emit({"kind": "error", "text": "%s unreachable (%.0fs): %s" % (label, time.time() - t0, e),
                            "speak": False})
-                return None, attempt
-            if model.startswith(opencode.PREFIX) and current is not None:
-                current["opencode_options"] = [attempt]
-            tuning = current["tune_thinking"] if current is not None else self.opt.get("tune_thinking")
-            if effort == "auto" and (not model.startswith(opencode.PREFIX) or tuning):
-                p.accepted(model, attempt, path == "deep")
+                return None, opts
             self._recovered(p.name, label)
             if current is not None:
                 current["attribution"].pop("reported_model", None)
                 if reported := _model_id(data.get("model")):
                     current["attribution"]["reported_model"] = reported
             self._account(model, body, data.get("usage") or {}, path)
-            return data, attempt
-        return None, {}
+            return data, opts
 
     def _without_refused_web_tool(self, code, detail, body):
         """A 400 refusing the web search server tool -> the body to send again: the filtering tool swapped for the
@@ -551,9 +521,9 @@ class LLMClient:
         body = {"model": model, "max_tokens": max(600, len(text)),
                 "system": [{"type": "text", "text": instruction}],
                 "messages": [{"role": "user", "content": json.dumps({"text": text}, ensure_ascii=False)}]}
-        opts = self.model_options(model, False) if self._request.current["tune_thinking"] else {}
+        opts = {}
         effort = self._request.current["attribution"]["reasoning"]
-        data, opts = self.post(body, opts, "fast", effort=effort)
+        data, opts = self.post(body, opts, "fast")
         data = self._retry_empty(body, opts, data, "fast", effort=effort)
         return self._answer_text(data) if data else None
 
@@ -621,18 +591,16 @@ class LLMClient:
 
     def _call_once(self, model, user, max_tokens, deep=False, tools=None, schema=None, on_text=None, speech_policy=None):
         """One-shot answer (live callouts, and everything without the knowledge layer), booked to the deep or fast
-        path. `tools`: sent with tool_choice none only to share the questions' cached prefix (see caching). `schema`:
-        a JSON schema the reply must follow (structured outputs, Claude API only; if the API refuses it the request
-        goes again without it and the caller parses the text as before). `on_text`: streaming callback (see post).
-        -> (text, meta)."""
+        path. `tools`: sent with tool_choice none only to share the questions' cached prefix (see caching).
+        `schema`: a JSON schema for Claude replies; Auto can retry a schema-only refusal without changing effort.
+        `on_text`: streaming callback (see post). -> (text, meta)."""
         meta: dict[str, Any] = {"tool_calls": 0, "tools": [], "sources": []}
         path = path_of(deep)
         effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
-        opts = self.model_options(model, deep) if self._request.current["tune_thinking"] else {}
+        opts = {}
         if schema and models_mod.provider(model) == "anthropic" and self.opt.get("structured_outputs"):
-            opts = dict(opts, output_config=dict(opts.get("output_config") or {},
-                                                 format={"type": "json_schema", "schema": schema}))
+            opts["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
         t0 = time.time()
         allowance = speech_policy.allowance if speech_policy is not None else 0
         system = self.system_fn(self.cache_marker(model, deep))
@@ -686,7 +654,7 @@ class LLMClient:
         path = path_of(deep)
         effort = self._request.current["attribution"]["reasoning"]
         self.last_usage = {}
-        opts = self.model_options(model, deep) if self._request.current["tune_thinking"] else {}
+        opts = {}
         tools = [dict(t) for t in tools or ()]
         system = self.system_fn(self.cache_marker(model, deep))     # covers tools + system (one prefix)
         allowance = speech_policy.allowance if speech_policy is not None else 0

@@ -36,7 +36,7 @@ import reminders  # noqa: E402
 
 
 class Provider:
-    name, label, quiet_fallback = "endpoint", "Test endpoint", True
+    name, label = "endpoint", "Test endpoint"
 
     def __init__(self, translated="Bereit.", answer="Gehe nach Norden."):
         self.translated, self.answer = translated, answer
@@ -44,13 +44,13 @@ class Provider:
         self.failure = None
         self.chunks = None
 
-    def option_sets(self, model, opts, deep, effort="auto"):
-        return [{}]
+    def options(self, model, effort):
+        return {}
 
     def caching(self, model):
         return "implicit"
 
-    def request(self, body, attempt, on_text):
+    def request(self, body, attempt, on_text, profile=None):
         self.bodies.append(body)
         return body, bool(on_text)
 
@@ -68,9 +68,6 @@ class Provider:
 
     def parse(self, data):
         return data
-
-    def accepted(self, model, attempt, deep=False):
-        pass
 
 
 def make_coach(language="de", speak=None, emit=None, enabled=True):

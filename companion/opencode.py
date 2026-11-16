@@ -27,51 +27,14 @@ class ResponseError(RuntimeError):
         self.usage = usage
 
 
-# Native Messages controls, not assumptions about the gateway's Chat translation.
-# https://opencode.ai/docs/console/models/#endpoints
-# https://platform.claude.com/docs/en/build-with-claude/thinking#configuring-thinking
-# https://platform.claude.com/docs/en/build-with-claude/effort#effort-levels
-# (automatic effort supported, Fast thinking mode); explicit choices live in opencode_reasoning.
-CLAUDE_POLICIES = {
-    "claude-fable-5-2": (True, None),
-    "claude-fable-5-1": (True, None),
-    "claude-fable-5": (True, None),
-    "claude-opus-5-5": (True, "adaptive"),
-    "claude-opus-5": (True, "adaptive"),
-    "claude-opus-4-8": (True, "disabled"),
-    "claude-opus-4-7": (True, "disabled"),
-    "claude-opus-4-6": (True, "disabled"),
-    "claude-opus-4-5": (True, "disabled"),
-    "claude-opus-4-5-20251101": (True, "disabled"),
-    "claude-sonnet-5-5": (True, "between_tools"),
-    "claude-sonnet-5": (True, "disabled"),
-    "claude-sonnet-4-6": (True, "disabled"),
-    "claude-sonnet-4-5": (False, None),
-    "claude-sonnet-4-5-20250929": (False, None),
-    "claude-haiku-5-5": (True, "disabled"),
-    "claude-haiku-4-5": (False, None),
-    "claude-haiku-4-5-20251001": (False, None),
-}
-
-
 def claude_model(model):
-    """Only verified native IDs select Messages; catalog URLs and aliases never do."""
-    native = model.removeprefix(PREFIX) if isinstance(model, str) and model.startswith(PREFIX) else None
-    return native if native in CLAUDE_POLICIES else None
-
-
-def model_options(model, deep):
-    """The verified native Claude low-latency policy; other gateway models remain default."""
-    native = claude_model(model)
-    if native is None:
-        return {}
-    supported, thinking = CLAUDE_POLICIES[native]
-    if not supported:
-        return {}
-    opts = {"output_config": {"effort": "medium" if deep else "low"}}
-    if not deep and thinking:
-        opts["thinking"] = {"type": thinking}
-    return opts
+    """Reviewed Messages routes, including legacy dated IDs; never a family-name guess."""
+    import opencode_reasoning
+    if not isinstance(model, str) or not model.startswith(PREFIX):
+        return None
+    native = model.removeprefix(PREFIX)
+    legacy = ("claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001")
+    return native if opencode_reasoning.transport(model) == "anthropic" or native in legacy else None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

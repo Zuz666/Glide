@@ -170,6 +170,7 @@ class ReasoningRequests(unittest.TestCase):
         self.respond = respond_compat
         self.assertEqual(compat_client.call_once("ep:openai:gpt-6.1-sol", "Where?", 600)[0], "Turn in the quest.")
         self.assertEqual(self.requests[-1][1]["max_tokens"], 600)
+        self.assertEqual(compat_client.call_once("ep:openai:gpt-6.1-sol", "Review", 600, deep=True)[0], "Turn in the quest.")
 
         # Official OpenAI non-reasoning (gpt-4.1-2025-04-14) and unclassified IDs use /v1/chat/completions + max_completion_tokens.
         official = self.client(fast_model="ep:openai:gpt-4.1-2025-04-14", deep_model="ep:openai:gpt-6-private")
@@ -193,8 +194,8 @@ class ReasoningRequests(unittest.TestCase):
             if path != "/v1/responses" or "max_tokens" in body or "max_completion_tokens" in body:
                 return 400, {"error": {"message": "Expected stateless Responses with max_output_tokens"}}
             if body["model"] == "gpt-5.6-luna":
-                if "reasoning" in body:
-                    return 400, {"error": {"message": "Auto must omit reasoning on Luna 5.6"}}
+                if body.get("reasoning") != {"effort": "low"}:
+                    return 400, {"error": {"message": "Automatic Luna 5.6 must request low"}}
                 return 200, {
                     "object": "response", "status": "completed", "model": "gpt-5.6-luna",
                     "output": [self.text_item("Модель переключена.")],
@@ -234,28 +235,20 @@ class ReasoningRequests(unittest.TestCase):
         self.assertEqual(len(self.requests), 1, "an explicit rejected level must not trigger a paid fallback probe")
         self.assertTrue(any("Unsupported reasoning_effort high" in m["text"] for m in self.errors))
 
-    def test_gemini_auto_cache_is_separate_from_deep_and_explicit_choices(self):
+    def test_gemini_automatic_roles_and_explicit_choices_are_independent(self):
         client = self.client(fast_model="gemini:gemini-3.8-flash", deep_model="gemini:gemini-3.8-flash")
-
-        def respond(path, body):
-            if body.get("reasoning_effort") == "minimal":
-                return 400, {"error": {"message": "Use low"}}
-            return 200, self.chat("Continue.")
-
-        self.respond = respond
         model = client.cfg["fast_model"]
-        self.assertEqual(client.call_once(model, "Fast", 600)[0], "Continue.")
-        self.assertEqual(client.call_once(model, "Deep", 1200, deep=True)[0], "Continue.")
+        for deep in (False, True):
+            self.assertEqual(client.call_once(model, "Automatic", 600, deep=deep)[0], "Ready.")
         client.cfg["fast_reasoning_effort"] = "high"
-        self.assertEqual(client.call_once(model, "Explicit", 600)[0], "Continue.")
-        client.cfg["fast_reasoning_effort"] = "auto"
-        self.assertEqual(client.call_once(model, "Automatic again", 600)[0], "Continue.")
-        self.assertEqual([b.get("reasoning_effort") for _, b in self.requests], ["minimal", "low", None, "high", "low"])
+        self.assertEqual(client.call_once(model, "Explicit", 600)[0], "Ready.")
+        client.cfg.update(fast_reasoning_effort="auto", tune_thinking=False)
+        self.assertEqual(client.call_once(model, "Off", 600)[0], "Ready.")
+        self.assertEqual([b.get("reasoning_effort") for _, b in self.requests], ["low", "medium", "high", None])
 
     def test_opencode_haiku_fast_deep_and_off_use_native_messages(self):
         model = "opencode:claude-haiku-5-5"
-        client = self.client(fast_model=model, deep_model=model, stream_speech=False)
-        client.providers["opencode"].key = "isolated-fixture-key"
+        client = self.gateway_client("claude-haiku-5-5", "messages", ["low", "medium"], effort="auto")
 
         def respond(path, body):
             self.assertEqual(path, "/inference/anthropic/v1/messages")
@@ -273,8 +266,8 @@ class ReasoningRequests(unittest.TestCase):
         client.cfg["fast_reasoning_effort"] = "high"
         self.assertIsNone(client.call_once(model, "Unsupported explicit", 600)[0])
         fast, deep, off = [body for _, body in self.requests]
-        self.assertEqual((fast["output_config"], fast["thinking"]),
-                         ({"effort": "low"}, {"type": "disabled"}))
+        self.assertEqual(fast["output_config"], {"effort": "low"})
+        self.assertNotIn("thinking", fast)
         self.assertEqual(deep["output_config"], {"effort": "medium"})
         self.assertNotIn("thinking", deep)
         self.assertNotIn("output_config", off)
@@ -283,33 +276,19 @@ class ReasoningRequests(unittest.TestCase):
         client.cfg["fast_reasoning_effort"] = "auto"
         client.cfg["tune_thinking"] = True
         self.assertEqual(client.call_once(model, "On again", 600)[0], "East.")
-        self.assertEqual(self.requests[-1][1]["thinking"], {"type": "disabled"})
+        self.assertEqual(self.requests[-1][1]["output_config"], {"effort": "low"})
 
-    def test_opencode_auto_refusal_is_remembered_per_path_and_explicit_does_not_become_auto(self):
-        model = "opencode:claude-haiku-5-5"
-        client = self.client(fast_model=model, deep_model=model)
-        provider = client.providers["opencode"]
-        provider.key = "isolated-fixture-key"
-
-        def respond(path, body):
-            if body.get("output_config"):
-                return 400, {"error": {"message": "Unsupported effort"}}
-            return 200, {"type": "message", "model": body["model"], "stop_reason": "end_turn",
-                         "content": [{"type": "text", "text": "Continue."}],
-                         "usage": {"input_tokens": 10, "output_tokens": 2}}
-
-        self.respond = respond
-        self.assertEqual(client.call_once(model, "Fast", 600)[0], "Continue.")
-        self.assertEqual(provider.effort_ok[(model, False)], {})
-        self.assertNotIn((model, True), provider.effort_ok)
-        self.assertEqual(client.call_once(model, "Fast again", 600)[0], "Continue.")
-        self.assertEqual(client.call_once(model, "Deep", 1200, deep=True)[0], "Continue.")
-        client.cfg["fast_reasoning_effort"] = "high"
-        self.assertIsNone(client.call_once(model, "Explicit", 600)[0])
-        self.assertEqual([body.get("output_config", {}).get("effort") for _, body in self.requests],
-                         ["low", None, None, "medium", None])
-        self.assertEqual(provider.effort_ok[(model, False)], {})
-        self.assertEqual(client.stats["calls"], 3)
+    def test_automatic_refusal_is_one_attempt_and_never_changes_future_policy(self):
+        client = self.gateway_client("claude-haiku-5-5", "messages", ["low", "medium"], effort="auto")
+        model = client.cfg["fast_model"]
+        self.respond = lambda *_: (400, {"error": {"message": "Unsupported effort"}})
+        for deep in (False, False, True):
+            before = len(self.requests)
+            self.assertIsNone(client.call_once(model, "Rejected", 600, deep=deep)[0])
+            self.assertEqual(len(self.requests), before + 1)
+        self.assertEqual([body["output_config"]["effort"] for _, body in self.requests], ["low", "low", "medium"])
+        self.assertEqual(client.stats["calls"], 0)
+        self.assertEqual(client.stats["errors"], 3)
 
     def test_opencode_unverified_families_and_unknown_claude_aliases_stay_plain_chat(self):
         client = self.client()
@@ -329,8 +308,7 @@ class ReasoningRequests(unittest.TestCase):
 
     def test_opencode_native_tool_round_preserves_private_thinking_and_billed_categories(self):
         model = "opencode:claude-haiku-5-5"
-        client = self.client(fast_model=model, deep_model=model)
-        client.providers["opencode"].key = "isolated-fixture-key"
+        client = self.gateway_client("claude-haiku-5-5", "messages", ["low", "medium"], effort="auto")
         thought = {"type": "thinking", "thinking": "", "signature": "gateway-only-signature"}
         tool = {"type": "tool_use", "id": "call_quest", "name": "quest", "input": {"id": 42}}
 
@@ -396,8 +374,6 @@ class ReasoningRequests(unittest.TestCase):
             with self.subTest(model=native):
                 client = self.gateway_client(native, api, [effort], effort)
                 model = client.cfg["fast_model"]
-                provider = client.providers["opencode"]
-                provider.effort_ok[(model, False)] = {}  # A learned automatic fallback must not erase manual intent.
 
                 def respond(path, body, route=route, api=api, native=native, effort=effort):
                     self.assertEqual(path, "/inference" + route)
@@ -425,14 +401,107 @@ class ReasoningRequests(unittest.TestCase):
                 self.respond = respond
                 self.assertEqual(client.call_once(model, "Where?", 600)[0], "East.", self.errors)
                 self.assertEqual(client.stats["cost_coverage"]["reported"], 1)
-                self.assertEqual(provider.effort_ok[(model, False)], {})
 
-    def test_opencode_tool_turn_freezes_effort_and_replays_native_reasoning_after_catalog_edit(self):
-        for native, api in (("gpt-6.1-sol", "responses"), ("gemini-3.8-flash", "generate-content"),
-                            ("kimi-k3", "chat-completions")):
+    def test_automatic_native_roles_and_missing_exact_targets(self):
+        cases = (
+            ("gemini-3.8-flash", "generate-content", ["low", "medium"], ("low", "medium")),
+            ("gpt-5.5-pro", "responses", ["medium", "high"], (None, "medium")),
+            ("kimi-k3", "chat-completions", ["low", "high"], ("low", None)),
+        )
+        for native, api, levels, expected in cases:
             with self.subTest(model=native):
                 self.requests.clear()
-                client = self.gateway_client(native, api, ["low", "high"])
+                client = self.gateway_client(native, api, levels, effort="auto")
+
+                def respond(path, body):
+                    if ":generateContent" in path:
+                        return 200, {"candidates": [{"content": {"parts": [{"text": "Ready."}]}, "finishReason": "STOP"}]}
+                    if path.endswith("/responses"):
+                        return 200, self.response([self.text_item("Ready.")])
+                    return 200, self.chat("Ready.")
+
+                self.respond = respond
+                for deep, level in enumerate(expected):
+                    self.assertEqual(client.call_once(client.cfg["fast_model"], "Where?", 600, deep=bool(deep))[0], "Ready.")
+                    path, body = self.requests[-1]
+                    if level is None:
+                        self.assertTrue(path.endswith("/chat/completions"))
+                        self.assertNotIn("reasoning_effort", body)
+                    elif api == "generate-content":
+                        self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": level})
+                    elif api == "responses":
+                        self.assertEqual(body["reasoning"], {"effort": level})
+                    else:
+                        self.assertEqual(body["reasoning_effort"], level)
+
+    def test_openrouter_automatic_uses_only_its_advertised_levels(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        row = {"id": "vendor/coach", "provider": "openrouter",
+               "reasoning": {"supported_efforts": ["low", "medium", "high"]}}
+        catalog = models.Catalog(os.path.join(temporary.name, "models.json"),
+                                 fetchers={"anthropic": lambda _: [], "gemini": lambda _: [],
+                                           "openrouter": lambda _: [row], "opencode": lambda _: []})
+        catalog.refresh()
+        client = self.client(fast_model=row["id"], deep_model=row["id"])
+        client.catalog = catalog
+        for deep in (False, True):
+            self.assertEqual(client.call_once(row["id"], "Where?", 600, deep=deep)[0], "Ready.")
+        self.assertEqual([body["reasoning"] for _, body in self.requests], [{"effort": "low"}, {"effort": "medium"}])
+        client.cfg["tune_thinking"] = False
+        self.assertEqual(client.call_once(row["id"], "Off", 600)[0], "Ready.")
+        self.assertNotIn("reasoning", self.requests[-1][1])
+
+    def test_official_automatic_roles_and_pro_missing_low(self):
+        client = self.client()
+        self.respond = lambda *_: (200, self.response([self.text_item("Ready.")]))
+        for model in ("ep:openai:gpt-6.1-sol", "ep:openai:gpt-5.5-pro"):
+            for deep in (False, True):
+                self.assertEqual(client.call_once(model, "Where?", 600, deep=deep)[0], "Ready.")
+        self.assertEqual([body.get("reasoning") for _, body in self.requests],
+                         [{"effort": "low"}, {"effort": "medium"}, None, {"effort": "medium"}])
+        self.assertTrue(all(path == "/v1/responses" for path, _ in self.requests))
+
+    def test_official_auto_tool_turn_freezes_transport_limits_and_effort_after_origin_edit(self):
+        client = self.client()
+        model = client.cfg["fast_model"]
+        original = [{"id": "r", "type": "reasoning", "encrypted_content": "private"},
+                    {"type": "function_call", "call_id": "q", "name": "quest", "arguments": "{}"}]
+
+        def respond(path, body):
+            self.assertEqual(path, "/v1/responses")
+            self.assertEqual(body["max_output_tokens"], 600)
+            self.assertEqual(body["reasoning"], {"effort": "low"})
+            if len(self.requests) == 1:
+                return 200, self.response(original)
+            self.assertEqual(body["input"][1:3], original)
+            return 200, self.response([self.text_item("Ready.")])
+
+        def tool(*_):
+            client.cfg["endpoints"][0]["base_url"] = self.local + "/v1"
+            client.cfg.update(tune_thinking=False, fast_reasoning_effort="high")
+            return {}
+
+        self.respond, client.run_tool = respond, tool
+        text, meta = client.call_tools(model, [{"role": "user", "content": "Where?"}],
+                                       [{"name": "quest", "input_schema": {"type": "object"}}], 1, 10)
+        self.assertEqual((text, meta["tool_calls"]), ("Ready.", 1))
+        self.respond = lambda *_: (200, self.chat("New origin."))
+        self.assertEqual(client.call_once(model, "Next?", 600)[0], "New origin.")
+        route, body = self.requests[-1]
+        self.assertEqual(route, "/v1/chat/completions")
+        self.assertEqual(body["max_tokens"], 600)
+        self.assertEqual(body["reasoning_effort"], "high")
+
+    def test_opencode_tool_turn_freezes_effort_and_replays_native_reasoning_after_catalog_edit(self):
+        cases = [(native, api, effort) for native, api in (
+            ("gpt-6.1-sol", "responses"), ("gemini-3.8-flash", "generate-content"),
+            ("kimi-k3", "chat-completions")) for effort in ("high", "auto")]
+        for native, api, effort in cases:
+            with self.subTest(model=native, effort=effort):
+                self.requests.clear()
+                client = self.gateway_client(native, api, ["low", "high"], effort=effort)
+                selected = "low" if effort == "auto" else "high"
                 model = client.cfg["fast_model"]
                 original = [{"type": "reasoning", "id": "r1", "encrypted_content": "gateway-ciphertext"},
                             {"type": "function_call", "id": "f1", "call_id": "q1",
@@ -440,23 +509,26 @@ class ReasoningRequests(unittest.TestCase):
                 parts = [{"text": "", "thought": True, "thoughtSignature": "signed-empty"},
                          {"functionCall": {"name": "quest", "args": {"id": 42}}, "thoughtSignature": "signed-call"}]
 
-                def respond(path, body, api=api, original=original, parts=parts):
+                def respond(path, body, api=api, original=original, parts=parts, selected=selected):
                     first = len(self.requests) == 1
                     if api == "responses":
-                        self.assertEqual(body["reasoning"], {"effort": "high"})
+                        self.assertEqual(path, "/inference/openai/v1/responses")
+                        self.assertEqual(body["reasoning"], {"effort": selected})
                         if not first:
                             self.assertEqual(body["input"][1:3], original)
                             self.assertEqual(body["input"][-1]["call_id"], "q1")
                         return 200, self.response(original if first else [self.text_item("East.")])
                     if api == "generate-content":
-                        self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
+                        self.assertIn(":generateContent", path)
+                        self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": selected})
                         if not first:
                             self.assertEqual(body["contents"][-2]["parts"], parts)
                             self.assertEqual(body["contents"][-1]["parts"][0]["functionResponse"]["name"], "quest")
                         return 200, {"candidates": [{"content": {"role": "model", "parts": parts if first else [{"text": "East."}]},
                                                      "finishReason": "STOP"}],
                                      "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 2}}
-                    self.assertEqual(body["reasoning_effort"], "high")
+                    self.assertEqual(path, "/inference/openai/v1/chat/completions")
+                    self.assertEqual(body["reasoning_effort"], selected)
                     if first:
                         return 200, {"choices": [{"finish_reason": "tool_calls", "message": {
                             "content": None, "reasoning_content": "gateway-private", "tool_calls": [
@@ -469,6 +541,7 @@ class ReasoningRequests(unittest.TestCase):
                     self.assertEqual((name, args), ("quest", {"id": 42}))
                     client.cfg.update(fast_reasoning_effort="low", tune_thinking=False)
                     self.gateway_rows[0]["capabilities"]["reasoning"]["effort"] = []
+                    self.gateway_rows[0]["api"] = {"chat-completions": {}}
                     client.catalog.refresh()
                     return {"east": 80}
 
@@ -476,18 +549,98 @@ class ReasoningRequests(unittest.TestCase):
                 text, meta = client.call_tools(model, [{"role": "user", "content": "Where?"}],
                                                [{"name": "quest", "input_schema": {"type": "object"}}], 1, 10)
                 self.assertEqual((text, meta["tool_calls"]), ("East.", 1), self.errors)
-                self.assertIsNone(client.call_once(model, "Next turn?", 600)[0])
-                self.assertEqual(len(self.requests), 2, "Removed explicit level must fail before the next paid request")
+                self.assertEqual(len(self.requests), 2)
+                if effort != "auto":
+                    self.assertIsNone(client.call_once(model, "Next turn?", 600)[0])
+                    self.assertEqual(len(self.requests), 2, "Removed explicit level must fail before the next request")
+                else:
+                    client.cfg["fast_reasoning_effort"] = "auto"
+                    self.respond = lambda *_: (200, self.chat("Default."))
+                    self.assertEqual(client.call_once(model, "Next turn?", 600)[0], "Default.")
+                    route, body = self.requests[-1]
+                    self.assertEqual(route, "/inference/openai/v1/chat/completions")
+                    self.assertNotIn("reasoning_effort", body)
+
+    def test_automatic_opencode_empty_answer_retry_keeps_native_effort_and_increases_budget(self):
+        client = self.gateway_client("gemini-3.8-flash", "generate-content", ["low", "medium"], effort="auto")
+
+        def respond(path, body):
+            self.assertIn(":generateContent", path)
+            self.assertEqual(body["generationConfig"]["thinkingConfig"], {"thinkingLevel": "low"})
+            first = len(self.requests) == 1
+            return 200, {"candidates": [{"content": {"parts": [] if first else [{"text": "East."}]},
+                                         "finishReason": "MAX_TOKENS" if first else "STOP"}],
+                         "usageMetadata": {"candidatesTokenCount": 600 if first else 2}}
+
+        self.respond = respond
+        self.assertEqual(client.call_once(client.cfg["fast_model"], "Where?", 600)[0], "East.")
+        self.assertEqual([body["generationConfig"]["maxOutputTokens"] for _, body in self.requests], [600, 2400])
+
+    def test_official_chat_tool_turn_freezes_limit_field_when_origin_settings_change(self):
+        model = "ep:openai:gpt-4.1"
+        client = self.client(fast_model=model)
+
+        def respond(path, body):
+            self.assertEqual(path, "/v1/chat/completions")
+            self.assertEqual(body["max_completion_tokens"], 600)
+            self.assertNotIn("max_tokens", body)
+            self.assertNotIn("reasoning_effort", body)
+            if len(self.requests) == 1:
+                return 200, {"choices": [{"finish_reason": "tool_calls", "message": {
+                    "content": None, "tool_calls": [
+                        {"id": "q", "type": "function", "function": {"name": "quest", "arguments": "{}"}}]}}]}
+            self.assertEqual(body["messages"][-1]["tool_call_id"], "q")
+            return 200, self.chat("Ready.")
+
+        def tool(*_):
+            client.cfg["endpoints"][0]["base_url"] = self.local + "/v1"
+            return {}
+
+        self.respond, client.run_tool = respond, tool
+        self.assertEqual(client.call_tools(model, [{"role": "user", "content": "Where?"}],
+                                          [{"name": "quest", "input_schema": {"type": "object"}}], 1, 10)[0], "Ready.")
+        self.respond = lambda *_: (200, self.chat("Compatible."))
+        self.assertEqual(client.call_once(model, "Next?", 600)[0], "Compatible.")
+        self.assertEqual(self.requests[-1][1]["max_tokens"], 600)
+
+    def test_automatic_anthropic_effort_keeps_schema_and_reports_refusal_once(self):
+        client = self.client(stream_speech=False)
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        self.respond = lambda *_: (400, {"error": {"message": "Requested output configuration refused"}})
+        self.assertIsNone(client.call_once("claude-opus-5-5", "Where?", 600, schema=schema)[0])
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][1]["output_config"], {
+            "effort": "low", "format": {"type": "json_schema", "schema": schema}})
+        self.assertNotIn("thinking", self.requests[0][1])
+
+    def test_schema_only_refusal_recovers_without_changing_automatic_effort(self):
+        schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+        for enabled in (False, True):
+            with self.subTest(tuning=enabled):
+                self.requests.clear()
+                client = self.client(stream_speech=False, tune_thinking=enabled)
+
+                def respond(path, body):
+                    if body.get("output_config", {}).get("format"):
+                        return 400, {"error": {"message": "output_config.format: json_schema is unsupported"}}
+                    return 200, {"type": "message", "content": [{"type": "text", "text": "East."}],
+                                 "stop_reason": "end_turn", "usage": {}}
+
+                self.respond = respond
+                self.assertEqual(client.call_once("claude-opus-5-5", "Where?", 600, schema=schema)[0], "East.")
+                self.assertEqual(len(self.requests), 2)
+                self.assertEqual(self.requests[0][1]["output_config"]["format"]["schema"], schema)
+                self.assertNotIn("format", self.requests[1][1].get("output_config", {}))
+                for _, body in self.requests:
+                    self.assertEqual(body.get("output_config", {}).get("effort"), "low" if enabled else None)
+                self.assertEqual(client.stats["errors"], 0)
 
     def test_opencode_explicit_rejection_and_exhausted_budget_do_not_downgrade_or_retry(self):
         client = self.gateway_client("claude-haiku-5-5", "messages", ["high"])
         model = client.cfg["fast_model"]
-        provider = client.providers["opencode"]
-        provider.effort_ok[(model, False)] = {"output_config": {"effort": "low"}, "thinking": {"type": "disabled"}}
         self.respond = lambda *_: (400, {"error": {"message": "Effort rejected"}})
         self.assertIsNone(client.call_once(model, "Rejected?", 600)[0])
         self.assertEqual(len(self.requests), 1)
-        self.assertEqual(provider.effort_ok[(model, False)]["output_config"], {"effort": "low"})
         self.assertEqual(client.cfg["fast_reasoning_effort"], "high")
         self.respond = lambda *_: (200, {"type": "message", "content": [], "stop_reason": "max_tokens",
                                         "usage": {"input_tokens": 10, "output_tokens": 600, "cost": 0.003}})

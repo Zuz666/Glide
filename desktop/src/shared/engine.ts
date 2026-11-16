@@ -232,10 +232,18 @@ export interface Refresh { state: "waiting" | "maps" | "glide.db" | "kb.db" | "d
 export interface NavBuild { state: "waiting" | "checking" | "building" | "done" | "failed"; map: number | null;
   tile: number; tiles: number; maps_done: number; started: number | null; finished: number | null; force: boolean;
   outdated: number[]; built: number[] }
+/** The engine's resolved requested control and route capability evidence; not measured execution. */
+export interface ReasoningResolution {
+  effort: string | null;
+  source: "automatic" | "explicit" | "provider_default";
+  reason: "automatic" | "explicit" | "off" | "unsupported" | "unknown";
+  profile: { levels: string[]; known: boolean; note: string; transport: string; limit_field?: string;
+    suitability?: string; reason?: string };
+}
 export interface Models { fast: string | null; deep: string | null; fast_name: string | null; deep_name: string | null;
   fast_reasoning?: string | null; deep_reasoning?: string | null; voice_question?: "fast" | "deep" | null;
   tune_thinking?: boolean;
-  automatic_reasoning?: Partial<Record<"fast" | "deep", { effort?: string | null; thinking?: string | null }>>;
+  automatic_reasoning?: Partial<Record<"fast" | "deep", ReasoningResolution>>;
   listen: string; listen_fallback: string | null;
   translation?: { language: string; available: boolean } }
 /** Completed responses: stale_estimates is a subset of estimated; cost_usd sums known amounts only. */

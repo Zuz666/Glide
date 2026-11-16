@@ -240,58 +240,50 @@ try {
     'Expected Deep tooltip to report medium effort and spoken PTT routing: ' + deepBtn.title);
   check(Math.abs(fastEff.getBoundingClientRect().right - deepEff.getBoundingClientRect().right) < 1,
     'Fast and Deep effort badges must share their right edge despite different model names');
+  const automaticState = await (await fetch('/reasoning-state-fixture?scenario=automatic')).json();
   const tuningModels = {
-    fast: 'gemini:gemini-4-hydrogen', fast_name: 'Gemini 4 Hydrogen', fast_reasoning: 'auto',
+    ...automaticState.models,
     deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)', deep_reasoning: 'medium',
-    voice_question: 'deep', tune_thinking: true,
-    automatic_reasoning: { fast: { effort: 'low' } }, listen: 'whisper small',
+    automatic_reasoning: { fast: automaticState.models.automatic_reasoning.fast },
   };
   sb.sessionBar({ models: tuningModels });
   check(fastEff.textContent === 'auto→low'
     && getComputedStyle(fastEff).color !== getComputedStyle(deepEff).color
     && deepEff.textContent === 'med',
-    'Automatic tuning must show the requested low override distinctly from explicit medium');
-  check(fastBtn.title.includes('low effort requested') && fastBtn.title.includes('gpt-6.1-terra')
+    'Automatic tuning must show requested low distinctly from explicit medium');
+  check(fastBtn.title.includes('low effort requested (Auto)') && fastBtn.title.includes('gpt-6.1-terra')
     && fastBtn.title.includes('reasoning effort: medium'),
     'Fast tooltip must show its automatic request and identify the Deep model used for spoken questions');
-  check(deepBtn.title.includes('Automatic thinking tuning: On')
+  check(deepBtn.title.includes('Automatic effort tuning: On')
     && deepBtn.title.includes('explicit medium effort') && !deepBtn.title.includes('low effort requested'),
-    'Deep tooltip must explain why automatic tuning does not override its explicit effort');
-  sb.sessionBar({ models: { ...tuningModels, fast: 'opencode:claude-haiku-5-5',
-    fast_name: 'Claude Haiku 5.5', automatic_reasoning: { fast: { effort: 'low', thinking: 'disabled' } } } });
-  check(fastEff.textContent === 'auto→low' && fastBtn.title.includes('thinking: disabled')
-    && deepEff.textContent === 'med' && getComputedStyle(fastEff).color !== getComputedStyle(deepEff).color,
-    'OpenCode automatic low/thinking-disabled must be visible without changing explicit Deep effort');
-  sb.sessionBar({ models: { ...tuningModels, fast: 'opencode:claude-haiku-5-5',
-    fast_name: 'Claude Haiku 5.5', fast_reasoning: 'low', automatic_reasoning: {} } });
-  check(fastEff.textContent === 'low' && fastEff.dataset.auto === '0'
-    && getComputedStyle(fastEff).color === getComputedStyle(deepEff).color
-    && fastBtn.title.includes('explicit low effort') && !fastBtn.title.includes('thinking: disabled'),
-    'Manual Haiku low must be gold and explicit, not the green Auto-low/thinking-disabled request');
-  sb.sessionBar({ models: { ...tuningModels, deep: 'claude-sonnet-5-5', deep_name: 'Claude Sonnet',
-    deep_reasoning: 'auto', automatic_reasoning: {
-      fast: { effort: 'minimal' }, deep: { effort: 'medium', thinking: 'adaptive' },
-    } } });
-  check(deepBtn.title.includes('medium effort requested') && deepBtn.title.includes('thinking: adaptive'),
-    'Deep Auto tooltip must use its own policy, not the Fast role policy');
-  check(fastEff.textContent === 'auto→min' && deepEff.textContent === 'auto→med',
-    'Automatic badges must follow their own Fast/Deep policy');
-  sb.sessionBar({ models: { ...tuningModels, automatic_reasoning: { fast: { thinking: 'disabled' } } } });
-  check(fastEff.textContent === 'auto→off' && fastBtn.title.includes('thinking: disabled'),
-    'A thinking-only override must not look like an unspecified provider default');
-  sb.sessionBar({ models: { ...tuningModels, automatic_reasoning: { fast: { effort: null } } } });
-  check(fastBtn.title.includes('provider default') && !fastBtn.title.includes('low effort requested'),
-    'A learned empty override must clear the previously displayed automatic level');
-  check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
-    'An accepted empty override must restore the neutral Auto badge');
-  sb.sessionBar({ models: { ...tuningModels, tune_thinking: false } });
-  check(fastBtn.title.includes('Automatic thinking tuning: Off') && !fastBtn.title.includes('low effort requested'),
-    'Turning tuning off must clear automatic controls from the live tooltip');
-  check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
-    'Turning tuning off must clear the visible automatic override');
+    'Explicit Deep must remain unaffected by the tuning switch');
+  sb.sessionBar(automaticState);
+  check(fastEff.textContent === 'auto→low' && deepEff.textContent === 'auto→med'
+    && deepBtn.title.includes('medium effort requested (Auto)'),
+    'Both badges must agree with the real engine Fast-low / Deep-medium state projection');
+  for (const [scenario, explanation] of [
+    ['unsupported', 'provider default (target unavailable)'],
+    ['unknown', 'provider default (support unknown)'],
+    ['off', 'provider default (tuning Off)'],
+  ]) {
+    sb.sessionBar(await (await fetch('/reasoning-state-fixture?scenario=' + scenario)).json());
+    check(fastEff.textContent === 'auto' && deepEff.textContent === 'auto'
+      && getComputedStyle(fastEff).color === neutralAutoBadgeColor
+      && getComputedStyle(deepEff).color === neutralAutoBadgeColor
+      && fastBtn.title.includes(explanation) && deepBtn.title.includes(explanation),
+      'Provider-default badges and role tooltips must explain ' + scenario);
+  }
+  for (const scenario of ['explicit', 'explicit_off']) {
+    sb.sessionBar(await (await fetch('/reasoning-state-fixture?scenario=' + scenario)).json());
+    check(fastEff.textContent === 'low' && deepEff.textContent === 'med'
+      && fastEff.dataset.auto === '0' && deepEff.dataset.auto === '0'
+      && fastBtn.title.includes('explicit low effort') && deepBtn.title.includes('explicit medium effort'),
+      'Explicit requested effort must be unchanged with tuning On or Off');
+  }
   sb.sessionBar({ models: { ...tuningModels, tune_thinking: undefined } });
-  check(fastBtn.title.includes('unavailable') && !fastBtn.title.includes('low effort requested'),
-    'An older engine without automatic policy data must not inherit or invent a level');
+  check(fastBtn.title.includes('unavailable') && fastBtn.title.includes('support unknown')
+    && !fastBtn.title.includes('low effort requested'),
+    'An older engine without automatic policy data must not invent a level');
   check(fastEff.textContent === 'auto' && getComputedStyle(fastEff).color === neutralAutoBadgeColor,
     'An older engine must not retain the visible automatic override');
 
@@ -446,15 +438,15 @@ try {
     };
     await bindModelReasoning(document.getElementById('set-body'), new Set());
     const summary = document.querySelector('[data-thinking-selection]');
-    check(summary.textContent.includes(fastModel + ': low effort requested; thinking: ' + (openCode ? 'disabled' : 'between_tools'))
-      && summary.textContent.includes(deepModel + (openCode ? ': medium effort requested' : ': provider default')),
+    check(summary.textContent.includes(fastModel + ': low effort requested (Auto)')
+      && summary.textContent.includes(deepModel + ': medium effort requested (Auto)'),
       'Automatic tuning must render the engine-selected requests for both roles: ' + summary.textContent);
     const automaticRow = summary.querySelector('[data-thinking-role="fast"]');
     const deepRow = summary.querySelector('[data-thinking-role="deep"]');
     const neutralColor = getComputedStyle(summary).color;
     check(getComputedStyle(automaticRow).color !== neutralColor
-      && (getComputedStyle(deepRow).color !== neutralColor) === openCode,
-      'Only roles with an applicable backend automatic override must receive the positive highlight');
+      && getComputedStyle(deepRow).color !== neutralColor,
+      'Both verified role targets must receive the positive highlight');
     const toggle = document.querySelector('[data-key="companion.llm.tune_thinking"] input');
     toggle.click();
     check([...summary.children].every(row => row.textContent.includes('provider default (tuning Off)'))
@@ -468,8 +460,8 @@ try {
         'OpenCode Haiku must expose its full native effort ladder, not Auto-only or a generic subset');
       const note = effort.closest('.field').querySelector('.lab small');
       check(note.textContent.includes('Output Budget stays unchanged') && note.textContent.includes('before a visible answer')
-        && note.title.includes('adaptive'),
-        'Native effort help must explain the unchanged budget and Haiku manual-thinking caveat');
+        && note.title.includes('native effort'),
+        'Native effort help must retain the shared capability note and unchanged budget explanation');
     } else {
       check([...effort.options].some(option => option.value === 'high' && !option.disabled),
         'The direct Claude backend must continue to advertise high explicit effort');
@@ -482,22 +474,50 @@ try {
     toggle.click();
     check(automaticRow.textContent.includes(manual + ' effort (explicit; switch has no effect)')
       && getComputedStyle(automaticRow).color === neutralColor
-      && (!openCode || deepRow.textContent.includes('medium effort requested')),
+      && deepRow.textContent.includes('medium effort requested'),
       'Explicit Fast must remain independent from automatic Deep when tuning is On');
     effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
     check(getComputedStyle(automaticRow).color !== neutralColor,
       'Returning to Auto must restore the highlight for the known automatic policy');
+    if (!openCode) {
+      const modelInput = document.querySelector('[data-key="companion.llm.deep_model"] input');
+      const deepEffort = document.querySelector('[data-key="companion.llm.deep_reasoning_effort"] select');
+      for (const [model, expected] of [
+        ['anthropic/claude-sonnet-5.5', 'medium effort requested (Auto)'],
+        ['ep:official:gpt-5.5-pro', 'medium effort requested (Auto)'],
+        ['ep:proxy:gpt-5.5', 'provider default (support unknown)'],
+        ['gemini:gemini-2.0-flash', 'provider default (target unavailable)'],
+        [deepModel, 'medium effort requested (Auto)'],
+      ]) {
+        modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await until(() => deepRow.textContent.includes(model + ': ' + expected),
+          'Settings must use the serving-route resolution: ' + model);
+        if (model === 'ep:proxy:gpt-5.5') check(!deepEffort.disabled
+          && [...deepEffort.options].some(option => option.value === 'medium')
+          && getComputedStyle(deepRow).color === neutralColor,
+          'Permissive manual choices do not establish verified automatic support');
+      }
+    }
     if (openCode) {
+      const fastInput = document.querySelector('[data-key="companion.llm.fast_model"] input');
+      fastInput.value = 'opencode:gpt-5.5-pro'; fastInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => automaticRow.textContent.includes('opencode:gpt-5.5-pro: provider default (target unavailable)'));
+      check(deepRow.textContent.includes('medium effort requested (Auto)')
+        && getComputedStyle(automaticRow).color === neutralColor,
+        'Missing Fast low must not suppress verified Deep medium or substitute another level');
+      fastInput.value = fastModel; fastInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => automaticRow.textContent.includes(fastModel + ': low effort requested (Auto)'));
       const modelInput = document.querySelector('[data-key="companion.llm.deep_model"] input');
       const deepEffort = document.querySelector('[data-key="companion.llm.deep_reasoning_effort"] select');
       deepEffort.value = 'max'; deepEffort.dispatchEvent(new Event('change', { bubbles: true }));
       check(deepRow.textContent.includes('max effort (explicit; switch has no effect)')
-        && automaticRow.textContent.includes('low effort requested; thinking: disabled'),
+        && automaticRow.textContent.includes('low effort requested (Auto)'),
         'Manual Deep effort must leave the independent Fast automatic preview intact');
       for (const model of ['opencode:unverified-model', 'opencode:claude-haiku-4-5']) {
         modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
-        await until(() => deepRow.textContent.includes(model + ': provider default (no automatic override)'),
-          'Unsupported or unchanged OpenCode model must retain provider-default Auto: ' + model);
+        await until(() => deepRow.textContent.includes(model + ': provider default ('
+          + (model.endsWith('unverified-model') ? 'support unknown' : 'target unavailable') + ')'),
+          'Unknown support and unsupported targets must have distinct provider-default explanations: ' + model);
         check(getComputedStyle(deepRow).color === neutralColor && deepEffort.value === 'auto',
           'An OpenCode model with no automatic controls must not keep a stale highlight or explicit effort');
         check(deepEffort.disabled && deepEffort.closest('.field').querySelector('.lab small').textContent.includes(
@@ -505,15 +525,16 @@ try {
           'Unavailable metadata and known no-effort support need distinct visible explanations');
       }
       const deepNote = deepEffort.closest('.field').querySelector('.lab small');
-      for (const [model, levels, explanation] of [
-        ['opencode:claude-opus-4-6', 'auto,low,medium,high,max', 'native effort'],
-        ['opencode:claude-opus-4-5', 'auto,low,medium,high', 'native effort'],
-        ['opencode:gpt-5.5-pro', 'auto,medium,high,xhigh', 'native effort'],
-        ['opencode:gemini-3.8-flash', 'auto,low,medium,high', 'native effort'],
-        ['opencode:gemini-3.6-flash', 'auto,minimal,low,medium,high', 'native effort'],
-        ['opencode:deepseek-v4.1-flash', 'auto,low,high,max', 'native effort'],
-        ['opencode:mistral-large-4', 'auto', 'conflict'],
-        ['opencode:qwen3.8-max', 'auto', 'not verified'],
+      for (const [model, levels, explanation, automatic] of [
+        ['opencode:claude-opus-4-6', 'auto,low,medium,high,max', 'native effort', 'medium effort requested (Auto)'],
+        ['opencode:claude-opus-4-5', 'auto,low,medium,high', 'native effort', 'medium effort requested (Auto)'],
+        ['opencode:gpt-5.5-pro', 'auto,medium,high,xhigh', 'native effort', 'medium effort requested (Auto)'],
+        ['opencode:gemini-3.8-flash', 'auto,low,medium,high', 'native effort', 'medium effort requested (Auto)'],
+        ['opencode:gemini-3.6-flash', 'auto,minimal,low,medium,high', 'native effort', 'medium effort requested (Auto)'],
+        ['opencode:deepseek-v4.1-flash', 'auto,low,high,max', 'native effort', 'provider default (target unavailable)'],
+        ['opencode:kimi-k3', 'auto,low,high,max', 'native effort', 'provider default (target unavailable)'],
+        ['opencode:mistral-large-4', 'auto', 'conflict', 'provider default (support unknown)'],
+        ['opencode:qwen3.8-max', 'auto', 'not verified', 'provider default (support unknown)'],
       ]) {
         modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
         await until(() => deepRow.textContent.includes(model + ':')
@@ -521,6 +542,8 @@ try {
         check([...deepEffort.options].map(option => option.value).join() === levels
           && deepNote.textContent.includes(explanation),
           'Choices and explanation must follow the exact OpenCode model record: ' + model);
+        check(deepRow.textContent.includes(automatic),
+          'Deep must request medium only when the route verifies that exact target: ' + model);
       }
       delayModel = deepModel;
       modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -530,20 +553,10 @@ try {
       await releaseLookup();
       await new Promise(resolve => setTimeout(resolve, 30));
       check([...deepEffort.options].map(option => option.value).join() === 'auto,medium,high,xhigh'
-        && !deepRow.textContent.includes('medium effort requested'),
-        'A stale Haiku response must not replace a newer model ladder or automatic policy');
+        && deepRow.textContent.includes('opencode:gpt-5.5-pro: medium effort requested (Auto)'),
+        'A stale Haiku response must not replace a newer model ladder or its resolved automatic policy');
       modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
       await until(() => deepRow.textContent.includes(deepModel + ': medium effort requested'));
-      scenario = 'fallback';
-      effort.dispatchEvent(new Event('model-capabilities-refresh'));
-      await until(() => automaticRow.textContent.includes('provider default (no automatic override)'),
-        'OpenCode learned fallback must show provider default, not stale requested controls');
-      check(getComputedStyle(automaticRow).color === neutralColor
-        && deepRow.textContent.includes('medium effort requested'),
-        'An accepted fallback is role-specific and must not disable Deep tuning');
-      scenario = 'default';
-      effort.dispatchEvent(new Event('model-capabilities-refresh'));
-      await until(() => automaticRow.textContent.includes('low effort requested; thinking: disabled'));
       effort.value = 'max'; effort.dispatchEvent(new Event('change', { bubbles: true }));
       for (const [nextScenario, explanation] of [
         ['stale', 'Catalog is stale'],
@@ -573,7 +586,7 @@ try {
       scenario = 'default';
       effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
       effort.dispatchEvent(new Event('model-capabilities-refresh'));
-      await until(() => automaticRow.textContent.includes('low effort requested; thinking: disabled'));
+      await until(() => automaticRow.textContent.includes('low effort requested (Auto)'));
     }
     live.engineState = 'stopped';
     await bindModelReasoning(document.getElementById('set-body'), new Set());
@@ -1775,11 +1788,8 @@ try {
     const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
       (async () => {
         const sb = await import('/renderer/session-bar.js');
-        sb.sessionBar({session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'},
-          models: {fast: 'opencode:claude-haiku-5-5', fast_name: 'Claude Haiku 5.5', deep: 'ep:openai:gpt-6.1-terra',
-            deep_name: 'gpt-6.1-terra (OpenAI)', fast_reasoning: 'auto', deep_reasoning: 'medium', tune_thinking: true,
-            automatic_reasoning: {fast: {effort: 'low', thinking: 'disabled'}},
-            listen: 'Whisper small', translation: {language: 'ru', available: true}}});
+        const state = await (await fetch('/reasoning-state-fixture?scenario=automatic')).json();
+        sb.sessionBar({...state, session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'}});
         sb.showTtsStatus({provider: 'edge', phase: 'ready', voiceLabel: 'Edge · Svetlana',
           fullVoice: 'Edge-TTS (ru-RU-SvetlanaNeural)', readySlots: 6, totalSlots: 6, updatedAt: Date.now()});
       })()` });
@@ -1823,6 +1833,18 @@ try {
         const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
         const filename = openCode ? `reasoning-${kind}-${label}.png` : `reasoning-${label}.png`;
         fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, filename), Buffer.from(image.data, "base64"));
+        const policy = await send("Runtime.evaluate", {expression: `(() => {
+          const trigger = document.querySelector('[data-thinking-help]');
+          if (!trigger) throw Error('Automatic effort tuning help trigger is missing');
+          trigger.click();
+          if (!document.querySelector('#thinking-policy-help')?.matches(':popover-open'))
+            throw Error('Automatic effort tuning help did not open');
+        })()`});
+        if (policy.exceptionDetails) throw Error(policy.exceptionDetails.exception?.description || policy.exceptionDetails.text);
+        const policyImage = await send("Page.captureScreenshot", {format: "png", captureBeyondViewport: false});
+        fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, `reasoning-${kind}-policy-${label}.png`),
+          Buffer.from(policyImage.data, "base64"));
+        await send("Runtime.evaluate", {expression: `document.querySelector('#thinking-policy-help').hidePopover()`});
         if (openCode) {
           const manual = await send("Runtime.evaluate", { expression: `(() => {
             const select = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');

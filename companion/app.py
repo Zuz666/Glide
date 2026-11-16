@@ -107,25 +107,12 @@ def load_config():
     return glideconfig.load(ROOT, log=console_log)
 
 
-def _automatic_reasoning(coach, model, deep):
-    """Project automatic request controls, including accepted gateway/Gemini fallbacks, without a request."""
-    import llm_client
-    import openai_compat
-    if not model:
-        return {"effort": None, "thinking": None}
-    if openai_compat.is_gemini(model):
-        options = openai_compat.gemini_effort(model, deep)
-        provider = coach.llm.provider_for(model)
-        if provider is not None:
-            options = provider.effort_ok.get((model, deep), options)
-        return {"effort": options.get("reasoning_effort")}
-    options = llm_client.LLMClient.model_options(model, deep)
-    if model.startswith("opencode:"):
-        provider = coach.llm.provider_for(model)
-        if provider is not None:
-            options = provider.effort_ok.get((model, deep), options)
-    return {"effort": options.get("output_config", {}).get("effort"),
-            "thinking": options.get("thinking", {}).get("type")}
+def _automatic_reasoning(coach, catalog, model, deep):
+    """Project the same verified role policy as requests, without sending a request."""
+    import openai_capabilities
+    import reasoning
+    return reasoning.resolve(model, coach.cfg, deep,
+                             entry=openai_capabilities.catalog_raw_entry(catalog, model))
 
 
 BARGE_S = 0.15          # push-to-talk held this long is talking over the coach (a brush of the key isn't)
@@ -504,7 +491,7 @@ class App:
                 for eid, ep in openai_compat.endpoints(llm).items()
             }
         if reasoning_model is not None:
-            automatic = {role: _automatic_reasoning(self.coach, reasoning_model, role == "deep")
+            automatic = {role: _automatic_reasoning(self.coach, self.catalog, reasoning_model, role == "deep")
                          for role in ("fast", "deep")}
             return {"model": reasoning_model, "automatic": automatic,
                     "reasoning": reasoning.describe(
@@ -879,7 +866,7 @@ class App:
                   "voice_question": "deep" if opt.get("voice_question_model") == "deep" else "fast"}
         models["tune_thinking"] = opt.get("tune_thinking")
         models["automatic_reasoning"] = {
-            role: _automatic_reasoning(self.coach, models[role], role == "deep")
+            role: _automatic_reasoning(self.coach, self.catalog, models[role], role == "deep")
             for role in ("fast", "deep")
             if models["tune_thinking"] and models[role] and models[role + "_reasoning"] == "auto"}
         language = self.coach.localization.language
