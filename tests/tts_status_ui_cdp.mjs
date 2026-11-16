@@ -1464,16 +1464,35 @@ try {
   const activity = await import('/renderer/activity.js');
   activity.wireActivity();
   window.__loadingStatusbar = async (state) => {
-    const previous = {engineState: live.engineState, refresh: live.refresh};
-    live.engineState = state;
+    const previous = {engineState: live.engineState, refresh: live.refresh,
+      order: [...bar.children].map(el => el.dataset.sb)};
+    sbOrder.orderSessionBar(['time', 'cost', 'calls', 'cache', 'task', 'update', 'grow',
+      'models', 'stt', 'tts', 'mute', 'translation', 'ptt', 'mode']);
     sb.sessionBar({session_minutes: 42, coach: {cost_usd: 0.125, calls: 7, mode: 'live'},
-      refresh: {state: 'kb', started: Date.now() / 1000 - 35, force: true},
+      refresh: {state: 'kb.db', started: Date.now() / 1000 - 35, force: true},
       models: {fast: 'opencode:claude-haiku-5-5', fast_name: 'Claude Haiku 5.5',
         deep: 'ep:openai:gpt-6.1-terra', deep_name: 'gpt-6.1-terra (OpenAI)',
         listen: 'whisper small', translation: {language: 'ru', available: true}}});
+    const loadingRefresh = live.refresh;
+    live.engineState = 'running';
+    live.refresh = null;
+    activity.taskBar();
+    const spacer = bar.querySelector('[data-sb="grow"]');
+    const rightItems = [...bar.children].slice([...bar.children].indexOf(spacer) + 1)
+      .filter(el => el.getBoundingClientRect().width > 0);
+    window.__idleStatusbar = {
+      freeSpace: spacer.getBoundingClientRect().width,
+      items: rightItems.map(el => ({id: el.id, left: el.getBoundingClientRect().left,
+        right: el.getBoundingClientRect().right, width: el.getBoundingClientRect().width}))
+    };
+    live.engineState = state;
+    live.refresh = loadingRefresh;
     activity.taskBar();
     emit('res:sample', {cpu: 7.1, memMB: 1945, processes: 3});
-    return () => { live.engineState = previous.engineState; live.refresh = previous.refresh; activity.taskBar(); };
+    return () => {
+      live.engineState = previous.engineState; live.refresh = previous.refresh;
+      sbOrder.orderSessionBar(previous.order); activity.taskBar();
+    };
   };
   return 'main-ok';
 })()`,
@@ -1483,17 +1502,28 @@ try {
   }
   const loadingSizes = [2560, 1920, 1568, 1440, 1280, 1100, 960, 800];
   for (const [state, width] of ['building', 'running'].flatMap(state => loadingSizes.map(width => [state, width]))) {
+    await send("Emulation.setDeviceMetricsOverride", {width, height: width === 2560 ? 1440 : 900, deviceScaleFactor: 1, mobile: false});
     const loading = await send("Runtime.evaluate", {awaitPromise: true, expression: `
       (async () => {
         window.__restoreLoadingStatusbar?.();
         window.__restoreLoadingStatusbar = await window.__loadingStatusbar('${state}');
       })()`});
     if (loading.exceptionDetails) throw Error(loading.exceptionDetails.exception?.description || loading.exceptionDetails.text);
-    await send("Emulation.setDeviceMetricsOverride", {width, height: 900, deviceScaleFactor: 1, mobile: false});
     const geometry = await send("Runtime.evaluate", {returnByValue: true, expression: `(() => {
       const bar = document.getElementById('sessionbar'), bounds = bar.getBoundingClientRect();
       const visible = el => getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;
       if (document.getElementById('sb-task').hidden) throw Error('Loading fixture did not show the real task bar');
+      const idle = window.__idleStatusbar;
+      const rightmost = idle.items.at(-1);
+      if (rightmost && Math.abs(document.getElementById(rightmost.id).getBoundingClientRect().right - rightmost.right) > 1)
+        throw Error('Loading changed the footer right anchor at ${width}px');
+      if (idle.freeSpace >= document.getElementById('sb-task').getBoundingClientRect().width + 16) {
+        for (const item of idle.items) {
+          const r = document.getElementById(item.id).getBoundingClientRect();
+          if (Math.abs(r.left - item.left) > 1 || Math.abs(r.width - item.width) > 1)
+            throw Error('Loading moved a right-hand statusbar item despite spare space at ${width}px: ' + item.id);
+        }
+      }
       const items = [...bar.children].filter(el => el.dataset.sb !== 'grow' && visible(el));
       for (let i = 0; i < items.length; i++) {
         const r = items[i].getBoundingClientRect();
