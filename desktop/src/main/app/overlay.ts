@@ -17,6 +17,7 @@ export class Overlay {
   private held = false;
   private drag: { cursor: Electron.Point; pos: number[] } | null = null;
   private dragKeyVk = VK.ALT;
+  private leftDown = false;
 
   /** broadcast: send to every window; onLockChange: the unlocked state changed (the tray shows it). */
   constructor(private broadcast: <K extends EventChannel>(channel: K, payload: EventMap[K]) => void,
@@ -59,7 +60,7 @@ export class Overlay {
   setUnlocked(on: boolean): void {
     if (!this.win) return;
     this.unlocked = on;
-    this.win.setIgnoreMouseEvents(!on && !this.held);
+    this.win.setIgnoreMouseEvents(!on && !this.held && !this.drag);
     if (!on) this.saveBounds();
     this.broadcast("overlay:unlocked", on);
     this.onLockChange();
@@ -87,9 +88,9 @@ export class Overlay {
     this.saveBounds();
   }
 
-  /** The left button went down on it while it takes the mouse: follow the cursor until the button is released. */
+  /** Renderer fast path; buttons are excluded there and a native-started gesture keeps its origin. */
   startDrag(): void {
-    if (!this.win || !(this.held || this.unlocked)) return;
+    if (!this.win || !(this.held || this.unlocked) || this.drag || !keyDown(VK.LBUTTON)) return;
     this.drag = { cursor: screen.getCursorScreenPoint(), pos: this.win.getPosition() };
   }
 
@@ -102,29 +103,37 @@ export class Overlay {
    * when this PC can't read the keys. */
   startKeyPolling(): boolean {
     if (!keysAvailable()) return false;
+    this.leftDown = keyDown(VK.LBUTTON);
     setInterval(() => this.pollKeys(), 25);
     return true;
   }
 
   private pollKeys(): void {
+    const leftDown = keyDown(VK.LBUTTON), pressed = leftDown && !this.leftDown;
+    this.leftDown = leftDown;
     const win = this.win;
     if (!win || win.isDestroyed()) return;
+    const c = screen.getCursorScreenPoint();
     if (this.drag) {
-      if (!keyDown(VK.LBUTTON)) {
+      if (!leftDown) {
         this.drag = null;
         this.saveBounds();
       } else {
-        const c = screen.getCursorScreenPoint();
         win.setPosition(this.drag.pos[0] + c.x - this.drag.cursor.x, this.drag.pos[1] + c.y - this.drag.cursor.y);
       }
     }
-    const c = screen.getCursorScreenPoint(), b = win.getBounds();
+    const b = win.getBounds();
     const inside = c.x >= b.x && c.x < b.x + b.width && c.y >= b.y && c.y < b.y + b.height;
-    const held = keyDown(this.dragKeyVk) && (inside || !!this.drag);
+    // Keep the complete mouse gesture even if Alt is released before the button.
+    const held = !!this.drag || (keyDown(this.dragKeyVk) && inside);
     if (held !== this.held) {
       this.held = held;
       if (!this.unlocked) win.setIgnoreMouseEvents(!held);
       this.broadcast("overlay:held", held);
+    }
+    // Start in the same native loop that shows the move cursor, not after renderer/IPC scheduling.
+    if (pressed && held && inside && !this.unlocked && !this.drag) {
+      this.drag = { cursor: c, pos: win.getPosition() };
     }
   }
 }

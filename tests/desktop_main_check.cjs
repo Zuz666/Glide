@@ -290,7 +290,9 @@ async function configChecks() {
 }
 
 function overlayFocusChecks() {
-  let keyboardTarget = "game";
+  let keyboardTarget = "game", poll;
+  let cursor = { x: 60, y: 160 };
+  const pressed = new Set(), events = [];
   class OverlayWindow {
     constructor(options) {
       this.focusable = options.focusable;
@@ -304,30 +306,100 @@ function overlayFocusChecks() {
     once() {}
     on() {}
     setFocusable(on) { this.focusable = on; }
+    isDestroyed() { return false; }
     getBounds() { return { ...this.bounds }; }
     setBounds(bounds) { this.bounds = { ...bounds }; }
+    getPosition() { return [this.bounds.x, this.bounds.y]; }
+    setPosition(x, y) { this.bounds = { ...this.bounds, x, y }; }
     click() {
       if (!this.ignoreMouse && this.focusable) keyboardTarget = "overlay";
     }
   }
+  const previousWindow = electron.BrowserWindow, previousScreen = electron.screen;
+  const keysPath = path.join(dist, "keys.js"), overlayPath = path.join(dist, "app", "overlay.js");
+  const previousKeys = require.cache[keysPath], previousOverlay = require.cache[overlayPath];
+  const previous = settings.current, interval = global.setInterval;
   electron.BrowserWindow = OverlayWindow;
-  const keysPath = path.join(dist, "keys.js");
+  electron.screen = { getCursorScreenPoint: () => ({ ...cursor }) };
   require.cache[keysPath] = { id: keysPath, filename: keysPath, loaded: true,
-    exports: { VK: { ALT: 0x12 }, keyDown: () => false, keysAvailable: () => false } };
-  const { Overlay } = require(path.join(dist, "app", "overlay.js"));
-  const previous = settings.current;
+    exports: { VK: { ALT: 0x12, LBUTTON: 1 }, keyDown: (vk) => pressed.has(vk), keysAvailable: () => true } };
+  delete require.cache[overlayPath];
+  const { Overlay } = require(overlayPath);
   try {
     settings.current = { overlay: { enabled: true, width: 600, height: 80 } };
-    const overlay = new Overlay(() => {}, () => {});
+    const overlay = new Overlay((channel, value) => events.push([channel, value]), () => {});
     overlay.sync();
+    global.setInterval = (callback, ms) => { assert.strictEqual(ms, 25); poll = callback; return 0; };
+    assert.strictEqual(overlay.startKeyPolling(), true);
+    global.setInterval = interval;
     overlay.setUnlocked(true);
     overlay.changeWidth(-200);
     overlay.fitHeight(39);
     overlay.win.click();
     assert.strictEqual(keyboardTarget, "game",
       "Editing, resizing and collapsing the overlay must leave keyboard focus in the game so F8 stays eligible");
+    overlay.setUnlocked(false);
+
+    pressed.add(0x12);
+    poll();
+    assert.deepStrictEqual(events.at(-1), ["overlay:held", true]);
+    const origin = overlay.win.getPosition();
+    pressed.add(1);
+    poll();
+    cursor.x += 17; cursor.y += 9;
+    poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), [origin[0] + 17, origin[1] + 9],
+      "Alt drag must follow the native button/cursor even before a stalled renderer delivers mousedown/IPC");
+    cursor.x += 10;
+    overlay.startDrag(); // A delayed renderer notification must not replace the native drag origin.
+    poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), [origin[0] + 27, origin[1] + 9]);
+    pressed.delete(0x12);
+    poll();
+    assert.strictEqual(overlay.win.ignoreMouse, false, "Releasing Alt must not send the ongoing gesture to the game");
+    pressed.delete(1);
+    poll();
+    assert.strictEqual(overlay.win.ignoreMouse, true, "Mouse release must restore click-through without wheel/resize");
+    let released = overlay.win.getPosition();
+    cursor.x += 20; poll();
+    overlay.startDrag(); // A stale mousedown arriving after release must not start another drag.
+    poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), released);
+
+    // A quick renderer mousedown must also work if the pointer leaves before the next native tick.
+    cursor = { x: released[0] + overlay.win.getBounds().width - 2, y: released[1] + 10 };
+    pressed.add(0x12); poll();
+    pressed.add(1);
+    overlay.startDrag();
+    cursor.x += 30;
+    poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), [released[0] + 30, released[1]],
+      "Press at the edge then leave before polling must retain the renderer fast path");
+    pressed.delete(1); pressed.delete(0x12); poll();
+    released = overlay.win.getPosition();
+
+    // Holding a button from outside the overlay must not turn a later hover into a drag.
+    cursor = { x: released[0] - 20, y: released[1] + 10 };
+    pressed.add(0x12); pressed.add(1); poll();
+    cursor = { x: released[0] + 30, y: released[1] + 10 }; poll();
+    cursor.x += 20; poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), released);
+    pressed.delete(1); poll();
+    overlay.setUnlocked(true);
+    pressed.add(1); poll();
+    cursor.x += 20; poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), released,
+      "Unlocked controls retain renderer hit-testing; a button press must not start a native Alt drag");
+    overlay.startDrag();
+    cursor.x += 10; poll();
+    assert.deepStrictEqual(overlay.win.getPosition(), [released[0] + 10, released[1]]);
   } finally {
+    global.setInterval = interval;
     settings.current = previous;
+    electron.BrowserWindow = previousWindow;
+    electron.screen = previousScreen;
+    if (previousKeys) require.cache[keysPath] = previousKeys; else delete require.cache[keysPath];
+    if (previousOverlay) require.cache[overlayPath] = previousOverlay; else delete require.cache[overlayPath];
   }
 }
 

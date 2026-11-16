@@ -155,8 +155,8 @@ $("wide").onclick = () => g.invoke("overlay:width", 40);
 $("collapse").onclick = () => setOverlay({ collapsed: !settings.overlay?.collapsed });
 $("lock").onclick = () => g.invoke("overlay:unlock", false);
 
-// The overlay only gets the mouse while Alt is held over it (or while unlocked): drag moves it (the main process
-// follows the cursor until the button is released), the wheel changes its width, right-click collapses it.
+// Mousedown is an idempotent fast path; native polling also starts Alt drags if this renderer is delayed.
+// DOM hit-testing excludes buttons; the wheel/right-click work in either interactive mode.
 const interactive = () => document.body.classList.contains("held") || document.body.classList.contains("unlocked");
 document.addEventListener("mousedown", (e) => {
   if (e.button !== 0 || !interactive() || (e.target as HTMLElement).closest("button")) return;

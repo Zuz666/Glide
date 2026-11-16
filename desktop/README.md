@@ -150,6 +150,8 @@ The overlay is click-through. To change it, hold **Alt** with the mouse over it,
 
 The key can be changed under Settings > Overlay (`companion.overlay.drag_key`, as before). **Ctrl+Alt+O** or the tray menu unlocks it without holding a key. Opacity and font size are under Settings > Overlay too.
 
+Alt dragging has an independent native key/button/cursor start-and-move path in the main process, so a delayed renderer cannot leave a move cursor waiting for a mousedown IPC. A responsive renderer also provides an idempotent fast path for clicks near the edge before the next native poll. Press the mouse button over the overlay while holding the configured key; entering with a button already held does not start a drag. Once started, the gesture continues until the mouse button is released, even if Alt is released first, then click-through returns. Unlocked editing keeps renderer hit-testing for its buttons and never takes the game's keyboard focus.
+
 ## Voice
 
 ### Push-to-talk recognition
