@@ -108,7 +108,7 @@ def load_config():
 
 
 def _automatic_reasoning(coach, model, deep):
-    """Project automatic request controls, including Gemini's learned fallback, without making a request."""
+    """Project automatic request controls, including accepted gateway/Gemini fallbacks, without a request."""
     import llm_client
     import openai_compat
     if not model:
@@ -120,6 +120,10 @@ def _automatic_reasoning(coach, model, deep):
             options = provider.effort_ok.get((model, deep), options)
         return {"effort": options.get("reasoning_effort")}
     options = llm_client.LLMClient.model_options(model, deep)
+    if model.startswith("opencode:"):
+        provider = coach.llm.provider_for(model)
+        if provider is not None:
+            options = provider.effort_ok.get((model, deep), options)
     return {"effort": options.get("output_config", {}).get("effort"),
             "thinking": options.get("thinking", {}).get("type")}
 

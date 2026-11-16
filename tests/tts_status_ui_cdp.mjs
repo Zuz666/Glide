@@ -381,54 +381,86 @@ try {
     && inSetBodyView('[data-key="companion.llm.deep_model"]'), 'Deep button did not scroll deep_model into view');
 
   // Selected models resolve automatic requests without making a paid model call.
-  window.__reasoningProof = async () => {
+  window.__reasoningProof = async (openCode = false) => {
     const { live } = await import('/renderer/state.js');
     const { edits } = await import('/renderer/settings/fields.js');
     const { bindModelReasoning } = await import('/renderer/settings/model-picker.js');
-    const before = { url: live.engineUrl, state: live.engineState, fetch: window.fetch, edits: new Map(edits) };
-    edits.set('companion.llm.fast_model', 'claude-sonnet-5-5');
-    edits.set('companion.llm.deep_model', 'gemini:gemini-3-flash');
+    const before = { url: live.engineUrl, state: live.engineState, fetch: window.fetch.bind(window), edits: new Map(edits) };
+    const fastModel = openCode ? 'opencode:claude-haiku-5-5' : 'claude-sonnet-5-5';
+    const deepModel = openCode ? fastModel : 'gemini:gemini-3-flash';
+    edits.set('companion.llm.fast_model', fastModel);
+    edits.set('companion.llm.deep_model', deepModel);
     edits.set('companion.llm.fast_reasoning_effort', 'auto');
     edits.set('companion.llm.deep_reasoning_effort', 'auto');
     edits.set('companion.llm.tune_thinking', true);
     page.openSettingsTab('models');
     await page.renderSettings();
     live.engineUrl = 'http://reasoning.fixture'; live.engineState = 'running';
-    window.fetch = async (url, ...args) => String(url).startsWith('http://reasoning.fixture/models?')
-      ? new Response(JSON.stringify({
-        model: new URL(url).searchParams.get('reasoning_model'),
-        reasoning: { levels: ['low', 'medium', 'high'] },
-        automatic: String(url).includes('claude')
-          ? { fast: { effort: 'low', thinking: 'between_tools' }, deep: { effort: 'medium' } }
-          : { fast: { effort: 'minimal' }, deep: { effort: null } },
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    let scenario = 'default';
+    window.fetch = (url, ...args) => String(url).startsWith('http://reasoning.fixture/models?')
+      ? before.fetch('/reasoning-fixture?' + new URL(url).searchParams + '&scenario=' + scenario, ...args)
       : before.fetch(url, ...args);
     await bindModelReasoning(document.getElementById('set-body'), new Set());
     const summary = document.querySelector('[data-thinking-selection]');
-    check(summary.textContent.includes('claude-sonnet-5-5: low effort requested; thinking: between_tools')
-      && summary.textContent.includes('gemini:gemini-3-flash: provider default'),
-      'Automatic tuning must name selected models and distinguish requested effort from provider defaults');
+    check(summary.textContent.includes(fastModel + ': low effort requested; thinking: ' + (openCode ? 'disabled' : 'between_tools'))
+      && summary.textContent.includes(deepModel + (openCode ? ': medium effort requested' : ': provider default')),
+      'Automatic tuning must render the engine-selected requests for both roles: ' + summary.textContent);
     const automaticRow = summary.querySelector('[data-thinking-role="fast"]');
-    const defaultRow = summary.querySelector('[data-thinking-role="deep"]');
+    const deepRow = summary.querySelector('[data-thinking-role="deep"]');
     const neutralColor = getComputedStyle(summary).color;
-    check(getComputedStyle(automaticRow).color !== neutralColor && getComputedStyle(defaultRow).color === neutralColor,
-      'Only the role with an applicable automatic override must receive the positive highlight');
+    check(getComputedStyle(automaticRow).color !== neutralColor
+      && (getComputedStyle(deepRow).color !== neutralColor) === openCode,
+      'Only roles with an applicable backend automatic override must receive the positive highlight');
     const toggle = document.querySelector('[data-key="companion.llm.tune_thinking"] input');
     toggle.click();
-    check(summary.textContent.includes('provider default (tuning Off)') && !summary.textContent.includes('effort requested'),
-      'Turning tuning Off must immediately show provider defaults without saving');
-    check(getComputedStyle(automaticRow).color === neutralColor && getComputedStyle(defaultRow).color === neutralColor,
+    check([...summary.children].every(row => row.textContent.includes('provider default (tuning Off)'))
+      && !summary.textContent.includes('effort requested'),
+      'Turning tuning Off must immediately show provider defaults for both roles without saving');
+    check(getComputedStyle(automaticRow).color === neutralColor && getComputedStyle(deepRow).color === neutralColor,
       'Turning tuning off must remove the positive highlight from both roles');
     const effort = document.querySelector('[data-key="companion.llm.fast_reasoning_effort"] select');
-    effort.value = 'high'; effort.dispatchEvent(new Event('change', { bubbles: true }));
-    check(summary.textContent.includes('high effort (explicit; switch has no effect)'),
-      'An explicit effort must visibly override the automatic tuning switch');
-    toggle.click();
-    check(getComputedStyle(automaticRow).color === neutralColor,
-      'Explicit effort must stay neutral even while automatic tuning is On');
-    effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
-    check(getComputedStyle(automaticRow).color !== neutralColor,
-      'Returning to Auto must restore the highlight for the known automatic policy');
+    if (openCode) {
+      check(effort.disabled && [...effort.options].every(option => option.value === 'auto'),
+        'OpenCode automatic tuning must not broaden the existing Auto-only explicit choices');
+      toggle.click();
+    } else {
+      check([...effort.options].some(option => option.value === 'high' && !option.disabled),
+        'The direct Claude backend must continue to advertise high explicit effort');
+      effort.value = 'high'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+      check(automaticRow.textContent.includes('high effort (explicit; switch has no effect)')
+        && deepRow.textContent.includes('provider default (tuning Off)'),
+        'An explicit effort must visibly override the automatic tuning switch for its own role only');
+      toggle.click();
+      check(automaticRow.textContent.includes('high effort (explicit; switch has no effect)')
+        && getComputedStyle(automaticRow).color === neutralColor,
+        'Explicit effort must stay explicit and neutral even while automatic tuning is On');
+      effort.value = 'auto'; effort.dispatchEvent(new Event('change', { bubbles: true }));
+      check(getComputedStyle(automaticRow).color !== neutralColor,
+        'Returning to Auto must restore the highlight for the known automatic policy');
+    }
+    if (openCode) {
+      const modelInput = document.querySelector('[data-key="companion.llm.deep_model"] input');
+      const deepEffort = document.querySelector('[data-key="companion.llm.deep_reasoning_effort"] select');
+      for (const model of ['opencode:unverified-model', 'opencode:claude-haiku-4-5']) {
+        modelInput.value = model; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+        await until(() => deepRow.textContent.includes(model + ': provider default (no automatic override)'),
+          'Unsupported or unchanged OpenCode model must retain provider-default Auto: ' + model);
+        check(getComputedStyle(deepRow).color === neutralColor && deepEffort.value === 'auto',
+          'An OpenCode model with no automatic controls must not keep a stale highlight or explicit effort');
+      }
+      modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => deepRow.textContent.includes(deepModel + ': medium effort requested'));
+      scenario = 'fallback';
+      effort.dispatchEvent(new Event('model-capabilities-refresh'));
+      await until(() => automaticRow.textContent.includes('provider default (no automatic override)'),
+        'OpenCode learned fallback must show provider default, not stale requested controls');
+      check(getComputedStyle(automaticRow).color === neutralColor
+        && deepRow.textContent.includes('medium effort requested'),
+        'An accepted fallback is role-specific and must not disable Deep tuning');
+      scenario = 'default';
+      effort.dispatchEvent(new Event('model-capabilities-refresh'));
+      await until(() => automaticRow.textContent.includes('low effort requested; thinking: disabled'));
+    }
     live.engineState = 'stopped';
     await bindModelReasoning(document.getElementById('set-body'), new Set());
     check([...summary.querySelectorAll('span')].every(row => getComputedStyle(row).color === neutralColor),
@@ -442,6 +474,7 @@ try {
     };
   };
   (await window.__reasoningProof())();
+  (await window.__reasoningProof(true))();
   nav.show('coach');
   ttsEl.click();
   await until(() => document.querySelector('#set-tabs button.on')?.dataset.tab === 'voice'
@@ -1553,17 +1586,20 @@ try {
   }
   if (process.env.GLIDE_REASONING_SCREENSHOT_DIR) {
     fs.mkdirSync(process.env.GLIDE_REASONING_SCREENSHOT_DIR, { recursive: true });
-    const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
-      (async () => { window.__restoreReasoningProof = await window.__reasoningProof(); })()` });
-    if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
-    for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
-      await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
-      await send("Runtime.evaluate", { expression: `document.querySelector('[data-key="companion.llm.tune_thinking"]').scrollIntoView({ block: 'center' });` });
-      await sleep(100);
-      const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-      fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, `reasoning-${label}.png`), Buffer.from(image.data, "base64"));
+    for (const [kind, openCode] of [['direct', false], ['opencode', true]]) {
+      const proof = await send("Runtime.evaluate", { awaitPromise: true, expression: `
+        (async () => { window.__restoreReasoningProof = await window.__reasoningProof(${openCode}); })()` });
+      if (proof.exceptionDetails) throw Error(proof.exceptionDetails.exception?.description || proof.exceptionDetails.text);
+      for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
+        await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+        await send("Runtime.evaluate", { expression: `document.querySelector('[data-key="companion.llm.tune_thinking"]').scrollIntoView({ block: 'center' });` });
+        await sleep(100);
+        const image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+        const filename = openCode ? `reasoning-${kind}-${label}.png` : `reasoning-${label}.png`;
+        fs.writeFileSync(path.join(process.env.GLIDE_REASONING_SCREENSHOT_DIR, filename), Buffer.from(image.data, "base64"));
+      }
+      await send("Runtime.evaluate", { expression: `window.__restoreReasoningProof();` });
     }
-    await send("Runtime.evaluate", { expression: `window.__restoreReasoningProof();` });
   }
   if (process.env.GLIDE_VOICE_SCREENSHOT_DIR) {
     fs.mkdirSync(process.env.GLIDE_VOICE_SCREENSHOT_DIR, { recursive: true });

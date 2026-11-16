@@ -282,6 +282,8 @@ class LLMClient:
         against max_tokens, which can leave no room for the answer. Live callouts and spoken answers turn
         up-front thinking off and use low effort (fast); reviews and typed questions keep adaptive
         thinking at medium effort."""
+        if model.startswith(opencode.PREFIX):
+            return opencode.model_options(model, deep)
         m = model.lower()
         if models_mod.provider(m) != "anthropic":
             return {}
