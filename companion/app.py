@@ -167,6 +167,7 @@ class App:
         # the current pack, its api and why there is none: one holder for the app, the coach and the rules,
         # switched by coach.swap_kb after a background rebuild
         self.kb_handle = self.coach.kb_handle
+        self.state.step_lookup = self._step_match
         self.voice.style_fn = self.coach.persona_voice     # the app's narrator performs the coach's persona
         if not args.sim:
             self.catalog.refresh_if_old()
@@ -513,6 +514,10 @@ class App:
                     openai_capabilities.catalog_raw_entry(self.catalog, opt.get(path + "_model")))
                     for path in ("fast", "deep")},
                 "profile": tuning.profile(self.coach), "spent_usd": round(self.coach.stats.get("cost_usd", 0.0), 4)}
+
+    def _step_match(self, summary):
+        pack = self.pack
+        return pack.verified_step(summary) if pack is not None else {"status": "missing"}
 
     def on_new_knowledge(self, glide_path, kb_path):
         """The background refresh finished (kb_refresh.Refresher): use the new glide.db / kb.db from now on."""
@@ -897,7 +902,8 @@ class App:
             return None
         names = [("%s %s" % (e["tag"], e.get("name") or e.get("quest", ""))).strip()
                  for e in cur["elements"] if e.get("quest")]
-        line = "L%s  %s  |  %s" % (s["level"], cur.get("text") or "", ", ".join(names[:3]))
+        preview = (" [%s]" % s["step_match_reason"]) if s.get("step_match_reason") else ""
+        line = "L%s%s  %s  |  %s" % (s["level"], preview, cur.get("text") or "", ", ".join(names[:3]))
         wp = s.get("waypoint") or {}
         if wp.get("yards") is not None or wp.get("relative"):
             line += "  |  %s%s" % (("%d yd " % wp["yards"]) if wp.get("yards") is not None else "",

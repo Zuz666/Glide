@@ -20,6 +20,7 @@ MASKED_VERSION = "golden"           # what the probe's addon reports as its vers
 def run():
     L = lua51.LuaRuntime(unpack_returned_tuples=True)
     L.execute(wowmock.MOCK)
+    wowmock.install_bit(L)
     # the addon's version is masked: it goes into every payload (gv=) and so into the strip's paint, and the window
     # shows it, so each addon version bump would change this golden without any behaviour changing (R13). "golden"
     # has the length of a real version, so the pages fit as they would.

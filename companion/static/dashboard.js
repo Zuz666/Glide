@@ -611,8 +611,11 @@ function renderQuestPage(d) {
  * @param {string} lede
  */
 function questPageHead(d, step, lede) {
+  const notes = (step?.notes || []).map(note => `<p class="guide-note">${esc(note)}</p>`).join('');
+  const preview = d.step_match_reason
+    ? `<p class="step-match">${esc(d.step_match_reason)}; showing short live text.</p>` : '';
   return `<div class="head"><div class="glyph" aria-hidden="true">${stepGlyph(step)}</div>`
-    + `<div><h1>${esc(stepLabel(step))}</h1>${lede ? `<p class="lede">${lede}</p>` : ''}</div>`
+    + `<div><h1>${esc(stepLabel(step))}</h1>${notes}${preview}${lede ? `<p class="lede">${lede}</p>` : ''}</div>`
     + `<div class="step-no">Step<b>${esc(stepNumber(d) ?? '?')}</b>${d.guide ? esc(d.guide) : ''}</div></div>`;
 }
 

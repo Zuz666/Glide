@@ -971,7 +971,7 @@ isWorldQuestUnavailable istrained itemStat itemcount klaxxi label landfall line 
 maxlevel maxskill mirrorquest mob money mountcount multibox multiboxtext neutralzonefinished next niffelen
 nodmf noflyable noop noskyriding openitem openmap petfamily pin profession pve pvp questcount questgoto
 questitemcount questwaypoint rare reputation requires rescue retrieveitem scenario scrap setquestdb
-setturninhs setturninroute show25quests showtotalxp singlebox singleboxtext skill skipOnQuest skipgossip
+setturninhs setturninroute show25quests showtotalxp showwhiledead singlebox singleboxtext skill skipOnQuest skipgossip
 skipgossipid skipto skyriding solo spec spellmissing stable subzone subzoneskip tame target tbcWBF timer
 totalbagslots tradeskill train trainer treasure turnin turninconfig turninmultiple unitscan use usespell
 vale vehicle vendor waypoint wpbuff wpradius wptimer xp xpcheck xpto60 xpto60alliance xpto60hc xpto60horde

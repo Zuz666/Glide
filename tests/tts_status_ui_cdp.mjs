@@ -1763,10 +1763,35 @@ try {
       if (!ready) await sleep(25);
     }
     if (!ready) throw Error("Coach title did not match the decoded addon words");
+    if (proof.step_match === "verified") {
+      const notes = await send("Runtime.evaluate", { returnByValue: true, expression:
+        `({notes: Array.from(document.querySelectorAll('#plate .guide-note'), node => node.textContent),
+           preview: !!document.querySelector('#plate .step-match')})` });
+      if (JSON.stringify(notes.result.value.notes) !== JSON.stringify(proof.steps[0].notes) || notes.result.value.preview)
+        throw Error("Verified source-step notes must remain separate from the full main instruction");
+    }
     for (const [label, width, height] of [["2560x1440", 2560, 1440], ["compact", 1100, 800]]) {
       await send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       fs.writeFileSync(`${process.env.GLIDE_STEP_TITLE_PROOF}-coach-${label}.png`, Buffer.from(image.data, "base64"));
+    }
+    if (proof.missing) {
+      await fetch(`${baseUrl}/step-missing`);
+      await send("Page.reload", { ignoreCache: true });
+      let preview = false;
+      for (let i = 0; i < 200 && !preview; i++) {
+        const result = await send("Runtime.evaluate", { returnByValue: true, expression:
+          `({title: document.querySelector('#plate h1')?.textContent,
+             reason: document.querySelector('#plate .step-match')?.textContent,
+             notes: document.querySelectorAll('#plate .guide-note').length})` });
+        preview = result.result?.value?.title === proof.missing.steps[0].text
+          && result.result.value.reason?.includes(proof.missing.step_match_reason)
+          && result.result.value.notes === 0;
+        if (!preview) await sleep(25);
+      }
+      if (!preview) throw Error("An unavailable local source step must show live preview plus its reason, without old notes");
+      image = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+      fs.writeFileSync(`${process.env.GLIDE_STEP_TITLE_PROOF}-coach-missing.png`, Buffer.from(image.data, "base64"));
     }
   }
   console.log(overlayResult.result.value);
