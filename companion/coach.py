@@ -43,6 +43,7 @@ import websearch
 from geo import Geo
 from knowledge_layer import KnowledgeHandle, handle_view, knowledge_package, load_knowledge_layer, open_pack
 from llm_client import LLMClient
+from localization import Localizer
 from prompt_context import short_json
 from reflector import Reflector
 from reminder_ticker import ReminderTicker
@@ -104,6 +105,7 @@ class Coach:
         # the model calls; their messages go through self.emit as it is at the time (answer_once swaps it)
         self.llm = LLMClient(cfg, emit=lambda m: self.emit(m), system_fn=self._system_blocks, run_tool=self._run_tool,
                              catalog=self.deps.catalog, usage_fn=self.deps.usage_fn)
+        self.localization = Localizer(self.llm, self.deps.language)
         self.grounding = {"cited": 0, "unsupported": 0}     # replies citing known facts / with unsupported claims
         self.offline_ok = offline_ok
         self.state = None
@@ -198,6 +200,7 @@ class Coach:
             return time.time()
 
     def _emit(self, msg):
+        self.localization.message(msg)
         if msg.get("kind") in msg_kinds.COACH_SAID and msg.get("text"):
             self.convo.append({"t": self._now(), "who": "coach", "kind": msg["kind"],
                                "text": msg["text"], **({"chat": True} if msg.get("chat") else {})})
@@ -286,6 +289,16 @@ class Coach:
 
     def model_name(self, model):
         return self.llm.model_name(model)
+
+    def localize(self, text):
+        """English sample -> {text: localized or original English, language: effective base code}.
+
+        Synchronous on the HTTP/startup worker, never called by capture or hotkey paths.
+        """
+        return self.localization.localize(text)
+
+    def localize_text(self, text):
+        return self.localize(text)["text"]
 
     # ------------------------------------------------------------------------------------------
     def _loop(self):
@@ -683,7 +696,7 @@ class Coach:
             return None
         self.history.append(text)
         self.history = self.history[-10:]
-        msg = {"kind": msg_kind, "text": text, "speak": speaks and not barged, "urgent": urgent,
+        msg = {"kind": msg_kind, "text": self.localization.generated(text), "speak": speaks and not barged, "urgent": urgent,
                "model": self._model_note(model, meta), "t": time.time()}
         if tone:
             msg["tone"] = tone                     # how to deliver it in character (the OpenAI voice performs it)
@@ -771,7 +784,7 @@ class Coach:
                 text = None
         if text:
             text = trim_words(text, self._stretch(int(self.opt.get("announce_words"))))
-        msg = {"kind": "callout", "text": text or plain, "speak": True, "urgent": False,
+        msg = {"kind": "callout", "text": self.localization.generated(text) if text else plain, "speak": True, "urgent": False,
                "model": "update notice" if not text else self._model_note(model, {}), "t": time.time()}
         if text and self.tone:
             msg["tone"] = self.tone
@@ -1078,6 +1091,14 @@ class Coach:
         # a request may carry at most 4 cache_control markers (tools, these two blocks, the user message's reference)
         if mem:
             blocks.append(dict({"type": "text", "text": mem}, **({"cache_control": cc} if cc else {})))
+        blocks.append({"type": "text", "text": (
+            "OUTPUT LANGUAGE: Write all player-facing answers, callouts, reviews, quest explanations and "
+            "asides directly in the language with BCP-47 code %s. Keep questions and reference data unchanged. "
+            "Preserve proper names, identifiers, URLs, code and raw diagnostics. Keep machine directives "
+            "(FACTS, WATCH, UNWATCH, PERSONA, NAME, VOICE, LORE, TONE, ROLE, SCENE, BANTER, CHAT) and SKIP "
+            "in their existing format, with identifiers and directive payloads unchanged. "
+            "For JSON/structured tasks preserve the schema keys and required machine values."
+            % self.localization.language)})
         return blocks
 
     def _directives(self, text, with_facts=False):

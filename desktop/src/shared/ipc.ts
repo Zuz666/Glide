@@ -19,12 +19,13 @@ export interface AppInfo {
   python: { cmd: string; args: string[]; bundled: boolean }; configPath: string; electron: string;
 }
 
-export type TtsProvider = "windows" | "openai" | "elevenlabs" | "azure" | "google";
+export type TtsProvider = "windows" | "edge" | "openai" | "elevenlabs" | "azure" | "google";
 export interface SpeechSettings {
   provider?: TtsProvider;
   voiceName?: string;             // Windows voice
   rate?: number;
   volume?: number;
+  edge?: { voice?: string };
   openai?: { model?: string; voice?: string; instructions?: string };
   elevenlabs?: { voiceId?: string; model?: string };
   azure?: { region?: string; voice?: string };

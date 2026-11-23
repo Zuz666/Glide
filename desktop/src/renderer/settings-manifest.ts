@@ -89,6 +89,7 @@ export const MANIFEST: Record<string, ManifestEntry> = {
   "rules.buffs.remind_others": {"default":false,"kind":"bool"},
   "rules.buffs.ignore": {"default":[],"kind":"list"},
   "voice.enabled": {"default":true,"kind":"bool"},
+  "voice.language": {"default":"en","kind":"text"},
   "voice.rate": {"default":1,"min":-10,"max":10,"kind":"int"},
   "voice.volume": {"default":100,"min":0,"max":100,"kind":"int"},
   "voice.voice": {"default":"","kind":"text"},

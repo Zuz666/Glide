@@ -11,6 +11,7 @@ import path from "path";
 import type { SpeechStatus, WhisperModel } from "../shared/ipc";
 import { Engine, EngineOptions } from "./engine";
 import { pylibDir, userModelsDir } from "./paths";
+import { effectiveWhisperModel } from "./speech-language";
 
 const CHECK = `
 import json, os, sys
@@ -47,10 +48,10 @@ export const WHISPER_MODELS: { name: string; mb: number; note: string }[] = [
   { name: "tiny.en", mb: 74, note: "Fastest and smallest; misses more words" },
   { name: "base.en", mb: 141, note: "Fast; fine for short commands" },
   { name: "distil-small.en", mb: 320, note: "Close to small.en, a little faster" },
-  { name: "small.en", mb: 464, note: "Recommended: accurate, about a second per question" },
+  { name: "small.en", mb: 464, note: "Recommended for English: accurate, about a second per question" },
   { name: "distil-medium.en", mb: 755, note: "More accurate; slower on older CPUs" },
   { name: "medium.en", mb: 1460, note: "Most accurate English; slow on CPU" },
-  { name: "small", mb: 464, note: "Multilingual, for non-English game clients" },
+  { name: "small", mb: 464, note: "Multilingual; recommended for non-English speech" },
 ];
 const MODEL_MB: Record<string, number> = Object.fromEntries(WHISPER_MODELS.map((m) => [m.name, m.mb]));
 
@@ -126,11 +127,14 @@ export class Speech extends EventEmitter {
   }
 
   /** Check, and install / download what's missing. onInstalled runs when something new was put in place. */
-  ensure(opts: EngineOptions, ptt: Record<string, unknown>, onInstalled: () => void, force = false): Promise<void> {
-    if (this.running) return this.running;
-    // only a model this app knows: the name becomes a folder name and a download (config.json is the player's)
-    const asked = String(ptt.whisper_model || "small.en");
-    const modelName = MODEL_MB[asked] ? asked : "small.en";
+  ensure(opts: EngineOptions, ptt: Record<string, unknown>, onInstalled: () => void, force = false, language: unknown = "en"): Promise<void> {
+    // Only a model this app knows: the name becomes a folder name and a download (config.json is the player's).
+    const asked = effectiveWhisperModel(ptt.whisper_model, language);
+    const modelName = MODEL_MB[asked] ? asked : effectiveWhisperModel(undefined, language);
+    if (this.running) {
+      return this.status.modelName === modelName ? this.running
+        : this.running.then(() => this.ensure(opts, ptt, onInstalled, force, language));
+    }
     if (!force && !wantsWhisper(ptt, !!opts.noPtt)) {
       this.set({ state: "off", modelName, detail: "push-to-talk doesn't use Whisper with these settings" });
       return Promise.resolve();

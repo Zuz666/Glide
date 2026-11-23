@@ -1,5 +1,6 @@
-# What the engine needs beyond the Python 3.12 standard library, pinned to what the desktop app bundles
+# What the engine and desktop need beyond the Python 3.12 standard library, pinned to what the desktop app bundles
 # (desktop/scripts/fetch-python.ps1) and installs (desktop/src/main/speech.ts); tests/test_requirements.py keeps
 # them in step. For a run from source: py -3 -m pip install -r requirements.txt
 numpy==2.5.4            # maps, geometry, navigation (companion/geo.py, knowledge/mechanics/nav.py)
+edge-tts==7.3.1         # free online coach speech, bundled with the desktop (no API key)
 faster-whisper==1.2.1   # offline push-to-talk only; the app installs it on first use, the engine runs without it

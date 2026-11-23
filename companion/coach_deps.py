@@ -16,3 +16,4 @@ class CoachDeps:
     system_fn: Optional[Callable] = None      # -> dict of system status (addon version...)
     speak_fn: Optional[Callable] = None       # callback(text, kind, urgent): say a sentence now (streamed replies)
     watched_fn: Optional[Callable] = None     # -> set of watched buff names
+    language: str = "en"                      # canonical companion.voice.language, fixed for this coach session

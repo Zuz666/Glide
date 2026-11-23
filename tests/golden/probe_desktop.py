@@ -1,6 +1,5 @@
-"""Desktop golden master: the compiled Electron app's modules without Electron (desktop_probe.cjs): every main-process
-module's exports (app/ too), the IPC channels (which must match preload.ts's INVOKE and EVENTS), the app's default
-settings, how saved settings load and merge, and the whole Settings page schema (keys, labels, defaults, help).
+"""Desktop contracts: IPC channels must match the renderer allowlist; saved app settings retain their merge and
+write-back behavior. UI wording, copied schema data and internal module export lists are not behavioral contracts.
 Builds desktop/dist first (npm run build)."""
 TIER = "portable"     # golden.py tier: the desktop sources (needs npm and desktop/node_modules)
 import json

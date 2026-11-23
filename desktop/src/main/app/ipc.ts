@@ -147,7 +147,8 @@ function configChannels({ engine, overlay, ensureSpeech }: IpcDeps): void {
   handle("config:set", async (patch: Obj) => {
     const next = await saveConfig(patch, engine);      // through the running coach, which owns the file
     overlay.readDragKey();
-    if ((patch.companion as Obj | undefined)?.ptt) ensureSpeech();    // another Whisper model picked: fetch it
+    const companion = patch.companion as Obj | undefined;
+    if (companion?.ptt || (companion?.voice as Obj | undefined)?.language !== undefined) ensureSpeech();
     return next;
   });
 }
@@ -292,9 +293,10 @@ function folderChannels({ engine, mainWindow }: IpcDeps): void {
     const r = await dialog.showOpenDialog(mainWindow.win!, { title, defaultPath, properties: ["openDirectory"] });
     return r.canceled ? null : r.filePaths[0];
   });
-  // a web page in the browser, or a folder in Explorer: never a file (it would run), never a network share
+  // A web page, a local folder, or the exact Windows speech settings page; never arbitrary schemes or files.
   handle("shell:open", (target: string) => {
     const t = String(target || "");
+    if (process.platform === "win32" && t === "ms-settings:speech") return shell.openExternal(t);
     if (/^https?:\/\//i.test(t)) return shell.openExternal(t);
     if (isUnc(t) || !path.isAbsolute(t) || !fs.existsSync(t) || !fs.statSync(t).isDirectory()) {
       throw new Error(`only a folder on this PC or a web page opens from Glide: ${t}`);

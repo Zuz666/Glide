@@ -150,7 +150,6 @@ class App:
         # switched by coach.swap_kb after a background rebuild
         self.kb_handle = self.coach.kb_handle
         self.voice.style_fn = self.coach.persona_voice     # the app's narrator performs the coach's persona
-        self.coach.start()
         if not args.sim:
             self.catalog.refresh_if_old()
         self.rules.kb_fn = self.kb_handle       # -> the current knowledge.api.KnowledgePack or None
@@ -202,6 +201,8 @@ class App:
         self._ring_primed = False               # set by the first decoded frame (its ring events are old)
         self.log = open(live_path(time.strftime("%Y%m%d-%H%M%S") + ".jsonl"), "a", encoding="utf-8")
         self.last_log = 0
+        self.voice.announce(self.coach.localize_text)
+        self.coach.start()
 
     def _make_voice(self):
         """The narrator: the desktop app's (it speaks the "speak" events) or the engine's own speech process."""
@@ -209,8 +210,8 @@ class App:
         vcfg = {**cfg["voice"], "enabled": cfg["voice"]["enabled"] and not args.no_voice}
         if args.app and cfg["voice"].get("output", "app") == "app":
             from voice import HubVoice
-            return HubVoice(vcfg, self.hub)      # the desktop app speaks ("speak" events)
-        return Voice(vcfg, log_dir=LIVE_DIR)
+            return HubVoice(vcfg, self.hub, announce=False)      # the desktop app speaks ("speak" events)
+        return Voice(vcfg, log_dir=LIVE_DIR, announce=False)
 
     def _coach_deps(self, llm_cfg):
         """What the coach uses from the app, handed over when it is built: the model catalog, reminders, the player
@@ -228,6 +229,7 @@ class App:
         self.memory = memory.Memory(None if self.args.sim else memory.default_path())
         return CoachDeps(
             catalog=self.catalog,
+            language=settings.Settings("voice", self.cfg.get("voice", {})).get("language"),
             usage_fn=lambda u: self.write_log({"api": u}),           # per-call tokens: cache hit rate
             on_toggle=lambda k, v: self.on_settings({k: v}),         # "quest briefings off" by voice
             reminders=reminders.Reminders(None if self.args.sim else live_path("reminders.json")),
@@ -240,6 +242,13 @@ class App:
 
     # ------------------------------------------------------------------------------------------
     def on_message(self, m):
+        coach = getattr(self, "coach", None)
+        if coach is not None:
+            coach.localization.deliver(m, self._deliver_message)
+        else:
+            self._deliver_message(m)
+
+    def _deliver_message(self, m):
         m.setdefault("t", time.time())
         if m.get("kind") in msg_kinds.HISTORY:
             with self._hist_lock:
@@ -699,6 +708,11 @@ class App:
         models = {"fast": llm.get("fast_model"), "deep": llm.get("deep_model"),
                   "fast_name": self.coach.model_name(llm.get("fast_model")),
                   "deep_name": self.coach.model_name(llm.get("deep_model"))}
+        language = self.coach.localization.language
+        fast = llm.get("fast_model")
+        models["translation"] = {"language": language, "available": bool(
+            language != "en" and fast and self.coach.llm.available(fast)
+            and self.coach.llm.provider_for(fast) is not None)}
         # push-to-talk's speech-to-text, for the app's status bar (speech output is the app's own setting)
         p = getattr(self, "ptt", None)
         st = p.stt if p is not None and p.ok else None
@@ -838,7 +852,7 @@ class App:
         return "World of Warcraft leveling question. Names: " + ", ".join(names)
 
     def start_ptt(self):
-        c = self.cfg["ptt"]
+        c = dict(self.cfg["ptt"], language=settings.Settings("voice", self.cfg.get("voice", {})).get("language"))
         if not c.get("enabled") or self.args.no_ptt or sys.platform != "win32":
             return
         focus = None
@@ -859,6 +873,13 @@ class App:
         except Exception as e:
             log("ptt", "disabled: %s" % e)
 
+    def on_localize(self, body):
+        """POST /localize: English sample text, localized with the coach's configured LLM or kept English."""
+        text = body.get("text")
+        if not isinstance(text, str):
+            raise ValueError("text must be a string")
+        return self.coach.localize(text)
+
     def http_routes(self):
         """The engine's HTTP routes (contract 2) besides the dashboard's own page, stream, state and layout. POSTs
         need the run's token; so do the GETs that run something (/calibrate, /models?refresh=1 rebuilds the model
@@ -872,6 +893,7 @@ class App:
         return {
             ("POST", "/ask"): ask_route(self.coach.ask),
             ("POST", "/announce"): announce_route(self.coach.announce_update),
+            ("POST", "/localize"): post_json(self.on_localize),
             ("POST", "/settings"): post_json(self.on_settings, lambda applied: {"applied": applied}),  # + "saved"
             ("GET", "/models"): Route(get_json(models, on_error=lambda e: {"error": str(e)}), token=True),
             ("POST", "/reminders"): post_json(self.on_reminder),

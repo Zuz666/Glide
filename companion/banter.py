@@ -690,7 +690,7 @@ class Banter:
         text = trim_words(text, limit)
         self.said = (self.said + [text])[-8:]
         c.history = (c.history + [text])[-10:]
-        msg = {"kind": "banter", "text": text, "speak": True, "urgent": False,
+        msg = {"kind": "banter", "text": c.localization.generated(text), "speak": True, "urgent": False,
                "model": c._model_note(model, meta), "t": time.time()}
         if tone:
             msg["tone"] = tone

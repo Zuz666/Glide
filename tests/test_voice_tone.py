@@ -122,7 +122,9 @@ a.hub = types.SimpleNamespace(publish=lambda k, d: None)
 a.voice, a.overlay, a._flags, a.msg_history = v, None, {}, []
 a.write_log = lambda d: None
 a._hist_lock, a._ptt_down, a._ptt_down_t, a._held, a._barge_timer = threading.Lock(), False, 0.0, [], None
-a.coach = types.SimpleNamespace(barge=lambda: barged.append(1))
+a.coach = types.SimpleNamespace(barge=lambda: barged.append(1),
+                                localization=coach_mod.Coach({}, GlideDB("/x.db"), lambda m: None,
+                                                             offline_ok=True).localization)
 a.ptt = types.SimpleNamespace(key_down=False)
 
 # a brush of the key (up before BARGE_S) stops nothing

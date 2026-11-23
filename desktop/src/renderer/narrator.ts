@@ -1,7 +1,7 @@
 // The narrator: speaks the coach's lines ("speak" events on the engine's event stream) with the voice picked in
 // Settings > Voice.
 //
-// Windows voices are spoken here (speechSynthesis); online providers (OpenAI, ElevenLabs, Azure, Google) return MP3
+// Windows voices are spoken here (speechSynthesis); online providers (Edge-TTS, OpenAI, ElevenLabs, Azure, Google) return MP3
 // from the main process, which is played in order. Each line's audio is requested as soon as it's queued, so the
 // next one is usually ready when the current one ends. A failed request speaks that line with the Windows voice.
 //
@@ -29,6 +29,7 @@ interface Handed { u: SpeechSynthesisUtterance; tag: string; resolve: () => void
 class Narrator {
   private provider = "windows";
   private voiceName = "";
+  private onlineLabel = "";
   private rate = 1;
   private volume = 1;
   private queue: Line[] = [];
@@ -49,6 +50,7 @@ class Narrator {
     if (muted && !this.muted) this.stop();
     this.muted = muted;
     this.provider = sp.provider || "windows";
+    this.onlineLabel = speakLabel(sp);
     this.voiceName = sp.voiceName || "";
     this.rate = Number(sp.rate ?? 1);
     this.volume = Number(sp.volume ?? 1);
@@ -244,7 +246,7 @@ class Narrator {
     a.volume = Math.max(0, Math.min(1, this.volume));
     a.playbackRate = this.rate;
     a.preservesPitch = true;
-    this.noteVoice(`${this.provider} (online voice)`);
+    this.noteVoice(`${this.provider === "edge" ? this.onlineLabel : this.provider} (online voice)`);
     this.playing = a;
     await new Promise<void>((resolve) => {
       a.onended = a.onerror = a.onpause = () => resolve();
@@ -276,6 +278,7 @@ export const speech = new Narrator();
 /** The narrator's voice for the status bar: the provider and its model or voice, with the same defaults as main/tts.ts. */
 export function speakLabel(sp: Obj): string {
   const p = sp.provider || "windows";
+  if (p === "edge") return `Edge-TTS ${sp.edge?.voice || "(no voice selected)"}`;
   if (p === "openai") return `OpenAI ${sp.openai?.model || "gpt-4o-mini-tts"}, ${sp.openai?.voice || "coral"}`;
   if (p === "elevenlabs") return `ElevenLabs ${sp.elevenlabs?.model || "eleven_flash_v2_5"}`;
   if (p === "azure") return `Azure ${(sp.azure?.voice || "en-US-AndrewMultilingualNeural").replace(/^[a-z]{2}-[A-Z]{2}-/, "")}`;

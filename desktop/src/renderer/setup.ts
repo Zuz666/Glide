@@ -9,6 +9,7 @@ import { $, esc, icon, toast } from "./dom.js";
 import { speech } from "./narrator.js";
 import { show } from "./nav.js";
 import { live } from "./state.js";
+import { speechLanguage as language, voiceSample } from "./speech-language.js";
 import { AddonStatus, KeyStatus, KnownKey, Obj, TtsProvider, WowClient } from "./types.js";
 
 type Ai = "anthropic" | "gemini" | "openai" | "openrouter" | "none";
@@ -20,7 +21,6 @@ const AI_KEY: Record<Exclude<Ai, "none">, string> = { anthropic: "ANTHROPIC_API_
 const OPENAI_ENDPOINT = { id: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY" };
 const STT_KEY: Record<string, string> = { groq: "GROQ_API_KEY", openai: "OPENAI_API_KEY", deepgram: "DEEPGRAM_API_KEY" };
 const TTS_KEY: Record<string, string> = { openai: "OPENAI_API_KEY", elevenlabs: "ELEVENLABS_API_KEY", azure: "AZURE_SPEECH_KEY", google: "GOOGLE_TTS_API_KEY" };
-const SAMPLE = "Next: turn in Kobold Camp Cleanup to Marshal McBride, 40 yards north.";
 // [fallback id, its family]: the newest model of the family the key lists, else the fallback. [fast, deep] per quality.
 type Preset = [string, RegExp][];
 const PRESETS: Record<Exclude<Ai, "none">, Record<"balanced" | "best", Preset>> = {
@@ -47,7 +47,7 @@ const FLAVOR: Record<string, string> = { forever: "WoW Forever", classic_beta: "
 // what the player has chosen so far (read from the saved settings when setup opens)
 const pick = {
   stt: "auto", sttOnline: "groq", pttKey: "F8",
-  voice: "windows" as "windows" | "online" | "off", tts: "elevenlabs" as TtsProvider, voiceName: "",
+  voice: "windows" as "windows" | "online" | "off", tts: "elevenlabs" as TtsProvider, voiceName: "", edgeVoice: "",
   ai: "anthropic" as Ai, quality: "balanced" as "balanced" | "best", models: null as string[] | null,
 };
 let known: KnownKey[] = [];
@@ -263,33 +263,57 @@ function drawVoice(host: HTMLElement): void {
     + choice("su-voice", "windows", pick.voice, "A Windows voice", "Free and offline, from the voices installed on this PC.", "Recommended")
     + (pick.voice === "windows" ? `<div class="su-more"><div class="row"><span class="help">Voice</span><select id="su-wvoice" aria-label="Windows voice">
         <option value="">Windows default</option>${vs.map((v) => `<option ${v.name === pick.voiceName ? "selected" : ""}>${esc(v.name)}</option>`).join("")}</select></div></div>` : "")
-    + choice("su-voice", "online", pick.voice, "A natural online voice", "Sounds like a person, and costs a little per line on your own account. If it fails, that line uses the Windows voice.")
+    + choice("su-voice", "online", pick.voice, "A natural online voice", "Edge-TTS is free without a key; other services may charge per line on your account. If a service fails, that line uses the Windows voice.")
     + (pick.voice === "online" ? `<div class="su-more"><div class="row"><span class="help">Service</span><select id="su-tts" aria-label="Voice service">
-        ${[["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"], ["azure", "Azure Speech (free tier)"], ["google", "Google Cloud"]].map(([v, l]) => `<option value="${v}" ${v === pick.tts ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-        ${keyBox(TTS_KEY[pick.tts])}${pick.tts === "azure" ? `<p class="help">Azure also needs your resource's region: it starts as eastus; change it in Settings &gt; Voice.</p>` : ""}</div>` : "")
+        ${[["edge", "Edge-TTS (free, no key)"], ["elevenlabs", "ElevenLabs"], ["openai", "OpenAI"], ["azure", "Azure Speech (free tier)"], ["google", "Google Cloud"]].map(([v, l]) => `<option value="${v}" ${v === pick.tts ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        ${pick.tts === "edge" ? `<p class="help">Free online, no API key. Text is sent to Microsoft. This unofficial service may fail or limit usage; the Windows voice remains the fallback.</p>
+          <div class="row"><span class="help">Voice</span><select id="su-edge-voice" aria-label="Edge-TTS voice"><option value="${esc(pick.edgeVoice)}">${esc(pick.edgeVoice || "Choose a voice")}</option></select></div>
+          <div class="row"><span class="help">Show all voice languages</span><label class="switch"><input type="checkbox" id="su-edge-all-languages" aria-label="Show all voice languages"><span class="track"></span><span class="state">Off</span></label></div>` : keyBox(TTS_KEY[pick.tts])}
+        ${pick.tts === "azure" ? `<p class="help">Azure also needs your resource's region: it starts as eastus; change it in Settings &gt; Voice.</p>` : ""}</div>` : "")
     + choice("su-voice", "off", pick.voice, "Text only", "The coach writes in its chat and on the overlay, without speaking.")
     + `</div>`
-    + (pick.voice === "off" ? "" : `<div class="row su-sample"><button type="button" class="btn" id="su-sample">${icon("volume-2")}Play a sample</button></div>`);
+    + (pick.voice === "off" ? "" : `<p class="help">Samples and voice filtering use the saved language in Settings &gt; Language. Sample translation needs an available LLM; otherwise it stays English.</p><div class="row su-sample"><button type="button" class="btn" id="su-sample">${icon("volume-2")}Play a sample</button></div>`);
   onChoice(host, "su-voice", (v) => { pick.voice = v as typeof pick.voice; drawVoice(host); });
   const wv = document.getElementById("su-wvoice") as HTMLSelectElement | null;
   if (wv) wv.onchange = () => { pick.voiceName = wv.value; };
   const tts = document.getElementById("su-tts") as HTMLSelectElement | null;
   if (tts) tts.onchange = () => { pick.tts = tts.value as TtsProvider; drawVoice(host); };
+  const ev = document.getElementById("su-edge-voice") as HTMLSelectElement | null;
+  if (ev) {
+    ev.onchange = () => { pick.edgeVoice = ev.value; };
+    call("tts:voices", "edge").then((voices) => {
+      if (!voices || !ev.isConnected) return;
+      if (!pick.edgeVoice) pick.edgeVoice = voices.find((v) => v.id.startsWith(`${language()}-`))?.id || "";
+      const all = $<HTMLInputElement>("su-edge-all-languages");
+      const draw = () => {
+        const visible = all.checked ? voices : voices.filter((v) => v.id === pick.edgeVoice || v.id.startsWith(`${language()}-`));
+        const saved = pick.edgeVoice && !visible.some((v) => v.id === pick.edgeVoice)
+          ? `<option value="${esc(pick.edgeVoice)}" selected>${esc(pick.edgeVoice)} (saved)</option>` : "";
+        ev.innerHTML = saved + visible.map((v) => `<option value="${esc(v.id)}" ${v.id === pick.edgeVoice ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+      };
+      all.onchange = () => {
+        all.parentElement!.querySelector(".state")!.textContent = all.checked ? "On" : "Off";
+        draw();
+      };
+      draw();
+    });
+  }
   bindOpen(host);
   if (pick.voice === "windows" && !vs.length && window.speechSynthesis)
     speechSynthesis.addEventListener("voiceschanged", () => drawVoice(host), { once: true });
   const s = document.getElementById("su-sample");
-  if (s) s.onclick = async () => { if (await saveVoice()) speech.say(SAMPLE, true); };
+  if (s) s.onclick = async () => { if (await saveVoice()) speech.say(await voiceSample(), true); };
 }
 
 /** The voice choice into the app settings (the sample plays from them). */
 async function saveVoice(): Promise<boolean> {
   if (pick.voice === "off") return true;
   if (pick.voice === "online") {
+    if (pick.tts === "edge" && !pick.edgeVoice) { hint("Load and choose an Edge-TTS voice first.", true); return false; }
     const env = TTS_KEY[pick.tts];
-    if (!pasted(env) && !hasKey(env)) { hint("Paste the key for the voice service, or pick a Windows voice.", true); return false; }
-    if (!(await saveKey(env))) return false;
-    await updateAppSettings({ speech: { provider: pick.tts } });
+    if (env && !pasted(env) && !hasKey(env)) { hint("Paste the key for the voice service, or pick Edge-TTS or a Windows voice.", true); return false; }
+    if (env && !(await saveKey(env))) return false;
+    await updateAppSettings({ speech: { provider: pick.tts, ...(pick.tts === "edge" ? { edge: { voice: pick.edgeVoice } } : {}) } });
   } else {
     await updateAppSettings({ speech: { provider: "windows", voiceName: pick.voiceName } });
   }
@@ -462,6 +486,7 @@ export async function openSetup(): Promise<void> {
   pick.voice = c.voice?.enabled === false ? "off" : sp.provider && sp.provider !== "windows" ? "online" : "windows";
   if (sp.provider && sp.provider !== "windows") pick.tts = sp.provider;
   pick.voiceName = sp.voiceName || "";
+  pick.edgeVoice = sp.edge?.voice || "";
   const fast = String(llm.fast_model || "");
   pick.ai = fast.startsWith("gemini:") && hasKey("GEMINI_API_KEY") ? "gemini" : fast.startsWith("ep:openai:") && hasKey("OPENAI_API_KEY") ? "openai"
     : fast.includes("/") && hasKey("OPENROUTER_API_KEY") ? "openrouter" : "anthropic";

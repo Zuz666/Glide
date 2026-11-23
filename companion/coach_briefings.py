@@ -108,17 +108,21 @@ class Briefings:
             return None
         head, infos = briefing.spoken_head(infos, later, int(c.opt.get("briefing_max_quests")))
         words = min(int(c.opt.get("briefing_words")) + 20 * (min(len(infos), 4) - 1), 100)
+        head = c.localize_text(head)
         speech = None
         speak_fn = c.deps.speak_fn
         if speak_fn and head:
-            # the objective needs no model: say it now, and the explanation sentence by sentence as it streams
-            speak_fn(head, "briefing", False)
-            speech = EarlySpeech(lambda t, u: speak_fn(t, "briefing", u), words, prefix=head)
+            # Prepare the objective before speech; the model produces the explanation natively in the same language.
+            if speak_fn(head, "briefing", False) is not False:
+                speech = EarlySpeech(lambda t, u: speak_fn(t, "briefing", u), words, prefix=head)
         expl, model_txt, facts = self._explain_quests(infos, later, words, speech)
         if not expl:
             expl = " ".join(filter(None, (briefing.offline_explanation(b) for b in infos)))
+            expl = c.localize_text(expl)
         msg = {"kind": "briefing", "text": (head + " " + expl).strip(), "speak": True, "urgent": False,
                "model": model_txt, "quests": [b["id"] for b in infos], "t": time.time()}
+        # Both parts are ready: do not retranslate the model's native explanation or the early-spoken objective.
+        msg["text"] = c.localization.generated(msg["text"])
         if speech is not None:
             msg["spoken"] = speech.spoken          # the head (and any streamed sentences) was said already
         if c.pack is not None and facts:

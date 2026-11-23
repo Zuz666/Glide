@@ -3,6 +3,7 @@
 import { $, esc, icon } from "../dom.js";
 import { Field } from "../settings-schema.js";
 import { live } from "../state.js";
+import { languageCode } from "../speech-language.js";
 import { Obj } from "../types.js";
 
 /** field key -> new value, as the control shows it (unsaved) */
@@ -62,8 +63,19 @@ function controlHtml(f: Field, id: string, v: unknown): string {
       return `<input type="number" id="${id}" value="${esc(v)}" ${f.min != null ? `min="${f.min}"` : ""} ${f.max != null ? `max="${f.max}"` : ""} step="${f.step ?? 1}">`;
     case "range":
       return `<input type="range" id="${id}" value="${esc(v)}" min="${f.min}" max="${f.max}" step="${f.step ?? 1}"><span class="rangeval">${esc(v)}</span>`;
-    case "select":
-      return `<select id="${id}">${(f.options || []).map(([val, lab]) => `<option value="${esc(val)}" ${val === v ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+    case "select": {
+      let options = f.options || [];
+      if (f.key === "companion.voice.language" && typeof v === "string" && !options.some(([code]) => code === v))
+        options = [...options, [v, v]];
+      if (f.key === "companion.ptt.whisper_model"
+          && languageCode(edits.get("companion.voice.language") ?? getPath(live.config, "companion.voice.language")) !== "en") {
+        options = options.filter(([model]) => !model.endsWith(".en"));
+        // Keep a manually selected multilingual model, but never offer an English-only one for another language.
+        if (typeof v === "string" && v && !v.endsWith(".en") && v !== "small") options.push([v, `${v}: saved multilingual model`]);
+        if (typeof v !== "string" || !v || v.endsWith(".en")) v = "small";
+      }
+      return `<select id="${id}">${options.map(([val, lab]) => `<option value="${esc(val)}" ${val === v ? "selected" : ""}>${esc(lab)}</option>`).join("")}</select>`;
+    }
     case "list":
       return `<textarea id="${id}" rows="3" cols="40" spellcheck="false">${esc(((v as string[]) || []).join("\n"))}</textarea>`;
     default:

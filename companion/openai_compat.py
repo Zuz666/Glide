@@ -170,6 +170,10 @@ def to_openai(body, flavor="openrouter"):
         elif txt:
             msgs.append({"role": "user", "content": txt})
     out = {"model": model, "messages": msgs, "max_tokens": body.get("max_tokens")}
+    if flavor == "endpoint" and model.startswith("gpt-6"):
+        # GPT-6 Chat Completions requires non-reasoning mode for the coach's function calls.
+        out["max_completion_tokens"] = out.pop("max_tokens")
+        out["reasoning_effort"] = "none"
     if flavor == "openrouter":
         out["usage"] = {"include": True}
     tools = body.get("tools")

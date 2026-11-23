@@ -56,7 +56,7 @@ import app  # noqa: E402
 
 tmp = tempfile.mkdtemp()
 app.live_path = lambda name: os.path.join(tmp, name)
-fake = types.SimpleNamespace(args=types.SimpleNamespace(sim=True), write_log=lambda rec: None,
+fake = types.SimpleNamespace(args=types.SimpleNamespace(sim=True), cfg={"voice": {}}, write_log=lambda rec: None,
                              on_settings=lambda changes: None, set_watch=lambda name, on: None,
                              speak_early=lambda text, kind, urgent=False: None,
                              rules=types.SimpleNamespace(addon_status={}, watched=set()))

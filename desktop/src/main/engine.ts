@@ -84,12 +84,12 @@ export class Engine extends EventEmitter {
   }
 
   private env(o: EngineOptions): NodeJS.ProcessEnv {
-    const bundled = pythonCommand().bundled;
+    const py = pythonCommand();
     const env: NodeJS.ProcessEnv = { ...process.env, ...o.env, PYTHONUTF8: "1", PYTHONUNBUFFERED: "1",
                                       PYTHONIOENCODING: "utf-8", GLIDE_WHISPER_DIRS: whisperDirs().join(path.delimiter) };
-    if (bundled) {
-      // the bundled runtime sees only its own packages and the app's (userData/pylib), not the user's Pythons
-      delete env.PYTHONHOME;
+    if (py.bundled) {
+      // Pin the standard library and DLLs too: Windows may otherwise use another registered Python.
+      env.PYTHONHOME = path.dirname(py.cmd);
       env.PYTHONNOUSERSITE = "1";
       env.PYTHONPATH = pylibDir();
     } else {
