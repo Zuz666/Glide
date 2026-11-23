@@ -1,0 +1,61 @@
+{
+  "rules": [
+    {
+      "prefixes": ["tts-"],
+      "suffixes": ["-tts"],
+      "contains": ["-tts-"],
+      "reason": "speech synthesis model, not a chat coach model"
+    },
+    {
+      "prefixes": ["whisper-"],
+      "suffixes": ["-transcribe", "-diarize"],
+      "contains": ["-transcribe-"],
+      "reason": "speech transcription model, not a chat coach model"
+    },
+    {
+      "prefixes": ["gpt-realtime", "gpt-live-"],
+      "suffixes": [],
+      "contains": ["-realtime"],
+      "reason": "realtime or live-session model, not an ordinary Chat/Responses coach model"
+    },
+    {
+      "prefixes": ["gpt-audio"],
+      "suffixes": [],
+      "contains": ["-audio-preview"],
+      "reason": "audio-specialized model, excluded from text coaching"
+    },
+    {
+      "prefixes": ["gpt-image", "chatgpt-image", "dall-e-", "sora-"],
+      "suffixes": [],
+      "contains": [],
+      "reason": "image or video generation model, not a text coach model"
+    },
+    {
+      "prefixes": ["text-embedding-"],
+      "suffixes": [],
+      "contains": [],
+      "reason": "embedding model, not a text generation model"
+    },
+    {
+      "prefixes": ["omni-moderation", "text-moderation"],
+      "suffixes": [],
+      "contains": [],
+      "reason": "moderation classifier, not a chat coach model"
+    },
+    {
+      "prefixes": [
+        "babbage", "davinci", "text-ada", "text-babbage", "text-curie",
+        "text-davinci", "code-davinci", "code-cushman"
+      ],
+      "suffixes": [],
+      "contains": ["-instruct"],
+      "reason": "legacy completions model, not a conversational coach model"
+    },
+    {
+      "prefixes": ["computer-use", "gpt-rosalind-research"],
+      "suffixes": ["-cyber"],
+      "contains": ["-deep-research", "-search-api", "-search-preview", "-cyber-"],
+      "reason": "specialized workflow model, not an ordinary coach model"
+    }
+  ]
+}

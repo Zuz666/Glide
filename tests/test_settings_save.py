@@ -88,6 +88,40 @@ try:
     assert open(p, encoding="utf-8").read() == before
     assert a.coach.cfg == running_before
 
+    # Excluded official OpenAI specialty models are rejected on both live Save and Save-and-restart,
+    # without blocking repair of the other role when an old excluded ID was already saved.
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": {
+            "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+            "fast_model": "ep:openai:tts-1",
+            "deep_model": "ep:openai:gpt-6.1-terra",
+        }}}, fh)
+    a_ex = fake_app(sim=False)
+    a_ex.coach.cfg.update({
+        "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+        "fast_model": "ep:openai:tts-1",
+        "deep_model": "ep:openai:gpt-6.1-terra",
+    })
+    before_ex = open(p, encoding="utf-8").read()
+    for bad_req in (
+        {"save": {"companion": {"llm": {"deep_model": "ep:openai:whisper-1"}}}, "deep_model": "ep:openai:whisper-1"},
+        {"save": {"companion": {"llm": {"deep_model": "ep:openai:text-embedding-3-small"}}}},
+    ):
+        try:
+            glide_app.App.on_settings(a_ex, bad_req)
+            raise AssertionError("accepted excluded OpenAI model: %r" % (bad_req,))
+        except ValueError as exc:
+            assert "not a" in str(exc), exc
+        assert open(p, encoding="utf-8").read() == before_ex
+    # Editing deep_model to a valid model succeeds even while fast_model still holds the pre-existing excluded ID.
+    glide_app.App.on_settings(a_ex, {
+        "save": {"companion": {"llm": {"deep_model": "ep:openai:gpt-5.6-sol"}}},
+        "deep_model": "ep:openai:gpt-5.6-sol",
+    })
+    assert a_ex.coach.cfg["deep_model"] == "ep:openai:gpt-5.6-sol"
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(before)
+
     # Use default removes the override on disk and applies that exact default without a restart.
     default_model = glide_app.settings.default("llm.fast_model")
     glide_app.App.on_settings(a, {

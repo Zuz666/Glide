@@ -8,6 +8,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 sys.path.insert(0, os.path.join(ROOT, "companion"))
 import openai_compat  # noqa: E402
 from openai_responses import from_responses, to_responses  # noqa: E402
+import models  # noqa: E402
 
 
 # The engine runs normalized tool_use blocks, then appends their results to the same conversation.
@@ -88,6 +89,43 @@ clamped = from_responses({"status": "completed", "usage": {"input_tokens": 4,
                                                          "input_tokens_details": {"cached_tokens": 8}}})
 assert clamped["usage"]["input_tokens"] == 0 and clamped["usage"]["cache_read_input_tokens"] == 8, clamped
 
+# GPT-5.6+ and GPT-6 report cache_write_tokens and 30m/12h breakdown separately from cached_tokens.
+cw_reply = from_responses({
+    "model": "gpt-6.1-terra", "status": "completed", "output": text_items,
+    "usage": {
+        "input_tokens": 12_000,
+        "output_tokens": 200,
+        "input_tokens_details": {
+            "cached_tokens": 4_000,
+            "cache_write_tokens": 7_000,
+            "cache_write_tokens_details": {"ttl_30m_tokens": 3_000, "ttl_12h_tokens": 4_000},
+        },
+    },
+})
+assert cw_reply["usage"] == {
+    "input_tokens": 1_000,
+    "output_tokens": 200,
+    "cache_read_input_tokens": 4_000,
+    "cache_creation_input_tokens": 7_000,
+    "cache_creation_12h_input_tokens": 4_000,
+}, cw_reply["usage"]
+# At $1.00/M in, $0.05/M cached read (5%), $1.25/M 30m write (1.25x), $2.50/M 12h write (2.5x), $5.00/M out:
+# input = (1000*1.0 + 4000*0.05 + 3000*1.25 + 4000*2.5) / 1e6 = 0.01495; output = 200*5.0 / 1e6 = 0.001 -> 0.01595
+terra_price = {"in": 1.0, "out": 5.0, "cache_read": 0.05, "cache_write": 1.25}
+assert abs(models.cost_usd(terra_price, cw_reply["usage"]) - 0.01595) < 1e-9
+
+chat_cw = openai_compat.from_openai({
+    "model": "gpt-5.6-luna",
+    "choices": [{"finish_reason": "stop", "message": {"content": "Hi"}}],
+    "usage": {
+        "prompt_tokens": 5_000, "completion_tokens": 100,
+        "prompt_tokens_details": {"cached_tokens": 2_000, "cache_write_tokens": 2_000},
+    },
+})
+assert chat_cw["usage"] == {
+    "input_tokens": 1_000, "output_tokens": 100,
+    "cache_read_input_tokens": 2_000, "cache_creation_input_tokens": 2_000,
+}, chat_cw["usage"]
 
 # Function schemas remain permissive; optional fields must not become required during migration.
 schema = {"type": "object", "properties": {"zone": {"type": "integer"}}, "required": []}

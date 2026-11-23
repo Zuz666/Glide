@@ -44,7 +44,47 @@ assert astra["levels"] == ["low", "medium", "high", "xhigh", "max"], astra
 assert astra["transport"] == "responses"
 assert reasoning.describe("ep:work:gpt-5", endpoint())["levels"] == ["minimal", "low", "medium", "high"]
 assert reasoning.describe("ep:work:gpt-5.1", endpoint())["levels"] == ["none", "low", "medium", "high"]
-assert reasoning.describe("ep:work:gpt-5.6-terra", endpoint())["transport"] == "chat"
+for name in ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6"):
+    caps = reasoning.describe("ep:work:" + name, endpoint())
+    assert caps["known"] and caps["transport"] == "responses" and caps["limit_field"] == "max_output_tokens", caps
+    assert caps["levels"] == ["none", "low", "medium", "high", "xhigh", "max"] and caps["suitability"] == "coach", caps
+for name in ("gpt-5-mini", "gpt-5-nano"):
+    assert reasoning.describe("ep:work:" + name, endpoint())["levels"] == ["minimal", "low", "medium", "high"]
+for name in ("gpt-5.4-mini", "gpt-5.4-nano"):
+    assert reasoning.describe("ep:work:" + name, endpoint())["levels"] == ["none", "low", "medium", "high", "xhigh"]
+for name, expected in (("gpt-5-pro", ["high"]), ("gpt-5.2-pro", ["medium", "high", "xhigh"]),
+                       ("gpt-5.4-pro", ["medium", "high", "xhigh"]), ("gpt-5.5-pro", ["medium", "high", "xhigh"]),
+                       ("gpt-5.3-codex", ["low", "medium", "high", "xhigh"]),
+                       ("o3-pro", []), ("gpt-5-codex", [])):
+    caps = reasoning.describe("ep:work:" + name, endpoint())
+    assert caps["known"] and caps["transport"] == "responses" and caps["levels"] == expected, (name, caps)
+
+# Single end-anchored dated snapshots inherit verified base profiles without rewriting wire IDs.
+for dated, base in (("gpt-5.5-2026-04-23", "gpt-5.5"), ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini"),
+                    ("o3-2025-04-16", "o3"), ("gpt-5.6-luna-2026-12-01", "gpt-5.6-luna"),
+                    ("gpt-4.1-2025-04-14", "gpt-4.1")):
+    dc = reasoning.describe("ep:work:" + dated, endpoint())
+    bc = reasoning.describe("ep:work:" + base, endpoint())
+    assert dc["known"] and dc["transport"] == bc["transport"] and dc["levels"] == bc["levels"], (dated, dc, bc)
+for not_snapshot in ("gpt-5.5-2026-04-23-2026-05-01", "ft:gpt-4.1-2025-04-14:org::abc"):
+    uc = reasoning.describe("ep:work:" + not_snapshot, endpoint())
+    assert not uc["known"] and uc["suitability"] == "unclassified" and uc["transport"] == "chat", uc
+    assert uc["limit_field"] == "max_completion_tokens", uc
+
+# Non-conversational and past-shutdown official OpenAI IDs are excluded, never misclassified as snapshots.
+for ex in ("tts-1", "gpt-4o-mini-tts", "gpt-4o-mini-tts-2025-12-15", "whisper-1", "gpt-4o-transcribe",
+           "gpt-realtime-2.1", "gpt-live-1", "gpt-audio-1.5", "gpt-image-2.5-sunburst", "chatgpt-image-latest",
+           "text-embedding-3-small", "omni-moderation-latest", "davinci-002", "gpt-3.5-turbo-instruct",
+           "computer-use-preview", "o3-deep-research", "gpt-5-search-api", "gpt-5-search-api-2025-10-14",
+           "gpt-5.6-cyber"):
+    ec = reasoning.describe("ep:work:" + ex, endpoint())
+    assert ec["suitability"] == "excluded", (ex, ec)
+assert reasoning.describe("ep:work:gpt-5", endpoint(), {"id": "ep:work:gpt-5", "shutdown_date": "2020-01-01"})["suitability"] == "excluded"
+assert reasoning.describe("ep:work:gpt-5", endpoint(), {"id": "ep:work:gpt-5", "shutdown_date": "2099-01-01"})["suitability"] == "coach"
+# Invalid calendar dates (e.g. Feb 30) are ignored rather than falsely excluding a valid model,
+# and unlisted prefixes (e.g. gpt-daybreak-*) stay unclassified rather than excluded.
+assert reasoning.describe("ep:work:gpt-5", endpoint(), {"id": "ep:work:gpt-5", "shutdown_date": "2020-02-30"})["suitability"] == "coach"
+assert reasoning.describe("ep:work:gpt-daybreak-red-latest", endpoint())["suitability"] == "unclassified"
 
 # Normalized endpoint config, not an id such as 'openai', identifies the official API.
 normalized = endpoint("  https://api.openai.com/v1///  ", " WORK ")
@@ -64,17 +104,21 @@ custom = endpoint("http://127.0.0.1:1234/v1", "openai")
 for unknown_model, cfg in (("ep:openai:gpt-6.1-sol", custom), ("ep:work:gpt-6-private", endpoint()),
                            ("ep:work:gpt-6-luna-custom", endpoint())):
     unknown = reasoning.describe(unknown_model, cfg)
-    assert unknown["transport"] == "chat" and not unknown["known"], unknown
+    assert unknown["transport"] == "chat" and not unknown["known"] and unknown["suitability"] == "unclassified", unknown
+    assert unknown["limit_field"] == ("max_tokens" if cfg is custom else "max_completion_tokens"), (unknown_model, unknown)
     assert "auto" not in unknown["levels"] and "low" in unknown["levels"], unknown
     assert "not advertised" in unknown["note"] and "auto" in unknown["note"].lower(), unknown
     reasoning.validate(unknown_model, cfg, "auto")
     rejected(unknown_model, cfg, "invented", "low")
 
 # A known non-reasoning model offers no explicit control, rather than a fake 'none' option.
-for name in ("gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"):
+# Same specialty-looking ID on a non-OpenAI compatible origin is NOT excluded.
+assert reasoning.describe("ep:openai:tts-1", custom)["suitability"] == "unclassified"
+for name in ("gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "chat-latest", "gpt-5.1-chat-latest"):
     model = "ep:work:" + name
     caps = reasoning.describe(model, endpoint())
     assert caps["known"] and caps["levels"] == [] and caps["transport"] == "chat", caps
+    assert caps["limit_field"] == "max_completion_tokens" and caps["suitability"] == "coach", caps
     reasoning.validate(model, endpoint(), "auto")
     rejected(model, endpoint(), "none")
     rejected(model, endpoint(), "low")

@@ -45,7 +45,7 @@ function mcost(models: Obj, path: string, model: Obj): number | null {
 
 function mlabel(m: Obj): string {
   const p = m.price;
-  return `${m.name}${m.provider !== "anthropic" ? `  [${m.id}]` : ""}, ${p ? `$${per(p.in)} in / $${per(p.out)} out per million` : "price unknown"}${m.tools === false ? ", no tools" : ""}${m.context ? `, ${Math.round(m.context / 1000)}k context` : ""}`;
+  return `${m.name}${m.provider !== "anthropic" ? `  [${m.id}]` : ""}, ${p ? `$${per(p.in)} in / $${per(p.out)} out per million` : "price unknown"}${m.tools === false ? ", no tools" : ""}${m.context ? `, ${Math.round(m.context / 1000)}k context` : ""}${m.unverified === true ? ", unverified" : ""}`;
 }
 
 function effortOptions(levels: string[], effort: string): string {
@@ -57,6 +57,7 @@ function effortOptions(levels: string[], effort: string): string {
 function reasoningHelp(info?: Obj): string {
   if (!info) return `Checking reasoning choices… ${EFFORT_HELP}`;
   if (info.unavailable) return `Reasoning lookup is unavailable. Refresh the model list to retry, or use Auto. ${EFFORT_HELP}`;
+  if (info.suitability === "excluded" && info.reason) return `Excluded official OpenAI model (${info.reason}); pick a conversational coach model.`;
   return `${EFFORT_HELP}${!info.levels.length ? " No explicit levels are available for this model." : ""}`;
 }
 
@@ -128,12 +129,14 @@ function roleHtml(models: Obj, [path, key, label, help]: [string, string, string
     .sort((a, b) => (MORDER[a.provider] ?? 9) - (MORDER[b.provider] ?? 9) || (costs.get(a.id) ?? 1e9) - (costs.get(b.id) ?? 1e9));
   const groups: Record<string, Obj[]> = { anthropic: [], gemini: [], endpoint: [], openrouter: [] };
   list.forEach((m) => (groups[m.provider] || groups.openrouter).push(m));
-  const opts = (cur && !all.some((m) => m.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (not in the list)</option>` : "") +
+  const missingReason = info?.suitability === "excluded" && info?.reason ? `excluded: ${info.reason}` : "not in the list";
+  const opts = (cur && !all.some((m) => m.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (${esc(missingReason)})</option>` : "") +
     Object.entries(groups).filter(([, v]) => v.length).map(([g, v]) => `<optgroup label="${MGROUP[g]}">${v.map((m) => {
       const c = costs.get(m.id);
       return `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(mlabel(m))}${c != null ? `, about $${per(c)} an hour` : ""}</option>`;
     }).join("")}</optgroup>`).join("");
-  const c = costs.get(cur), m = all.find((x) => x.id === cur);
+  const selPrice = models.selected_prices?.[path];
+  const c = costs.get(cur) ?? (selPrice ? mcost(models, path, { price: selPrice }) : null), m = all.find((x) => x.id === cur);
   const effortKey = `${path}_reasoning_effort`, effort = models.selected?.[effortKey] || "auto", levels: string[] = info?.levels || [];
   return `<div class="field"><div class="lab">${esc(label)}<small>${esc(help)}</small></div><div class="ctl mpick" style="display:grid;width:100%">
         <input type="text" data-filter="${path}" value="${esc(filter)}" placeholder="Filter: claude, gemini, flash, ollama…" aria-label="Filter models">

@@ -404,6 +404,39 @@ assert tuning.input_price("google/gemini-2.5-flash", cat) == 0.3
 prof = tuning.profile(kc)
 assert set(prof) == {"fast", "deep"} and prof["fast"]["measured"] is False and prof["fast"]["cache_read"] > 0
 
+# Official OpenAI catalog projection filters cached & fresh specialty/shut-down IDs, attaches first-party prices/context,
+# marks unclassified entries unverified, and leaves third-party compatible origins untouched.
+oai_cache = os.path.join(tmp, "oai_cached.json")
+json.dump({
+    "updated": 1, "errors": {},
+    "models": [
+        {"id": "ep:openai:tts-1", "provider": "endpoint", "endpoint": "openai", "name": "tts-1 (OpenAI)", "context": None, "tools": None, "price": None},
+        {"id": "ep:openai:gpt-4o-mini-tts", "provider": "endpoint", "endpoint": "openai", "name": "gpt-4o-mini-tts (OpenAI)", "context": None, "tools": None, "price": None},
+        {"id": "ep:openai:gpt-5-search-api", "provider": "endpoint", "endpoint": "openai", "name": "gpt-5-search-api (OpenAI)", "context": None, "tools": None, "price": None},
+        {"id": "ep:openai:gpt-5", "provider": "endpoint", "endpoint": "openai", "name": "gpt-5 (OpenAI)", "context": None, "tools": None, "price": None, "shutdown_date": "2020-01-01"},
+        {"id": "ep:openai:gpt-5.6-luna", "provider": "endpoint", "endpoint": "openai", "name": "gpt-5.6-luna (OpenAI)", "context": None, "tools": None, "price": None},
+        {"id": "ep:openai:future-model-x", "provider": "endpoint", "endpoint": "openai", "name": "future-model-x (OpenAI)", "context": None, "tools": None, "price": None},
+        {"id": "ep:local:tts-1", "provider": "endpoint", "endpoint": "local", "name": "tts-1 (Local)", "context": None, "tools": None, "price": None},
+    ],
+}, open(oai_cache, "w", encoding="utf-8"))
+oai_cat = models.Catalog(oai_cache, endpoints={
+    "openai": {"id": "openai", "label": "OpenAI", "base_url": "https://api.openai.com/v1"},
+    "local": {"id": "local", "label": "Local", "base_url": "http://127.0.0.1:11434/v1"},
+})
+projected = {m["id"]: m for m in oai_cat.entries()}
+assert set(projected) == {"ep:openai:gpt-5.6-luna", "ep:openai:future-model-x", "ep:local:tts-1"}, projected
+assert oai_cat.status()["count"] == 3, oai_cat.status()
+assert projected["ep:openai:gpt-5.6-luna"]["context"] == 1_050_000 and projected["ep:openai:gpt-5.6-luna"]["price"]["in"] == 0.2
+assert not projected["ep:openai:gpt-5.6-luna"].get("unverified")
+assert projected["ep:openai:future-model-x"].get("unverified") is True
+assert not projected["ep:local:tts-1"].get("unverified") and projected["ep:local:tts-1"]["price"] is None
+assert oai_cat.price("ep:openai:gpt-6.1-terra") == {"in": 1.0, "out": 5.0, "cache_read": 0.05, "cache_write": 1.25}
+# Mutating endpoint origin immediately re-projects entries(), status()["count"], and strips stale unverified flags.
+oai_cat.endpoints["openai"] = {"id": "openai", "label": "OpenAI", "base_url": "http://127.0.0.1:11434/v1"}
+reprojected = {m["id"]: m for m in oai_cat.entries()}
+assert "ep:openai:tts-1" in reprojected and oai_cat.status()["count"] == 7, reprojected
+assert not reprojected["ep:openai:future-model-x"].get("unverified")
+
 from dashboard import Hub, get_json, serve  # noqa: E402
 import dashboard  # noqa: E402
 dashboard.SHUTDOWN_POLL_S = 0.02     # shutdown() returns at once instead of after up to 0.5 s

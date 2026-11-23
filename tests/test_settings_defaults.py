@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
+import urllib.parse
 
 import desktop_ts
 
@@ -22,6 +24,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "companion"))
 sys.path.insert(0, os.path.join(HERE, "golden"))
 import glideconfig  # noqa: E402
+import app as glide_app  # noqa: E402
+import models as models_mod  # noqa: E402
 from probe_dashboard import edge  # noqa: E402
 
 exe = edge()
@@ -35,6 +39,26 @@ with open(os.path.join(ROOT, "desktop", "src", "renderer", "index.html"), encodi
 tmp = tempfile.mkdtemp(prefix="glide-settings-defaults-")
 attempts = []
 reject = True
+cat_path = os.path.join(tmp, "models.json")
+with open(cat_path, "w", encoding="utf-8") as _cfh:
+    json.dump({
+        "updated": 1000, "errors": {},
+        "models": [
+            {"id": "ep:openai:whisper-1", "provider": "endpoint", "endpoint": "openai", "name": "whisper-1 (OpenAI)", "context": None, "tools": None, "price": None},
+            {"id": "ep:openai:gpt-5.6-luna", "provider": "endpoint", "endpoint": "openai", "name": "gpt-5.6-luna (OpenAI)", "context": None, "tools": None, "price": None},
+            {"id": "ep:openai:future-model-x", "provider": "endpoint", "endpoint": "openai", "name": "future-model-x (OpenAI)", "context": None, "tools": None, "price": None},
+        ],
+    }, _cfh)
+_ep = {"id": "openai", "label": "OpenAI", "base_url": "https://api.openai.com/v1"}
+_catalog = models_mod.Catalog(cat_path, endpoints={"openai": _ep})
+_stub_app = types.SimpleNamespace(
+    catalog=_catalog,
+    coach=types.SimpleNamespace(
+        cfg={"endpoints": [_ep], "fast_model": "ep:openai:tts-1", "deep_model": "ep:openai:gpt-6.1-terra"},
+        stats={"cost_usd": 0.0},
+        path_stats={},
+    ),
+)
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -54,6 +78,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self.send_data(html, content_type="text/html; charset=utf-8")
         if self.path == "/probe":
             return self.send_data({"attempts": len(attempts), "config": glideconfig.read(tmp)[0]})
+        if self.path.startswith("/models"):
+            q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
+            return self.send_data(glide_app.App.on_models(
+                _stub_app, refresh=q.get("refresh") == "1", reasoning_model=q.get("reasoning_model")))
         return super().do_GET()
 
     def do_POST(self):

@@ -17,6 +17,7 @@ import urllib.error
 from typing import Any, Callable
 
 import models as models_mod
+import openai_capabilities
 import openai_compat
 import providers
 import reasoning
@@ -308,6 +309,14 @@ class LLMClient:
                        % (openai_compat.split_endpoint(model)[0], model), "speak": False})
             return None, {}
         label = p.label
+        if openai_compat.is_endpoint(model):
+            raw_entry = openai_capabilities.catalog_raw_entry(self.catalog, model)
+            contract = openai_capabilities.describe_endpoint_model(model, self.cfg, raw_entry)
+            if contract.suitability == "excluded":
+                self.stats["errors"] += 1
+                self.emit({"kind": "error", "text": "%s cannot be used as a coach model (%s)."
+                           % (model, contract.reason), "speak": False})
+                return None, opts
         current = getattr(self._request, "current", None)
         if effort is None:
             effort = current["attribution"]["reasoning"] if current is not None else \
@@ -411,14 +420,16 @@ class LLMClient:
         usage log."""
         cost = u.get("cost_usd")
         if cost is None:
-            price = self.catalog.price(model) if self.catalog is not None else models_mod.anthropic_price(model)
+            price = self.catalog.price(model, self.cfg) if self.catalog is not None else \
+                models_mod.static_price(model, self.cfg)
             cost = models_mod.cost_usd(price, u)
         searches = int(((u.get("server_tool_use") or {}).get("web_search_requests")) or 0)
         if searches:
             cost = (cost or 0.0) + searches * 0.01                # $10 per 1,000 searches
         with self._acct:
             self.stats["calls"] += 1
-            self.stats["in_tokens"] += (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+            self.stats["in_tokens"] += ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                                        + (u.get("cache_creation_input_tokens") or 0))
             self.stats["out_tokens"] += u.get("output_tokens") or 0
             self.stats["uncached_in_tokens"] += u.get("input_tokens") or 0
             self.stats["cache_read_tokens"] += u.get("cache_read_input_tokens") or 0

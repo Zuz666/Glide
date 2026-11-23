@@ -62,6 +62,9 @@ try {
     on() { return () => {}; }
   };
   const page = await import('/renderer/settings/page.js');
+  const stateMod = await import('/renderer/state.js');
+  const mp = await import('/renderer/settings/model-picker.js');
+  page.registerPanels({ 'model-picker': mp.renderModelPicker });
   const check = (condition, why) => { if (!condition) throw Error(why); };
   const until = async condition => {
     const deadline = performance.now() + 5000;
@@ -99,6 +102,24 @@ try {
   stored = await probe();
   check(stored.attempts === 2, 'Unexpected persistence outside Save');
   check(!('voice_question_model' in stored.config.companion.llm), 'Default pinned instead of removing override');
+  // Verify real model-picker rendering against App.on_models(): excluded saved ID, first-party price/context, and , unverified.
+  stateMod.live.engineState = 'running';
+  stateMod.live.engineUrl = location.origin;
+  stateMod.live.engineToken = 'test';
+  page.openSettingsTab('voice');
+  page.openSettingsTab('models');
+  await until(() => !!document.querySelector('select[data-pick="fast_model"]'));
+  const fastOpts = [...document.querySelectorAll('select[data-pick="fast_model"] option')].map(o => o.textContent);
+  check(!fastOpts.some(t => t.includes('whisper-1')), 'Excluded whisper-1 leaked into picker: ' + JSON.stringify(fastOpts));
+  check(fastOpts.some(t => t.includes('ep:openai:tts-1 (excluded: speech synthesis model')),
+    'Expected saved excluded fast_model to show exclusion reason, got: ' + JSON.stringify(fastOpts));
+  check(fastOpts.some(t => t.includes('gpt-5.6-luna') && t.includes('$0.200 in / $1.20 out') && t.includes('1050k context') && !t.includes('unverified')),
+    'Expected first-party price and context on gpt-5.6-luna without unverified tag, got: ' + JSON.stringify(fastOpts));
+  check(fastOpts.some(t => t.includes('future-model-x') && t.includes(', unverified')),
+    'Expected , unverified label on unclassified official OpenAI model, got: ' + JSON.stringify(fastOpts));
+  const deepCost = document.querySelector('select[data-pick="deep_model"]')?.parentElement?.querySelector('.mcost')?.textContent || '';
+  check(deepCost.includes('an hour') && !deepCost.includes('Price unknown'),
+    'Expected uncached selected deep_model to show hourly cost from static fallback price, got: ' + deepCost);
   return 'OK: reset waits for Save; Revert restores; rejected Save retains draft; retry removes override';
 })()` });
   if (result.exceptionDetails) throw Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);

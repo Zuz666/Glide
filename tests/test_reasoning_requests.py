@@ -129,17 +129,73 @@ class ReasoningRequests(unittest.TestCase):
         tuning.apply(client.cfg, {"fast_reasoning_effort": "low"})
         self.assertEqual(client.cfg["fast_reasoning_effort"], "low")
 
-    def test_custom_chat_auto_does_not_force_none_or_change_api(self):
-        client = self.client(endpoints=[{"id": "openai", "base_url": self.local + "/v1"}])
+    def test_origin_isolation_separates_compatible_chat_from_official_openai_chat_and_responses(self):
+        # Nonofficial compatible origin keeps /v1/chat/completions with max_tokens even for OpenAI-like names.
+        compat_client = self.client(endpoints=[{"id": "openai", "base_url": self.local + "/v1"}])
 
-        def respond(path, body):
-            if path != "/v1/chat/completions" or "reasoning_effort" in body or "max_tokens" in body:
-                return 400, {"error": {"message": "Chat endpoint rejects forced reasoning or old token limit"}}
+        def respond_compat(path, body):
+            if path != "/v1/chat/completions" or "reasoning_effort" in body or "max_completion_tokens" in body:
+                return 400, {"error": {"message": "Compatible server expects plain Chat and max_tokens"}}
             return 200, self.chat("Turn in the quest.")
 
+        self.respond = respond_compat
+        self.assertEqual(compat_client.call_once("ep:openai:gpt-6.1-sol", "Where?", 600)[0], "Turn in the quest.")
+        self.assertEqual(self.requests[-1][1]["max_tokens"], 600)
+
+        # Official OpenAI non-reasoning (gpt-4.1-2025-04-14) and unclassified IDs use /v1/chat/completions + max_completion_tokens.
+        official = self.client(fast_model="ep:openai:gpt-4.1-2025-04-14", deep_model="ep:openai:gpt-6-private")
+
+        def respond_official_chat(path, body):
+            if path != "/v1/chat/completions" or "max_tokens" in body or body.get("max_completion_tokens") != 600:
+                return 400, {"error": {"message": "Official Chat requires max_completion_tokens"}}
+            if "reasoning_effort" in body:
+                return 400, {"error": {"message": "Auto must omit reasoning_effort"}}
+            return 200, self.chat("Go north.")
+
+        self.respond = respond_official_chat
+        self.assertEqual(official.call_once("ep:openai:gpt-4.1-2025-04-14", "Where?", 600)[0], "Go north.")
+        self.assertEqual(official.call_once("ep:openai:gpt-6-private", "Where?", 600, deep=True)[0], "Go north.")
+
+    def test_luna_56_and_pro_models_route_translation_and_tools_through_responses_with_cost_accounting(self):
+        client = self.client(fast_model="ep:openai:gpt-5.6-luna", deep_model="ep:openai:gpt-5.5-pro",
+                             deep_reasoning_effort="high")
+
+        def respond(path, body):
+            if path != "/v1/responses" or "max_tokens" in body or "max_completion_tokens" in body:
+                return 400, {"error": {"message": "Expected stateless Responses with max_output_tokens"}}
+            if body["model"] == "gpt-5.6-luna":
+                if "reasoning" in body:
+                    return 400, {"error": {"message": "Auto must omit reasoning on Luna 5.6"}}
+                return 200, {
+                    "object": "response", "status": "completed", "model": "gpt-5.6-luna",
+                    "output": [self.text_item("Модель переключена.")],
+                    "usage": {
+                        "input_tokens": 3_000, "output_tokens": 50,
+                        "input_tokens_details": {"cached_tokens": 1_000, "cache_write_tokens": 1_000,
+                                                 "cache_write_tokens_details": {"ttl_30m_tokens": 1_000, "ttl_12h_tokens": 0}},
+                    },
+                }
+            if body["model"] == "gpt-5.5-pro" and body.get("reasoning") == {"effort": "high"}:
+                return 200, self.response([self.text_item("Cleared.")])
+            return 400, {"error": {"message": "Unexpected model or effort"}}
+
         self.respond = respond
-        self.assertEqual(client.call_once(client.cfg["fast_model"], "Where?", 600)[0], "Turn in the quest.")
-        self.assertEqual(self.requests[0][1]["max_completion_tokens"], 600)
+        self.assertEqual(client.translate("Model switched.", "ru"), "Модель переключена.")
+        self.assertEqual(client.call_once("ep:openai:gpt-5.5-pro", "Review", 900, deep=True)[0], "Cleared.")
+        # Luna 5.6 ($0.20/M in, $0.02/M read, $0.25/M 30m write, $1.20/M out):
+        # (1000*0.2 + 1000*0.02 + 1000*0.25 + 50*1.2)/1e6 = 0.00053
+        # Pro 5.5 ($30/M in, $180/M out): (10*30 + 2*180)/1e6 = 0.00066 -> total = 0.00119
+        self.assertAlmostEqual(client.stats["cost_usd"], 0.00119, places=8)
+        self.assertEqual(client.stats["in_tokens"], 3_010)
+        self.assertEqual(client.stats["cache_write_tokens"], 1_000)
+
+    def test_excluded_official_model_is_blocked_before_network_io(self):
+        client = self.client(fast_model="ep:openai:tts-1")
+        answer, _ = client.call_once("ep:openai:tts-1", "Hello", 600)
+        self.assertIsNone(answer)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(client.stats["errors"], 1)
+        self.assertTrue(any("tts-1" in m["text"] and "speech synthesis" in m["text"] for m in self.errors))
 
     def test_explicit_rejection_is_reported_without_retrying_another_level(self):
         client = self.client(endpoints=[{"id": "openai", "base_url": self.local + "/v1"}],
