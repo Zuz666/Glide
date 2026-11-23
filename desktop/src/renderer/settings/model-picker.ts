@@ -3,9 +3,11 @@
 // applies to the coach at once (its /settings route), which saves it.
 import { call } from "../bridge.js";
 import { $, esc, icon, toast } from "../dom.js";
+import { MANIFEST } from "../settings-manifest.js";
 import { Group } from "../settings-schema.js";
 import { engineGet, enginePost, live } from "../state.js";
 import { Obj } from "../types.js";
+import { edits, getPath, updateDirty } from "./fields.js";
 
 const MORDER: Record<string, number> = { anthropic: 0, gemini: 1, endpoint: 2, openrouter: 3 };
 const MGROUP: Record<string, string> = { anthropic: "Anthropic (direct)", gemini: "Google Gemini (direct)", endpoint: "Custom endpoints", openrouter: "OpenRouter" };
@@ -32,6 +34,72 @@ async function loadModels(refresh = false): Promise<void> {
   try { MODELS = await (await engineGet(`/models${refresh ? "?refresh=1" : ""}`)).json(); } catch { MODELS = null; }
 }
 
+function effortOptions(levels: string[], effort: string): string {
+  return `<option value="auto" ${effort === "auto" ? "selected" : ""}>Auto</option>` +
+    (effort !== "auto" && !levels.includes(effort) ? `<option value="${esc(effort)}" selected disabled>${esc(effort)} (not supported)</option>` : "") +
+    levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level === "none" ? "None (no reasoning)" : level)}</option>`).join("");
+}
+
+/** Live picks supersede drafts for the same settings; unrelated pending edits remain. */
+function modelSettingsSaved(applied: Obj): void {
+  for (const path of ["fast", "deep"]) {
+    if (`${path}_model` in applied || `${path}_reasoning_effort` in applied) {
+      edits.delete(`companion.llm.${path}_model`);
+      edits.delete(`companion.llm.${path}_reasoning_effort`);
+    }
+  }
+  document.dispatchEvent(new Event("model-settings-saved"));
+}
+
+/** Manual ids and effort share Save/Revert, including unsaved ids not in the catalogue. */
+export function bindModelReasoning(host: HTMLElement): void {
+  for (const path of ["fast", "deep"]) {
+    const modelKey = `companion.llm.${path}_model`, effortKey = `companion.llm.${path}_reasoning_effort`;
+    const row = host.querySelector<HTMLElement>(`[data-key="${effortKey}"]`);
+    const select = row?.querySelector<HTMLSelectElement>("select");
+    if (!row || !select) continue;
+    const note = row.querySelector<HTMLElement>(".lab small")!;
+    const input = host.querySelector<HTMLInputElement>(`[data-key="${modelKey}"] input`);
+    const model = () => String(edits.get(modelKey) ?? getPath(live.config, modelKey) ?? MANIFEST[`llm.${path}_model`].default);
+    const effort = () => String(edits.get(effortKey) ?? getPath(live.config, effortKey) ?? "auto");
+    let revision = 0, timer: number | undefined;
+    const load = async () => {
+      const version = ++revision, id = model();
+      row.style.display = "";
+      select.disabled = true;
+      select.innerHTML = effortOptions([], effort());
+      note.textContent = live.engineUrl ? "Checking supported reasoning levels…" : "Start the coach to check supported reasoning levels.";
+      if (!live.engineUrl) return;
+      try {
+        const data = await (await engineGet(`/models?reasoning_model=${encodeURIComponent(id)}`)).json();
+        if (!row.isConnected || version !== revision || id !== model()) return;
+        if (data.model !== id || !data.reasoning) throw new Error(data.error || "Capabilities unavailable");
+        const levels: string[] = data.reasoning.levels;
+        select.innerHTML = effortOptions(levels, effort());
+        select.disabled = !levels.length && effort() === "auto";
+        row.style.display = !levels.length && effort() === "auto" ? "none" : "";
+        note.textContent = `${data.reasoning.note} Save to apply.`;
+      } catch {
+        if (row.isConnected && version === revision) note.textContent = "Couldn't check reasoning levels. Start the coach and reopen settings to try again.";
+      }
+    };
+    input?.addEventListener("input", () => {
+      ++revision;
+      clearTimeout(timer);
+      // A new model must not inherit an effort chosen for the previous one.
+      edits.set(effortKey, "auto");
+      row.classList.add("changed");
+      row.style.display = "";
+      select.innerHTML = effortOptions([], "auto");
+      select.disabled = true;
+      note.textContent = "Reasoning resets to Auto when the model changes.";
+      updateDirty();
+      timer = window.setTimeout(load, 250);
+    });
+    void load();
+  }
+}
+
 /** One role's filter box, model list (grouped by provider, cheapest first) and its cost. */
 function roleHtml([path, key, label, help]: [string, string, string, string], filter: string): string {
   const all: Obj[] = MODELS!.models || [], sel = MODELS!.selected || {};
@@ -50,9 +118,7 @@ function roleHtml([path, key, label, help]: [string, string, string, string], fi
   const levels: string[] = info?.levels || [];
   const reasoning = info ? `<label class="help" for="mp-effort-${path}">Reasoning effort</label>
         <select id="mp-effort-${path}" data-effort="${effortKey}" aria-label="${esc(label)} reasoning effort" ${!levels.length && effort === "auto" ? "disabled" : ""}>
-          <option value="auto" ${effort === "auto" ? "selected" : ""}>Auto</option>
-          ${effort !== "auto" && !levels.includes(effort) ? `<option value="${esc(effort)}" selected disabled>${esc(effort)} (not supported)</option>` : ""}
-          ${levels.map((level) => `<option value="${esc(level)}" ${level === effort ? "selected" : ""}>${esc(level === "none" ? "None (no reasoning)" : level)}</option>`).join("")}
+          ${effortOptions(levels, effort)}
         </select><div class="mcost">${esc(info.note)}${levels.length ? " Higher effort can take longer and use more output tokens." : ""}</div>` : "";
   return `<div class="field"><div class="lab">${esc(label)}<small>${esc(help)}</small></div><div class="ctl mpick" style="display:grid;width:100%">
         <input type="text" data-filter="${path}" value="${esc(filter)}" placeholder="Filter: claude, gemini, flash, ollama…" aria-label="Filter models">
@@ -100,6 +166,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
         toast(`${key === "fast_model" ? "Callouts and voice" : "Typed questions"} now use ${v}. Saved.`);
         if (reset) toast("Reasoning reset to Auto for the new model.");
         draw();
+        modelSettingsSaved(r.applied || { [key]: v });
       } catch (e) {
         toast(`Couldn't switch the model: ${(e as Error).message}`, true);
         s.value = MODELS?.selected?.[key] || "";
@@ -114,6 +181,7 @@ export async function renderModelPicker(_g: Group, host: HTMLElement): Promise<v
         await loadModels();
         toast(`Reasoning effort saved: ${value}. Applies to the next call.`);
         draw();
+        modelSettingsSaved(r.applied);
       } catch (e) {
         s.value = MODELS?.selected?.[key] || "auto";
         s.disabled = false;

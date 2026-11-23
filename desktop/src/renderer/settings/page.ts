@@ -10,6 +10,7 @@ import { languageCode } from "../speech-language.js";
 import { enginePost, JSON_HEADERS, live } from "../state.js";
 import { Obj } from "../types.js";
 import { bindField, edits, fieldHtml, getPath, isApp, merge, patchFor, toStore, updateDirty } from "./fields.js";
+import { bindModelReasoning } from "./model-picker.js";
 import { highlightSearch, queryWords, searchQuery, searchSchema, setSearchQuery } from "./search.js";
 
 /** A custom panel: draws a group's content into `host` (settings-schema.ts Group.special names it). */
@@ -57,13 +58,14 @@ export async function renderSettings(): Promise<void> {
     fields.forEach(bindField);
     if (g.special) panels[g.special]?.(g, $(`grp_${i}`));
   });
+  bindModelReasoning(body);
   body.querySelector<HTMLSelectElement>('[data-key="companion.voice.language"] select')?.addEventListener("change", () => {
     renderSettings(); // keep unsaved edits, but update the compatible Whisper choices
   });
   if (searching) highlightSearch(body);
   body.querySelectorAll<HTMLButtonElement>("[data-reset]").forEach((b) => (b.onclick = async () => {
     const key = b.dataset.reset!;
-    if (key === "companion.voice.language") {
+    if (key === "companion.voice.language" || key.endsWith("_reasoning_effort")) {
       const f = allFields().find((f) => f.key === key)!;
       if (getPath(live.config, key) === f.def) edits.delete(key);
       else edits.set(key, f.def);
@@ -150,6 +152,9 @@ export function wireSettings(): void {
   $("set-save").onclick = () => saveSettings(false);
   $("set-save-restart").onclick = () => saveSettings(true);
   $("set-revert").onclick = () => { edits.clear(); renderSettings(); };
+  document.addEventListener("model-settings-saved", () => {
+    if (currentPage() === "settings") renderSettings();
+  });
   let searchTimer: number | undefined;
   $("set-search").addEventListener("input", (e) => {
     clearTimeout(searchTimer);
