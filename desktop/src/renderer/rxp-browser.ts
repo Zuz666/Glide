@@ -6,7 +6,7 @@
 import type { RxpFactsPrep, RxpFactsTarget, RxpGuideAction, RxpGuideDetail, RxpGuideFacts, RxpGuideStep, RxpGuideSummary, RxpGuideWaypoint,
   RxpImport, RxpRouteLeg, RxpRoutes } from "../shared/ipc.js";
 import { call, quiet } from "./bridge.js";
-import { $, esc } from "./dom.js";
+import { $, esc, icon } from "./dom.js";
 import { currentPage, show, whenLeft } from "./nav.js";
 import { speech } from "./narrator.js";
 import { NarrationStop, stepLine, stepVia, stepWho, transitionLine } from "./rxp-narration.js";
@@ -1165,7 +1165,7 @@ function renderTimeline(): void {
   $("rxpb-tl-pos").title = cur ? `${cur.zone || ""}${cur.step.x != null ? ` (${cur.step.x.toFixed(1)}, ${cur.step.y!.toFixed(1)})` : ""}` : "";
   $<HTMLButtonElement>("rxpb-prev").disabled = activeIdx <= 0;
   $<HTMLButtonElement>("rxpb-next").disabled = activeIdx >= n - 1;
-  $<HTMLButtonElement>("rxpb-play").textContent = walking ? "⏸ Pause" : "▶ Walk";
+  $<HTMLButtonElement>("rxpb-play").innerHTML = walking ? "⏸ Pause" : `${icon("play")}Walk`;
 
   const ticks: string[] = [];
   if (n > 1) {
@@ -1546,7 +1546,7 @@ function stopPlay(): void {
   }
   speech.cancel(NARRATION_TAG);
   const btn = document.getElementById("rxpb-play");
-  if (btn) btn.innerHTML = "▶ Walk route";
+  if (btn) btn.innerHTML = `${icon("play")}Walk route`;
 }
 
 function togglePlay(): void {

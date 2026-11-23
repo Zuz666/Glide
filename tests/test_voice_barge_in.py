@@ -36,7 +36,7 @@ export const call = (ch: string, ...a: unknown[]) => glide.invoke(ch, ...a);
 export const ipcError = (e: unknown) => String(e);
 """,
     "dom.ts": """
-export { esc } from "./real-dom.js";
+export { esc, icon } from "./real-dom.js";
 export const toast = (..._a: unknown[]) => undefined;
 const els: Record<string, any> = {};
 (globalThis as any).els = els;

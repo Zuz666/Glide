@@ -11,7 +11,7 @@
 // The player can talk over it: holding push-to-talk (the "ptt" event's "listening", coach.ts) calls bargeIn(), which
 // stops the line being said and drops the queued ones at once.
 import { call, glide, ipcError } from "./bridge.js";
-import { esc, toast } from "./dom.js";
+import { esc, icon, toast } from "./dom.js";
 import { dateTimeHtml, dateTimeText } from "./date-time.js";
 import { Obj, SpeechSettings } from "./types.js";
 import type { LogAttribution, TtsStatus } from "../shared/ipc.js";
@@ -524,7 +524,8 @@ export function voiceHistoryHtml(): string {
   return speech.recentLines.map((line, index) => {
     const id = (suffix = "") => index === 0 ? ` id="sv-last${suffix}"` : "";
     return `<div class="voice-last-entry" data-spoken-id="${line.id}">
-      <span${id()} class="help voice-line-attribution">${esc(voiceAttribution(line))}, at ${dateTimeHtml(line.at, "shortTime")}</span>
+      <div class="voice-line-heading"><span${id()} class="help voice-line-attribution">${esc(voiceAttribution(line))}, at ${dateTimeHtml(line.at, "shortTime")}</span>
+      <button type="button" class="btn voice-replay" data-replay-spoken="${line.id}" aria-label="Play this line as a voice sample" title="Play this line as a sample using the current Test voice">${icon("play")}</button></div>
       <span${id("-text")} class="help voice-text voice-line-text">${esc(line.text)}</span>
       <details${id("-ssml")} ${line.ssmlDocument ? "" : "hidden"}><summary>SSML sent to SAPI5</summary><pre class="voice-text"><code${id("-ssml-document")}>${esc(line.ssmlDocument)}</code></pre></details>
     </div>`;

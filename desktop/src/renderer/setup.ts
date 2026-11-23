@@ -273,7 +273,7 @@ function drawVoice(host: HTMLElement): void {
         ${pick.tts === "azure" ? `<p class="help">Azure also needs your resource's region: it starts as eastus; change it in Settings &gt; Voice.</p>` : ""}</div>` : "")
     + choice("su-voice", "off", pick.voice, "Text only", "The coach writes in its chat and on the overlay, without speaking.")
     + `</div>`
-    + (pick.voice === "off" ? "" : `<p class="help">Samples and voice filtering use the saved language in Settings &gt; Language. Sample translation needs an available LLM; otherwise it stays English.</p><div class="row su-sample"><button type="button" class="btn" id="su-sample">${icon("volume-2")}Play a sample</button></div>`);
+    + (pick.voice === "off" ? "" : `<p class="help">Samples and voice filtering use the saved language in Settings &gt; Language. Sample translation needs an available LLM; otherwise it stays English.</p><div class="row su-sample"><button type="button" class="btn" id="su-sample">${icon("play")}Play a sample</button></div>`);
   onChoice(host, "su-voice", (v) => { pick.voice = v as typeof pick.voice; drawVoice(host); });
   const wv = document.getElementById("su-wvoice") as HTMLSelectElement | null;
   if (wv) {

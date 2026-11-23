@@ -967,6 +967,84 @@ try {
     const retainedPolicy = (await window.glide.invoke('config:get')).companion.voice;
     check(retainedPolicy.markup_mode === 'ai' && retainedPolicy.markup_voices['token:xenia'].includes('boundaries'),
       'A plain preview does not disable automatic coaching markup or change per-voice permissions');
+    // Replay an older entry through the real editor and guarded sample pipeline.
+    const replayAt = Date.now();
+    const historyDocument = '<speak><s>Saved marked words.</s></speak>';
+    speech.noteVoice('Previous voice', 'Older plain words.', replayAt, 10, 'sample-history-plain', false);
+    speech.noteVoice('Previous voice', 'Saved marked words.', replayAt, 20, 'sample-history-ssml', true, historyDocument);
+    speech.noteVoice('Previous voice', 'Newest words.', replayAt, 30, 'sample-history-newest', false);
+    const replayButtons = () => [...document.querySelectorAll('#sv-history button[data-replay-spoken]')];
+    check(replayButtons().length === 3, 'Every retained history entry needs its own sample Play action');
+    check(replayButtons().every(button => button.getAttribute('aria-label') && button.title
+      && !button.textContent.trim() && button.querySelector('use')?.getAttribute('href') === '#i-play'),
+      'Compact history Play buttons must expose accessible names and the media Play glyph');
+    const plainReplay = replayButtons()[2];
+    const plainBefore = sampleDeliveries.length;
+    plainReplay.focus();
+    plainReplay.click();
+    await until(() => sampleDeliveries.length === plainBefore + 1);
+    check(document.getElementById('sv-sample').value === 'Older plain words.'
+      && document.getElementById('sv-sample-mode').value === 'plain'
+      && document.getElementById('sv-sample-source').value === 'custom'
+      && sampleDeliveries.at(-1)[1] === 'Older plain words.',
+      'An older history action copies and plays that entry, not the latest line');
+    await until(() => speech.lastText === 'Older plain words.');
+    check(speech.recentLines.length === 3 && speech.recentLines[0].requestId !== 'sample-history-plain',
+      'Successful sample replay owns a new history request under the existing three-entry limit');
+    narratorMod.speech.say = (...args) => markupSamples.push(args);
+    const markedReplay = replayButtons().find(button =>
+      button.closest('.voice-last-entry').querySelector('.voice-line-text').textContent === 'Saved marked words.');
+    let markedId = markedReplay.dataset.replaySpoken;
+    const replayBefore = markupSamples.length;
+    markedReplay.click();
+    await until(() => markupSamples.length === replayBefore + 1);
+    check(document.getElementById('sv-sample').value === historyDocument
+      && document.getElementById('sv-sample-mode').value === 'ssml'
+      && preparations.at(-1)[0] === historyDocument,
+      'Native history replay loads and validates the selected saved document');
+    speech.noteVoice('Previous voice', 'A later line.', Date.now(), 10, 'history-arrived-later', false);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    check(document.getElementById('sv-sample').value === historyDocument,
+      'Later history changes cannot replace the copied Custom replay draft');
+    speech.noteVoice('Previous voice', 'Saved marked words.', Date.now(), 20, 'history-permission-test', true, historyDocument);
+    markedId = replayButtons()[0].dataset.replaySpoken;
+    prepareFailure = 'Effect is not permitted';
+    const forbiddenBefore = markupSamples.length;
+    const selectedMarked = document.querySelector('[data-replay-spoken="' + markedId + '"]');
+    selectedMarked.click();
+    await until(() => document.getElementById('sv-sample-error').textContent.includes(prepareFailure));
+    check(markupSamples.length === forbiddenBefore, 'History replay must retain strict validation before playback');
+    prepareFailure = '';
+    await window.glide.invoke('app:settings:set', { speech: { provider: 'edge' } });
+    await page.renderSettings();
+    const onlineReplay = document.querySelector('[data-replay-spoken="' + markedId + '"]');
+    onlineReplay.click();
+    check(document.getElementById('sv-sample').value === 'Saved marked words.'
+      && document.getElementById('sv-sample-source').value === 'custom'
+      && markupSamples.at(-1)[0] === 'Saved marked words.'
+      && document.getElementById('sv-sample-help').textContent.includes('plain text'),
+      'Online comparison converts the selected SSML entry to plain words and explains the conversion');
+    check(speech.recentLines.find(line => String(line.id) === markedId).ssmlDocument === historyDocument,
+      'Online replay must preserve the original history document');
+    speech.noteVoice('Previous voice', 'Interrupted marked words.', Date.now(), 10, 'history-incomplete-markup', true);
+    replayButtons()[0].click();
+    check(document.getElementById('sv-sample').value === 'Interrupted marked words.'
+      && document.getElementById('sv-sample-help').textContent.includes('This history entry used SSML'),
+      'Online replay explains plain conversion even when marked playback never completed with a saved document');
+    await window.glide.invoke('app:settings:set', { speech: { provider: 'windows' } });
+    await page.renderSettings();
+    delayPreparation = true;
+    releasePreparation = undefined;
+    document.querySelector('[data-replay-spoken="' + markedId + '"]').click();
+    await until(() => !!releasePreparation);
+    const pendingReplay = releasePreparation;
+    const beforeReplacement = markupSamples.length;
+    replayButtons().find(button => button.dataset.replaySpoken !== markedId).click();
+    check(markupSamples.length === beforeReplacement + 1, 'A different plain entry can replace a pending SSML replay');
+    delayPreparation = false;
+    pendingReplay();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    check(markupSamples.length === beforeReplacement + 1, 'Late preparation cannot play after another history entry was selected');
   } finally {
     narratorMod.speech.say = markupSay;
     window.glide.invoke = markupInvoke;
@@ -1378,6 +1456,24 @@ try {
       const timingImage = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
       fs.writeFileSync(path.join(process.env.GLIDE_VOICE_SCREENSHOT_DIR, `voice-timing-${label}.png`), Buffer.from(timingImage.data, "base64"));
     }
+    await send("Page.bringToFront");
+    await send("Runtime.evaluate", { expression: `(async () => {
+      const { speech } = await import('/renderer/narrator.js');
+      window.__historyReplaySay = speech.say;
+      speech.say = (...args) => { window.__historyKeyboardSample = args; };
+      [...document.querySelectorAll('#sv-history button[data-replay-spoken]')].at(-1).focus();
+    })()`, awaitPromise: true });
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", windowsVirtualKeyCode: 13 });
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    const keyboardReplay = await send("Runtime.evaluate", { awaitPromise: true, expression: `(async () => {
+      const { speech } = await import('/renderer/narrator.js');
+      speech.say = window.__historyReplaySay;
+      if (!window.__historyKeyboardSample || document.getElementById('sv-sample-source').value !== 'custom')
+        throw Error('Keyboard Enter must activate history sample replay through Test voice: ' + JSON.stringify({
+          active: document.activeElement?.outerHTML, sample: window.__historyKeyboardSample,
+          source: document.getElementById('sv-sample-source').value }));
+    })()` });
+    if (keyboardReplay.exceptionDetails) throw Error(keyboardReplay.exceptionDetails.exception?.description || keyboardReplay.exceptionDetails.text);
     const onlineSurface = await send("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `
       (async () => {
         const page = await import('/renderer/settings/page.js');
