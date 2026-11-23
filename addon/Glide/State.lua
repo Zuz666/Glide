@@ -196,6 +196,13 @@ end
 -- ---------------------------------------------------------------------------------------------
 -- pages
 -- ---------------------------------------------------------------------------------------------
+local function stepWords(text)
+    -- Strip colors before escaping delimiters or cutting bytes; escaped pipes remain literal text.
+    text = tostring(text or ""):gsub("||", "\001")
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cRXP_[A-Z]+_", ""):gsub("|cn[%w_]+:", "")
+    return (text:gsub("|r", ""):gsub("\001", "|"))
+end
+
 local function stepSummary(step, index)
     if not step then return nil end
     local els, text = {}, nil
@@ -219,7 +226,7 @@ local function stepSummary(step, index)
     end
     -- the text goes last and gets what room the page has left (a long element list leaves less than 60)
     local s = ("i=%d;el=%s;tx="):format(index, clean(table.concat(els, ","), 70))
-    return s .. clean(text or "", math.min(60, PAGE_MAX - #s))
+    return s .. clean(stepWords(text), math.min(60, PAGE_MAX - #s))
 end
 
 local builders = {}

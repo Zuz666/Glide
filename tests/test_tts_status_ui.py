@@ -69,6 +69,11 @@ app_settings = {
 resize_heights = []
 with open(os.path.join(HERE, "golden", "fixtures", "dashboard_init.json"), encoding="utf-8") as fh:
     date_coach_init = json.load(fh)
+if os.environ.get("GLIDE_STEP_TITLE_PROOF"):
+    with open(os.environ["GLIDE_STEP_TITLE_PROOF"], encoding="utf-8") as fh:
+        title_proof = json.load(fh)
+    for key in ("steps", "level", "overlay_step"):
+        date_coach_init["state"][key] = title_proof[key]
 date_coach_hub = dashboard_mod.Hub()
 date_coach_hub.snapshot, date_coach_hub.messages = date_coach_init["state"], date_coach_init["messages"]
 date_coach_server = dashboard_mod.serve(date_coach_hub, 0, token="date-coach-test")
