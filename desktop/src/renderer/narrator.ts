@@ -13,6 +13,7 @@
 import { call, glide, ipcError } from "./bridge.js";
 import { toast } from "./dom.js";
 import { Obj, SpeechSettings } from "./types.js";
+import type { LogAttribution } from "./types.js";
 
 interface Line {
   text: string;
@@ -20,7 +21,8 @@ interface Line {
   provider: string;
   voiceLabel: string;
   windows: Pick<SpeechSettings, "voiceName" | "rate" | "volume">;
-  requestId?: string;
+  requestId: string;
+  attribution?: LogAttribution;
   nativeId?: string;
   player?: HTMLAudioElement;
   tag?: string;
@@ -57,7 +59,6 @@ class Narrator {
   /** Observe speech without playing it; an older reconnect replay must not replace a newer line. */
   noteVoice(name: string, text: string, at = Date.now()): void {
     if (at < this.lastVoiceAt) return;
-    if (name !== this.lastVoice) call("app:note", `[voice] speaking with ${name}`);
     this.lastVoice = name;
     this.lastVoiceAt = at;
     this.lastText = text;
@@ -134,15 +135,16 @@ class Narrator {
 
   private enqueue(text: string, tag?: string, done?: () => void, style = "", tone = ""): void {
     const line: Line = {
-      text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done, audio: null,
+      text, provider: this.provider, voiceLabel: this.onlineLabel, tag, done, audio: null, requestId: crypto.randomUUID(),
       windows: { voiceName: this.voiceName, rate: this.rate, volume: this.volume },
     };
     if (line.provider !== "windows") {
-      const args: [string, string?, string?] = tone ? [text, style, tone] : style ? [text, style] : [text];
-      line.audio = glide.invoke("tts:synth", ...args)
-        .then((r) => new Blob([r.data as BlobPart], { type: r.mime }))
+      line.audio = glide.invoke("tts:synth", text, style, tone, line.requestId)
+        .then((r) => {
+          line.attribution = r.attribution;
+          return new Blob([r.data as BlobPart], { type: r.mime });
+        })
         .catch((e) => {
-          line.requestId = /\bTTS #(\d+):/.exec(ipcError(e))?.[1];
           if (!line.cancelled) this.voiceError(`Voice (${line.provider}) failed, using the Windows voice: ${ipcError(e)}`);
           return null;
         });
@@ -152,7 +154,7 @@ class Narrator {
   }
 
   private async windowsSay(line: Line): Promise<void> {
-    line.nativeId = crypto.randomUUID();
+    line.nativeId = line.requestId;
     try {
       const result = await glide.invoke("tts:windowsSpeak", line.nativeId, line.text, line.windows);
       if (this.current === line) this.noteVoice(`${result.voice} (SAPI5)`, line.text);
@@ -176,7 +178,8 @@ class Narrator {
       await this.play(blob, line);
     } else {
       if (line.provider !== "windows") {
-        call("app:note", `[voice] TTS #${line.requestId || "unknown"} fallback from=${line.provider} to=sapi5 requested_voice=${JSON.stringify(line.windows.voiceName || "default")}`);
+        call("app:note", `[voice] TTS fallback: online synthesis failed; using Windows SAPI5 requested_voice=${JSON.stringify(line.windows.voiceName || "Windows default")}`,
+          { category: "TTS", operation: "fallback", provider: "SAPI5", request_id: line.requestId, status: "requested" });
       }
       await this.windowsSay(line);
     }
@@ -193,22 +196,29 @@ class Narrator {
     a.volume = Math.max(0, Math.min(1, line.windows.volume ?? 1));
     a.playbackRate = line.windows.rate ?? 1;
     a.preservesPitch = true;
-    call("app:note", `[voice] playback start provider=${line.provider} audio_bytes=${blob.size}`);
+    const started = performance.now();
+    const attribution: LogAttribution = { ...line.attribution, category: "TTS", operation: "audio playback",
+      request_id: line.requestId, rate: a.playbackRate, volume: a.volume };
+    call("app:note", `[voice] playback requested${attribution.provider ? ` provider=${attribution.provider}` : ""} audio_bytes=${blob.size}`,
+      { ...attribution, status: "requested", elapsed_ms: 0 });
     await new Promise<void>((resolve) => {
       let finished = false;
-      const finish = (result: string) => {
+      const finish = (result: string, status: string) => {
         if (finished) return;
         finished = true;
-        call("app:note", `[voice] playback ${result} provider=${line.provider}`);
+        call("app:note", `[voice] playback ${result}${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
+          { ...attribution, status, elapsed_ms: Math.round(performance.now() - started) });
         resolve();
       };
-      a.onended = () => finish("ended");
-      a.onerror = () => finish(`failed media_code=${a.error?.code || 0}`);
-      a.onpause = () => finish("paused");
+      a.onended = () => finish("ended", "done");
+      a.onerror = () => finish(`failed media_code=${a.error?.code || 0}`, "error");
+      a.onpause = () => finish("paused", "cancelled");
       a.play().then(() => {
+        if (!finished) call("app:note", `[voice] playback started${attribution.provider ? ` provider=${attribution.provider}` : ""}`,
+          { ...attribution, status: "started", elapsed_ms: Math.round(performance.now() - started) });
         if (this.current === line) this.noteVoice(`${line.provider === "edge" ? line.voiceLabel : line.provider} (online voice)`, line.text);
       }).catch((e: unknown) => finish(`rejected reason=${e instanceof Error
-        && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`));
+        && ["NotAllowedError", "NotSupportedError", "AbortError"].includes(e.name) ? e.name : "Error"}`, "error"));
     });
     URL.revokeObjectURL(url);
     line.player = undefined;

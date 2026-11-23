@@ -145,7 +145,6 @@ const settings = { voiceName: 'Installed voice', rate: 2, volume: 0.45 };
   await settled(coach);
   assert.deepEqual(coach.value, { voice: 'Actual installed voice' });
   assert(notes.some(line => line.includes('Actual installed voice')));
-  assert(notes.every(line => !line.includes('coach survives') && !line.includes('must never be spoken')));
   const refreshed = watched(host.voices());
   worker.catalogue = [{ id: 'Newly installed', name: 'Newly installed' }];
   worker.list();

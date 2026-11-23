@@ -175,6 +175,7 @@ assert sp.stopped and c._barges == 1, "the reply on its way stops"
 msgs = []
 c._emit_raw = msgs.append
 c.llm.enabled, c.llm.keys = True, {"anthropic": "x", "openrouter": "", "gemini": "", "endpoint": ""}
+c.cfg.update({"fast_model": "claude-haiku-4-5", "deep_model": "claude-sonnet-4-5"})
 c._ask_model = lambda *args, **kw: (c.barge(), ("Tannok is 20 yards east.\nFACTS: none", {}))[1]
 c._respond([], question="where's Tannok?", voice=True)
 answer = [m for m in msgs if m.get("kind") == "answer"][-1]

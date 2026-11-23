@@ -1,9 +1,9 @@
-// Persistent native SAPI5 playback. Speech stays on stdin, never in process arguments or diagnostics.
+// Persistent native SAPI5 playback. Speech stays on stdin, never in process arguments; app logs record each turn.
 import { spawn } from "child_process";
 import type { ChildProcessWithoutNullStreams } from "child_process";
 import { createInterface } from "readline";
 import type { Interface } from "readline";
-import type { SpeechSettings, Voice } from "../shared/ipc";
+import type { LogAttribution, SpeechSettings, Voice } from "../shared/ipc";
 
 const READY_TIMEOUT_MS = 15000;
 const VOICES_TIMEOUT_MS = 15000;
@@ -17,7 +17,8 @@ type Pending = {
   timer?: NodeJS.Timeout;
   reject: (error: Error) => void;
 } & ({ kind: "voices"; resolve: (voices: Voice[]) => void }
-  | { kind: "speak"; callerId: string; resolve: (result: { voice: string }) => void });
+  | { kind: "speak"; callerId: string; submittedAt: number; actualVoice?: string;
+    resolve: (result: { voice: string }) => void });
 
 interface Worker {
   child: ChildProcessWithoutNullStreams;
@@ -34,7 +35,8 @@ export class WindowsTts {
   private nextId = 1;
   private disposed = false;
 
-  constructor(private readonly scriptPath: string, private readonly note?: (line: string) => void) {}
+  constructor(private readonly scriptPath: string,
+    private readonly note?: (line: string, attribution?: LogAttribution) => void) {}
 
   voices(): Promise<Voice[]> {
     return new Promise((resolve, reject) => {
@@ -46,20 +48,30 @@ export class WindowsTts {
 
   speak(id: string, text: string, settings: SpeechOptions): Promise<{ voice: string }> {
     return new Promise((resolve, reject) => {
-      const worker = this.start();
-      for (const pending of worker.pending.values()) {
-        if (pending.kind === "speak" && pending.callerId === id) {
-          reject(new Error("Windows TTS: speech request ID is already pending"));
-          return;
-        }
-      }
+      const submittedAt = performance.now();
       const multiplier = typeof settings.rate === "number" && Number.isFinite(settings.rate) && settings.rate > 0
         ? settings.rate : 1;
       const volume = typeof settings.volume === "number" && Number.isFinite(settings.volume) ? settings.volume : 1;
       const command: Command = { id: this.nextId++, op: "speak", text, voice: settings.voiceName || "",
         rate: Math.max(-10, Math.min(10, Math.round(10 * Math.log10(multiplier)))),
         volume: Math.max(0, Math.min(100, Math.round(volume * 100))) };
-      this.enqueue(worker, { kind: "speak", callerId: id, command, sent: false, resolve, reject });
+      const pending: Pending = { kind: "speak", callerId: id, command, submittedAt, sent: false, resolve, reject };
+      this.noteSpeech(pending, "submitted");
+      let worker: Worker;
+      try { worker = this.start(); } catch (error) {
+        this.noteSpeech(pending, "error", error instanceof Error ? error.message : "native worker failed");
+        reject(error);
+        return;
+      }
+      for (const active of worker.pending.values()) {
+        if (active.kind === "speak" && active.callerId === id) {
+          const error = new Error("Windows TTS: speech request ID is already pending");
+          this.noteSpeech(pending, "error", error.message);
+          reject(error);
+          return;
+        }
+      }
+      this.enqueue(worker, pending);
     });
   }
 
@@ -72,6 +84,7 @@ export class WindowsTts {
       if (pending.sent) sent.push(requestId);
       // Remove before ready can flush the queue, and before synchronous stream failure callbacks can run.
       this.remove(worker, requestId);
+      this.noteSpeech(pending, "cancelled");
       pending.reject(new Error("Windows TTS: speech cancelled"));
     }
     if (!sent.length || !worker.ready) return;
@@ -170,16 +183,16 @@ export class WindowsTts {
     const pending = worker.pending.get(message.id);
     if (!pending || !pending.sent) return;
     if (message.event === "started" && pending.kind === "speak") {
-      if (typeof message.voice === "string") {
-        // A diagnostics consumer must not interrupt playback or leave promises unresolved.
-        try { this.note?.(`[voice] SAPI5 started: ${message.voice.replace(/[\r\n]/g, " ")}`); } catch { /* logging only */ }
-      }
+      if (typeof message.voice === "string") pending.actualVoice = message.voice;
+      this.noteSpeech(pending, "started");
       return;
     }
     if (message.event === "error" || message.event === "cancelled") {
       this.remove(worker, message.id);
-      pending.reject(message.event === "cancelled" ? new Error("Windows TTS: speech cancelled")
-        : new Error(`Windows TTS: ${typeof message.error === "string" ? message.error : "native speech failed"}`));
+      const error = message.event === "cancelled" ? new Error("Windows TTS: speech cancelled")
+        : new Error(`Windows TTS: ${typeof message.error === "string" ? message.error : "native speech failed"}`);
+      this.noteSpeech(pending, message.event === "cancelled" ? "cancelled" : "error", error.message);
+      pending.reject(error);
       return;
     }
     if (message.event === "voices" && pending.kind === "voices") {
@@ -192,9 +205,32 @@ export class WindowsTts {
       }
     } else if (message.event === "done" && pending.kind === "speak") {
       this.remove(worker, message.id);
-      if (typeof message.voice !== "string") pending.reject(new Error("Windows TTS: missing completed voice name"));
-      else pending.resolve({ voice: message.voice });
+      if (typeof message.voice !== "string") {
+        const error = new Error("Windows TTS: missing completed voice name");
+        this.noteSpeech(pending, "error", error.message);
+        pending.reject(error);
+      } else {
+        pending.actualVoice = message.voice;
+        this.noteSpeech(pending, "done");
+        pending.resolve({ voice: message.voice });
+      }
     }
+  }
+
+  private noteSpeech(pending: Pending, status: string, error?: string): void {
+    if (pending.kind !== "speak" || pending.command.op !== "speak") return;
+    const command = pending.command;
+    const elapsed = Math.round(performance.now() - pending.submittedAt);
+    const voice = pending.actualVoice || command.voice;
+    const attribution: LogAttribution = { category: "TTS", operation: "native speech", provider: "SAPI5",
+      request_id: pending.callerId, status, rate: command.rate, volume: command.volume,
+      ...(voice ? { voice } : {}), ...(status === "submitted" ? {} : { elapsed_ms: elapsed }) };
+    const detail = status === "submitted"
+      ? ` requested_voice=${JSON.stringify(command.voice || "Windows default")} rate=${command.rate} volume=${command.volume} text=${JSON.stringify(command.text)}`
+      : `${pending.actualVoice ? ` voice=${JSON.stringify(pending.actualVoice)}` : ""} elapsed_ms=${elapsed}${error ? ` reason=${JSON.stringify(error)}` : ""}`;
+    // Diagnostics must not interrupt playback or leave promises unresolved.
+    try { this.note?.(`[voice] SAPI5 ${status} request=${JSON.stringify(pending.callerId)}${detail}`, attribution); }
+    catch { /* logging only */ }
   }
 
   private remove(worker: Worker, id: number): void {
@@ -211,6 +247,7 @@ export class WindowsTts {
     clearTimeout(worker.readyTimer);
     for (const [id, pending] of worker.pending) {
       this.remove(worker, id);
+      this.noteSpeech(pending, "error", error.message);
       pending.reject(error);
     }
     worker.lines.close();

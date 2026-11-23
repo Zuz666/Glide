@@ -76,6 +76,15 @@ main { flex: 1; min-width: 0; position: relative; display: block; }
 .log .ts { color: var(--ink-3); }
 .log.mini { max-height: 260px; overflow: auto; margin-top: 26px; padding: 12px 14px; background: var(--night-deep); border-radius: var(--radius-m); box-shadow: inset 0 0 0 1px var(--edge-soft); }
 #log-filter { width: 220px; }
+.log-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 10px 32px; border-bottom: 1px solid var(--edge-soft); color: var(--ink-2); font-size: 12px; }
+.log-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.log-legend .log-legend-help { color: var(--ink-3); }
+.log-category { display: inline-block; padding: 0 5px; border: 1px solid currentColor; border-radius: 4px; font: 700 10px/17px "Cascadia Mono", Consolas, monospace; vertical-align: 1px; letter-spacing: 0.03em; background: var(--night-deep); }
+button.log-category { cursor: help; }
+.log-ai { color: #e1c477; }
+.log-stt { color: #9bd6ee; }
+.log-tts { color: #bdb0f3; }
+.log-category:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 /* status */
 .status-body { padding: 26px 32px 40px; max-width: 1100px; }

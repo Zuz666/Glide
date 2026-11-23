@@ -13,6 +13,7 @@ An online engine that fails (network, key, quota) falls back to the local one fo
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -101,6 +102,8 @@ class ModelNotDownloaded(Exception):
 
 
 class WhisperSTT:
+    provider = "faster-whisper"
+
     def __init__(self, model_name, *, language="en"):
         selected_language = language_code(language)
         self.language = {"fil": "tl", "jv": "jw", "nb": "no"}.get(selected_language, selected_language)
@@ -123,6 +126,7 @@ class WhisperSTT:
         if self.language not in self.model.supported_languages:
             raise ValueError("Whisper model %s does not support language %s" % (model_name, selected_language))
         self.name = "whisper " + model_name
+        self.model_id = os.path.basename(model_name.replace("\\", "/"))
 
     @staticmethod
     def load_wav(path):
@@ -181,6 +185,7 @@ try {
 
 class WindowsSTT:
     name = "windows speech"
+    provider = "Windows Speech"
 
     def __init__(self, *, language="en"):
         self.language = language_code(language)
@@ -229,6 +234,7 @@ class OnlineSTT:
     def __init__(self, engine, model=None, timeout=15, *, language="en"):
         label, self.url, env, default = ONLINE[engine]
         self.engine, self.model = engine, model or default
+        self.provider, self.model_id = label, self.model
         selected_language = language_code(language)
         # The online APIs use ISO Javanese jv; local Whisper uses its legacy jw token.
         self.language = {"fil": "tl", "jw": "jv", "nb": "no"}.get(selected_language, selected_language)
@@ -400,23 +406,41 @@ class PushToTalk:
         t0 = time.time()
         prompt = self.prompt_fn() if self.prompt_fn else ""
         stt = self.stt
+        started = time.monotonic()
+        used_fallback = False
+        def attribution(status):
+            result = {"category": "STT", "operation": "transcription", "role": "spoken question",
+                      "elapsed_ms": round((time.monotonic() - started) * 1000), "status": status}
+            for key, value in (("provider", getattr(stt, "provider", None)),
+                               ("model", getattr(stt, "model_id", None)),
+                               ("language", getattr(stt, "language", None))):
+                if isinstance(value, str) and len(value) <= 240 and "://" not in value and \
+                        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+ -]*", value):
+                    result[key] = value
+            return result
         try:
             text = stt.transcribe(path, prompt)
         except Exception as e:
             if self.fallback is None or self.fallback is stt:
-                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e, "speak": False})
+                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e,
+                                "speak": False, "attribution": attribution("error")})
                 return
             self.on_status({"kind": "info", "text": "push-to-talk: %s failed (%s); using %s"
-                            % (stt.name, str(e)[:160], self.fallback.name), "speak": False})
+                            % (stt.name, str(e)[:160], self.fallback.name), "speak": False,
+                            "attribution": attribution("fallback")})
             stt = self.fallback
+            used_fallback = True
             try:
                 text = stt.transcribe(path, prompt)
             except Exception as e2:
-                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e2, "speak": False})
+                self.on_status({"kind": "error", "text": "push-to-talk: transcription failed: %s" % e2,
+                                "speak": False, "attribution": attribution("error")})
                 return
         if not text:
-            self.on_status({"kind": "error", "text": "Didn't catch that.", "speak": True})
+            self.on_status({"kind": "error", "text": "Didn't catch that.", "speak": True,
+                            "attribution": attribution("empty")})
             return
         self.on_status({"kind": "question", "text": "🎙 " + text, "speak": False,
-                        "model": "%s %.1fs" % (stt.name, time.time() - t0)})
+                        "model": "%s %.1fs" % (stt.name, time.time() - t0),
+                        "attribution": attribution("completed after fallback" if used_fallback else "completed")})
         self.on_question(text)

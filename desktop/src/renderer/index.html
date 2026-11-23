@@ -257,12 +257,18 @@
   </section>
   <section id="page-logs" class="page">
     <header class="pagehead"><div><h1>Logs</h1><p class="lede">What the coach and its background jobs are doing.</p></div><div class="grow"></div>
-      <input id="log-filter" placeholder="Filter" spellcheck="false" aria-label="Filter the log">
+      <input id="log-filter" placeholder="Filter text or model" spellcheck="false" aria-label="Filter log text or attribution">
       <label class="switch"><input type="checkbox" id="log-follow" checked><span class="track"></span><span class="state">Follow</span></label>
       <button id="log-copy" class="btn"><svg class="icon"><use href="#i-copy"/></svg>Copy</button>
       <button id="log-folder" class="btn"><svg class="icon"><use href="#i-folder-open"/></svg>Session logs</button>
       <button id="log-files" class="btn" title="This log on disk, a file per day (the last 7 days)"><svg class="icon"><use href="#i-scroll-text"/></svg>Log files</button></header>
-    <pre id="log" class="log"></pre>
+    <div class="log-legend" aria-label="Log attribution legend">
+      <span><span class="log-category log-ai">AI</span>AI model</span>
+      <span><span class="log-category log-stt">STT</span>Speech-to-text</span>
+      <span><span class="log-category log-tts">TTS</span>Text-to-speech</span>
+      <span class="log-legend-help">Hover a badge for model and operation details.</span>
+    </div>
+    <div id="log" class="log" aria-label="Engine and application log"></div>
   </section>
   <footer id="sessionbar" aria-label="This session">
     <div class="sb-item" data-sb="time" data-prio="3" title="Session length" aria-label="Session length"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg><b id="sb-time" class="figure">–</b><span class="sb-l">session</span></div>
@@ -278,9 +284,9 @@
     </div>
     <button class="sb-update" data-sb="update" id="sb-update" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg><span id="sb-update-l">Restart to update</span></button>
     <div class="grow" data-sb="grow"></div>
-    <button class="sb-model" data-sb="models" id="sb-models" title="Models and voice systems in use. Click to change them">
-      <span class="sb-item" data-prio="4" title="Model for callouts and spoken questions"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><b id="sb-fast">–</b></span>
-      <span class="sb-item" data-prio="5" title="Model for typed questions and pace reviews"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><b id="sb-deep">–</b></span>
+    <button class="sb-model" data-sb="models" id="sb-models" title="Configured model roles and voice systems. Per-operation attribution is in Logs. Click to change settings">
+      <span class="sb-item" data-prio="4" title="Fast role: callouts, quest briefings and translation; spoken questions follow their separate setting"><svg class="icon" aria-hidden="true"><use href="#i-mic"/></svg><b id="sb-fast">–</b></span>
+      <span class="sb-item" data-prio="5" title="Deep role: typed questions and pace reviews; spoken questions follow their separate setting"><svg class="icon" aria-hidden="true"><use href="#i-keyboard"/></svg><b id="sb-deep">–</b></span>
       <span class="sb-idle" id="sb-idle">not in use</span>
       <span class="sb-item" data-prio="8" id="sb-listen-wrap" title="Speech-to-text for push-to-talk"><svg class="icon" aria-hidden="true"><use href="#i-ear"/></svg><b id="sb-listen">–</b></span>
       <span class="sb-item" data-prio="8" id="sb-speak-wrap" title="The narrator's voice"><svg class="icon" aria-hidden="true"><use href="#i-audio-lines"/></svg><b id="sb-speak">–</b></span>

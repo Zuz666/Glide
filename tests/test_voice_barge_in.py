@@ -48,6 +48,7 @@ export function $<T = any>(id: string): T {
     "state.ts": "export const live: any = { engineState: \"\", engineToken: \"\", engineUrl: null };\n",
     "status.ts": "export const refreshStatus = () => undefined;\n",
     "types.ts": """
+export type { LogAttribution } from "./ipc.js";
 export type { LiteInitEvent, PttEvent, SpeakEvent, VoiceSpokenEvent } from "./engine.js";
 export type Obj = any;
 export interface SpeechSettings { provider?: string; voiceName?: string; rate?: number; volume?: number }
@@ -212,7 +213,7 @@ console.log(JSON.stringify(out));
 tmp = tempfile.mkdtemp(prefix="glide-barge-in-")
 try:
     files = dict(STUBS)
-    for name, folder in (("coach.ts", RENDERER), ("narrator.ts", RENDERER), ("engine.ts", SHARED)):
+    for name, folder in (("coach.ts", RENDERER), ("narrator.ts", RENDERER), ("engine.ts", SHARED), ("ipc.ts", SHARED)):
         with open(os.path.join(folder, name), encoding="utf-8") as fh:
             files[name] = fh.read()
     out = desktop_ts.compiled("barge-in", files, ["coach.ts", "--target", "ES2023", "--module", "ES2022",

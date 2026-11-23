@@ -699,6 +699,8 @@ class Coach:
         self.history = self.history[-10:]
         msg = {"kind": msg_kind, "text": self.localization.generated(text), "speak": speaks and not barged, "urgent": urgent,
                "model": self._model_note(model, meta), "t": time.time()}
+        if meta.get("attribution"):
+            msg["attribution"] = meta["attribution"]
         if tone:
             msg["tone"] = tone                     # how to deliver it in character (the OpenAI voice performs it)
         if chatting:
@@ -768,6 +770,7 @@ class Coach:
         model = self.cfg.get("fast_model")
         llm = self.llm
         text = None
+        _meta = {}
         if notes and llm.enabled and llm.keys.get(models_mod.provider(model)) and \
                 not llm.suspension_for(models_mod.provider(model)) and time.time() >= llm.backoff_until:
             request = ANNOUNCE_REQUEST % (version, "is out" if what == "available" else "is downloaded and ready",
@@ -776,7 +779,7 @@ class Coach:
             if self.persona():
                 request += "\n" + self.banter.reminder()
             try:
-                got, _meta = llm.call_once(model, request, 500)
+                got, _meta = llm.call_once(model, request, 500, role="update announcement")
                 text = self._directives(got or "")
             except Exception as e:  # noqa: BLE001 - the plain line instead
                 log_once("coach.announce", e)
@@ -786,7 +789,9 @@ class Coach:
         if text:
             text = trim_words(text, self._stretch(int(self.opt.get("announce_words"))))
         msg = {"kind": "callout", "text": self.localization.generated(text) if text else plain, "speak": True, "urgent": False,
-               "model": "update notice" if not text else self._model_note(model, {}), "t": time.time()}
+               "model": "update notice" if not text else self._model_note(model, _meta), "t": time.time()}
+        if text and _meta.get("attribution"):
+            msg["attribution"] = _meta["attribution"]
         if text and self.tone:
             msg["tone"] = self.tone
         self.emit(msg)
@@ -944,12 +949,14 @@ class Coach:
         """Questions and reviews with the knowledge layer go through the tool-use loop; callouts (and models
         without tools) are one call. -> (text, meta)."""
         max_tokens = 3000 if deep else 600
+        role = ("spoken question" if voice else "typed question") if question else ("pace review" if deep else "callout")
         if self.pack is not None and kctx is not None and (question or deep) and self._tools_ok(model):
             calls, secs = self._tool_caps(voice)
             web = bool(question) and self.web_for(voice)
             return self.llm.call_tools(model, [{"role": "user", "content": user}], self._tools(web, model),
-                                       calls, secs, ctx=kctx, max_tokens=max_tokens, deep=deep, on_text=speech)
-        return self.llm.call_once(model, user, max_tokens, deep=deep, tools=self._shared_tools(model), on_text=speech)
+                                       calls, secs, ctx=kctx, max_tokens=max_tokens, deep=deep, on_text=speech, role=role)
+        return self.llm.call_once(model, user, max_tokens, deep=deep, tools=self._shared_tools(model),
+                                  on_text=speech, role=role)
 
     def _tools_ok(self, model):
         """Whether the model can use tools (the catalog says; unknown models are assumed to)."""
@@ -971,7 +978,8 @@ class Coach:
 
     def _model_note(self, model, meta):
         """'<model> 1.2s · 2 tool calls': which model answered, how fast, with how many lookups."""
-        note = "%s %.1fs" % (model, self.llm.last_latency)
+        elapsed = (meta.get("attribution") or {}).get("elapsed_ms")
+        note = model + (" %.1fs" % (elapsed / 1000) if elapsed is not None else "")
         if meta.get("tool_calls"):
             note += " · %d tool call%s" % (meta["tool_calls"], "" if meta["tool_calls"] == 1 else "s")
         return note

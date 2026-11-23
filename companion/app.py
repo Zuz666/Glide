@@ -257,7 +257,7 @@ class App:
                 del self.msg_history[:-MSG_HISTORY]
         self.hub.publish("message", m)
         self.write_log({"msg": m})
-        log(m.get("kind"), m.get("text"))
+        log(m.get("kind"), m.get("text"), m.get("attribution"))
         if m.get("speak") and m.get("kind") != "answer" and self._flags and not self._flags.get("voice", True):
             m = dict(m, speak=False)                 # /coach voice off: text only (answers to questions still speak)
         if m.get("speak") and ptt_talking(self):
@@ -533,19 +533,28 @@ class App:
         whole file, as the app's config:set would (None removes a key); it applies at the next coach start unless it
         is sent live too."""
         import tuning
+        from llm_client import log_settings
         path = None if self.args.sim else os.path.join(ROOT, "config.json")
-        before = {k: self.coach.cfg.get(k) for k in tuning.MODEL_KEYS}
+        before = dict(self.coach.cfg)
         changes = dict(changes)
         save = changes.pop("save", None)
         if save is not None:
             if not isinstance(save, dict):
                 raise ValueError("save takes an object (a patch of config.json)")
-            glideconfig.patch((), save, ROOT)        # the app's saves land even in sim, as when it wrote them itself
+            def saved_llm(config):
+                companion = config.get("companion")
+                llm = companion.get("llm") if isinstance(companion, dict) else None
+                return llm if isinstance(llm, dict) else {}
+            saved_before = saved_llm(glideconfig.read(ROOT)[0])
+            saved = glideconfig.patch((), save, ROOT)  # the app's saves also land in sim
+            saved_after = saved_llm(saved)
+            log_settings(saved_before, saved_after, "pending restart", self.catalog)
         applied = tuning.apply(self.coach.cfg, changes, path, catalog=self.catalog)
-        switched = {k: (before[k], applied[k]) for k in tuning.MODEL_KEYS if k in applied and applied[k] != before[k]}
+        switched = {k: (before.get(k), applied[k]) for k in tuning.MODEL_KEYS
+                    if k in applied and applied[k] != before.get(k)}
         if switched:
             self.coach.announce_models(switched)
-            log("coach", "model switched%s: %s" % ("" if path else " (sim: not saved)", self.coach.describe_models()))
+        log_settings(before, self.coach.cfg, "saved and applied" if path else "applied; not saved", self.catalog)
         return dict(applied, saved=save is not None or bool(applied and path))
 
     def _apply_feed(self):
