@@ -780,7 +780,8 @@ class App:
         s["coach"] = {**self.coach.stats, "mode": ("offline: " + self.coach.suspended) if self.coach.suspended
                       else ("claude" if self.coach.enabled else "offline"),
                       "thinking": self.coach.thinking, "link_issue": lk["short"],
-                      "link_status": lk["status"] if lk["short"] else None}
+                      "link_status": lk["status"] if lk["short"] else None,
+                      "character_memory": self.coach.character_memory_status()}
         s["kb"] = self._kb_status
         if self.pack is not None:
             s["why"], s["pace"] = self._why_panel(s)

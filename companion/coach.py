@@ -153,6 +153,8 @@ class Coach:
         mem_path = getattr(self.deps.memory, "path", None)
         self.embedder = embeddings.Embedder.from_settings(self.opt, cfg,
                                                           os.path.dirname(mem_path) if mem_path else None)
+        self._recall_source = (self.opt.get("recall_meaning") or "off").strip().lower()
+        self._recall_model = (self.opt.get("recall_embed_model") or "").strip()
         self.banter = banter_mod.Banter(self)      # asides in character, and the bond they build (banter.py)
         if self.deps.memory is not None:          # the conversation's last lines, kept across restarts
             self.convo.extend(self.deps.memory.convo_kept())
@@ -293,6 +295,62 @@ class Coach:
     @property
     def suspended(self):
         return self.llm.suspended
+
+    def character_memory_status(self):
+        """Applied state only: observe existing memory/embedding work, never prepare or probe a provider."""
+        with self._persona_lock:
+            character = {"enabled": bool(self.persona()), "name": self.persona_name()}
+        enabled, suspended = bool(self.enabled), bool(self.suspended)
+        backoff = time.time() < self.llm.backoff_until
+        memory = self.deps.memory
+        if memory is not None:
+            with memory.lock:
+                learning_enabled = memory.learning
+        else:
+            learning_enabled = False
+        if memory is None:
+            reason = "No memory store is available."
+        elif not learning_enabled:
+            reason = "Automatic learning is disabled; stored notes and explicit memory writes remain available."
+        elif not enabled:
+            reason = "Automatic learning is unavailable while AI is offline."
+        elif suspended:
+            reason = "Automatic learning is paused while AI is suspended."
+        elif backoff:
+            reason = "Automatic learning is paused during AI retry backoff."
+        else:
+            reason = "Automatic learning is permitted when its normal reflection conditions are met."
+        learning = {"enabled": bool(learning_enabled),
+                    "available": bool(learning_enabled and memory is not None and enabled and not suspended and not backoff),
+                    "reason": reason}
+        embedder = self.embedder
+        meaning = embedder is not None or self._recall_source not in ("", "off")
+        recall = {"method": "meaning" if meaning else "words", "state": "words", "source": "", "model": "",
+                  "detail": "Word-based matching is selected."}
+        if meaning:
+            if embedder is not None:
+                recall.update(embedder.status(memory.recall_texts() if memory is not None else ()))
+            else:
+                source = self._recall_source
+                known_source = source in embeddings.DEFAULT_MODEL or re.fullmatch(r"ep:[a-z0-9][a-z0-9_-]{0,31}", source)
+                recall.update(state="unavailable", source=source if known_source else "unknown",
+                              model=self._recall_model or embeddings.DEFAULT_MODEL.get(source, ""),
+                              detail=("An embedding model is required for the custom endpoint." if
+                                      known_source and source.startswith("ep:") and not self._recall_model else
+                                      "The selected embedding source is not supported.") + " Word-based fallback remains available.")
+        if memory is None:
+            recall["state"] = "unavailable"
+            recall["detail"] = "No memory store is available. " + recall["detail"]
+        if not character["enabled"]:
+            recall["state"] = "waiting_character"
+            recall["detail"] = "Waiting for an active Character. " + recall["detail"]
+        if not enabled:
+            recall["detail"] += " AI is offline; selected recall does not imply AI availability."
+        elif suspended:
+            recall["detail"] += " AI is suspended; selected recall does not imply AI availability."
+        elif backoff:
+            recall["detail"] += " AI is in retry backoff."
+        return {"character": character, "learning": learning, "recall": recall}
 
     @property
     def path_stats(self):

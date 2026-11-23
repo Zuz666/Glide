@@ -15,14 +15,16 @@ let connectionRevision = 0;
 
 export function onEngine(s: EngineStatus): void {
   live.engineState = s.state;
+  const previousToken = live.engineToken;
   live.engineToken = s.token || "";
   showEngineState(s);
   refreshStatus();
-  if (s.url !== live.engineUrl) {
+  if (s.url !== live.engineUrl || live.engineToken !== previousToken) {
     live.engineUrl = s.url;
     connectionRevision++;
     events?.close();
     events = null;
+    sessionBar(null);
     if (live.engineUrl) showDashboard(live.engineUrl);
     else hideDashboard();
   }
@@ -96,8 +98,18 @@ async function connectEvents(url: string): Promise<void> {
   const config = await call("config:get");
   if (revision !== connectionRevision || live.engineUrl !== url) return;
   live.config = config || {};
-  events = new EventSource(url + "/events?lite=1");
-  events.addEventListener("init", (e) => {
+  const source = new EventSource(url + "/events?lite=1");
+  events = source;
+  const current = () => revision === connectionRevision && events === source && live.engineUrl === url;
+  source.addEventListener("error", () => {
+    if (!current()) return;
+    thinkingRole = null;
+    pttState = "idle";
+    renderPttChip();
+    sessionBar(null);
+  });
+  source.addEventListener("init", (e) => {
+    if (!current()) return;
     try {
       const st = (JSON.parse((e as MessageEvent).data) as LiteInitEvent).state;
       thinkingRole = st?.coach?.thinking || null;
@@ -105,7 +117,8 @@ async function connectEvents(url: string): Promise<void> {
       sessionBar(st);
     } catch { /* ignore */ }
   });
-  events.addEventListener("state", (e) => {
+  source.addEventListener("state", (e) => {
+    if (!current()) return;
     try {
       const st = JSON.parse((e as MessageEvent).data) as LiteState;
       if (st?.coach && "thinking" in st.coach) {
@@ -115,13 +128,15 @@ async function connectEvents(url: string): Promise<void> {
       sessionBar(st);
     } catch { /* ignore */ }
   });
-  events.addEventListener("thinking", (e) => {
+  source.addEventListener("thinking", (e) => {
+    if (!current()) return;
     try {
       thinkingRole = (JSON.parse((e as MessageEvent).data) as ThinkingEvent).role || null;
       renderPttChip();
     } catch { /* ignore */ }
   });
-  events.addEventListener("ptt", (e) => {
+  source.addEventListener("ptt", (e) => {
+    if (!current()) return;
     try {
       const state = (JSON.parse((e as MessageEvent).data) as PttEvent).state;
       // the player talks over the coach: it stops, like on a call (held BARGE_MS: a brush of the key isn't talking)
@@ -131,13 +146,15 @@ async function connectEvents(url: string): Promise<void> {
       renderPttChip();
     } catch { /* ignore */ }
   });
-  events.addEventListener("speak", (e) => {
+  source.addEventListener("speak", (e) => {
+    if (!current()) return;
     try {
       const d: SpeakEvent = JSON.parse((e as MessageEvent).data);
       speech.say(String(d.text || ""), !!d.interrupt, d.style ? String(d.style) : "", d.tone ? String(d.tone) : "", { markup: d.markup });
     } catch { /* ignore */ }
   });
-  events.addEventListener("voice_spoken", (e) => {
+  source.addEventListener("voice_spoken", (e) => {
+    if (!current()) return;
     try {
       const d: VoiceSpokenEvent = JSON.parse((e as MessageEvent).data);
       if (typeof d.voice === "string" && typeof d.text === "string" && Number.isFinite(d.at))
