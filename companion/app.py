@@ -491,6 +491,13 @@ class App:
                 for eid, ep in openai_compat.endpoints(llm).items()
             }
         if reasoning_model is not None:
+            if not str(reasoning_model).strip():
+                profile = {"levels": [], "note": "Empty model id uses the other role's model.",
+                           "transport": None, "known": False}
+                automatic = {role: {"effort": None, "source": "provider_default", "reason": "unknown",
+                                    "profile": profile}
+                             for role in ("fast", "deep")}
+                return {"model": reasoning_model, "automatic": automatic, "reasoning": profile}
             automatic = {role: _automatic_reasoning(self.coach, self.catalog, reasoning_model, role == "deep")
                          for role in ("fast", "deep")}
             return {"model": reasoning_model, "automatic": automatic,
@@ -649,16 +656,28 @@ class App:
                 patch["companion"] = companion
             saved_before = saved_llm(glideconfig.read(ROOT)[0])
             patch_llm = saved_llm(patch)
-            prospective_saved = {**self.coach.cfg, **saved_before,
-                                 **{k: v for k, v in patch_llm.items() if v is not None}}
+            prospective_saved = {**self.coach.cfg, **saved_before}
+            for key, value in patch_llm.items():
+                if value is None and key in (*tuning.MODEL_KEYS, *tuning.REASONING_KEYS):
+                    prospective_saved[key] = settings.default("llm." + key)
+                elif key not in tuning.MODEL_KEYS:
+                    prospective_saved[key] = value
+            model_patch = {mk: patch_llm[mk] for mk in tuning.MODEL_KEYS
+                           if mk in patch_llm and patch_llm[mk] is not None}
+            prospective_saved = tuning.resolve_model_changes(prospective_saved, model_patch)
             for mk in tuning.MODEL_KEYS:
-                if mk in patch_llm and patch_llm[mk] is not None:
-                    tuning.validate_model_choice(patch_llm[mk], prospective_saved, catalog=self.catalog)
+                if mk in model_patch:
+                    resolved = prospective_saved[mk]
+                    tuning.validate_model_choice(resolved, prospective_saved, catalog=self.catalog)
+                    if model_patch[mk] != resolved:
+                        raw_companion = patch.get("companion")
+                        companion = dict(raw_companion) if isinstance(raw_companion, dict) else {}
+                        llm = dict(saved_llm(patch))
+                        llm[mk] = resolved
+                        companion["llm"] = llm
+                        patch["companion"] = companion
             # Save-and-restart has no live changes, but must validate submitted gateway effort too.
             for model_key, effort_key in zip(tuning.MODEL_KEYS, tuning.REASONING_KEYS):
-                for key in (model_key, effort_key):
-                    if key in patch_llm and patch_llm[key] is None:
-                        prospective_saved[key] = settings.default("llm." + key)
                 if effort_key in patch_llm and str(prospective_saved.get(model_key, "")).startswith("opencode:"):
                     tuning.apply(prospective_saved, {effort_key: prospective_saved[effort_key]}, catalog=self.catalog)
             saved = glideconfig.patch((), patch, ROOT)  # the app's saves also land in sim

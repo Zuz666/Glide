@@ -498,6 +498,21 @@ try {
           && getComputedStyle(deepRow).color === neutralColor,
           'Permissive manual choices do not establish verified automatic support');
       }
+      const fastInput = document.querySelector('[data-key="companion.llm.fast_model"] input');
+      modelInput.value = ''; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => deepRow.textContent.includes(fastModel + ': medium effort requested (Auto)'),
+        'Clearing deep_model must preview capabilities and effort for fast_model');
+      fastInput.value = 'gemini:gemini-3-flash'; fastInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => automaticRow.textContent.includes('gemini:gemini-3-flash: low effort requested (Auto)')
+        && deepRow.textContent.includes('gemini:gemini-3-flash: medium effort requested (Auto)'),
+        'Editing fast_model while deep_model is empty must update both role previews');
+      const deepReq = document.querySelector('[data-model-req="deep"]');
+      check(deepReq && !deepReq.hidden && deepReq.textContent.includes('GEMINI_API_KEY'),
+        'Missing key hint for empty deep_model must follow inherited fast_model');
+      fastInput.value = fastModel; fastInput.dispatchEvent(new Event('input', { bubbles: true }));
+      modelInput.value = deepModel; modelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await until(() => automaticRow.textContent.includes(fastModel + ': low effort requested (Auto)')
+        && deepRow.textContent.includes(deepModel + ': medium effort requested (Auto)'));
     }
     if (openCode) {
       const fastInput = document.querySelector('[data-key="companion.llm.fast_model"] input');

@@ -234,6 +234,41 @@ async function configChecks() {
   await config.saveConfig({ companion: { llm: { deep_model: "ep:openai:gpt-5.1" } } }, stopped);
   assert.strictEqual(config.readConfig().companion.llm.deep_model, "ep:openai:gpt-5.1");
 
+  // Stopped-coach empty-model fallback resolves to the other role, resets implicit effort, rejects excluded inheritance,
+  // enforces OpenCode validation against the inherited model, and preserves null ("Use default") override removal.
+  write(p, JSON.stringify({ companion: { llm: {
+    endpoints: [{ id: "openai", base_url: "https://api.openai.com/v1" }],
+    fast_model: "ep:openai:gpt-6.1-sol",
+    deep_model: "ep:openai:gpt-6-luna",
+    deep_reasoning_effort: "none",
+  } } }));
+  await config.saveConfig({ companion: { llm: { deep_model: "" } } }, stopped);
+  const filledStopped = config.readConfig().companion.llm;
+  assert.strictEqual(filledStopped.deep_model, "ep:openai:gpt-6.1-sol");
+  assert.strictEqual(filledStopped.deep_reasoning_effort, undefined);
+
+  write(p, JSON.stringify({ companion: { llm: {
+    endpoints: [{ id: "openai", base_url: "https://api.openai.com/v1" }],
+    fast_model: "ep:openai:tts-1",
+    deep_model: "ep:openai:gpt-6.1-sol",
+  } } }));
+  const beforeEmptyEx = read(p);
+  await assert.rejects(config.saveConfig({ companion: { llm: { deep_model: "" } } }, stopped), /speech synthesis/);
+  assert.strictEqual(read(p), beforeEmptyEx);
+
+  write(p, JSON.stringify({ companion: { llm: { fast_model: "opencode:claude-haiku-5-5", deep_model: "ep:openai:gpt-6.1-sol" } } }));
+  await assert.rejects(
+    config.saveConfig({ companion: { llm: { deep_model: "", deep_reasoning_effort: "high" } } }, stopped),
+    /Connect the coach/
+  );
+  write(p, JSON.stringify({ companion: { llm: { fast_model: "opencode:claude-haiku-5-5", deep_model: "" } } }));
+  await assert.rejects(
+    config.saveConfig({ companion: { llm: { deep_reasoning_effort: "high" } } }, stopped),
+    /Connect the coach/
+  );
+  await config.saveConfig({ companion: { llm: { deep_model: null } } }, stopped);
+  assert.strictEqual(config.readConfig().companion.llm.deep_model, undefined);
+
   // A mixed Save applies the live model while normalizing the language fallback in the same write.
   const http = require("http");
   let selectedModel = "a-model", refuse = false;

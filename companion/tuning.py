@@ -153,16 +153,23 @@ def validate_model_choice(model, cfg, catalog=None):
             raise ValueError("%s cannot be used as a coach model (%s)." % (clean, reason))
 
 
+def resolve_model_changes(base_llm, changes):
+    """Validate model ID syntax and resolve empty model IDs via settings.fill_models without mutating inputs."""
+    resolved = dict(base_llm or {})
+    for mk in MODEL_KEYS:
+        if mk in changes:
+            raw = changes[mk]
+            if not isinstance(raw, str) or (raw.strip() and not MODEL_RE.match(raw.strip())):
+                raise ValueError("not a model id: %r" % (raw,))
+            resolved[mk] = raw.strip()
+    return settings.fill_models(resolved)
+
+
 def apply(cfg, changes, config_path=None, catalog=None):
     """Apply dashboard changes to the live coach config (cfg = the coach's "llm" dict) and save them in config.json
     under companion.llm, keeping everything else in the file. Returns the values applied."""
     changes = dict(changes or {})
-    for mk in MODEL_KEYS:
-        if mk in changes and (not isinstance(changes[mk], str)
-                              or (changes[mk].strip() and not MODEL_RE.match(changes[mk].strip()))):
-            raise ValueError("not a model id: %r" % (changes[mk],))
-    prospective = settings.fill_models(
-        {**cfg, **{k: v.strip() if k in MODEL_KEYS and isinstance(v, str) else v for k, v in changes.items()}})
+    prospective = resolve_model_changes({**cfg, **changes}, changes)
     for model_key, effort_key in zip(MODEL_KEYS, REASONING_KEYS):
         model = str(prospective.get(model_key) or settings.default("llm." + model_key)).strip()
         if model_key in changes:

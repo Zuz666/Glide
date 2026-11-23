@@ -60,6 +60,65 @@ try:
         check(False, "a bad id is refused")
     except ValueError:
         pass
+
+    # clearing a model resets stale effort, validates explicit effort against the inherited model,
+    # rejects inheriting excluded OpenAI/OpenCode models, and never mutates cfg if saving fails
+    sol = "ep:openai:gpt-6.1-sol"
+    cfg_r = {
+        "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+        "fast_model": sol,
+        "deep_model": "ep:openai:gpt-6-luna",
+        "deep_reasoning_effort": "none",
+    }
+    got = tuning.apply(cfg_r, {"deep_model": ""}, path)
+    check(got == {"deep_model": sol, "deep_reasoning_effort": "auto"}
+          and cfg_r["deep_model"] == sol and cfg_r["deep_reasoning_effort"] == "auto", (got, cfg_r))
+    try:
+        tuning.apply(cfg_r, {"deep_model": "", "deep_reasoning_effort": "none"}, path)
+        check(False, "explicit effort unsupported by inherited model must be rejected")
+    except ValueError:
+        pass
+    got = tuning.apply(cfg_r, {"deep_model": "", "deep_reasoning_effort": "low"}, path)
+    check(got == {"deep_model": sol, "deep_reasoning_effort": "low"}, got)
+
+    cfg_ex = {
+        "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+        "fast_model": "ep:openai:tts-1",
+        "deep_model": sol,
+    }
+    before_json = open(path, encoding="utf-8").read()
+    try:
+        tuning.apply(cfg_ex, {"deep_model": ""}, path)
+        check(False, "must reject inheriting an excluded official OpenAI model")
+    except ValueError as exc:
+        check("speech synthesis" in str(exc), exc)
+    check(cfg_ex["deep_model"] == sol and open(path, encoding="utf-8").read() == before_json, (cfg_ex, before_json))
+
+    bad_cat = type("Cat", (), {
+        "raw_get": staticmethod(lambda m: {"id": m, "excluded_reason": "subscription tier"}
+                                if m == "opencode:bad-model" else None),
+    })()
+    cfg_oc = {"fast_model": "opencode:bad-model", "deep_model": OR}
+    try:
+        tuning.apply(cfg_oc, {"deep_model": ""}, path, catalog=bad_cat)
+        check(False, "must reject inheriting an excluded OpenCode model")
+    except ValueError as exc:
+        check("subscription tier" in str(exc), exc)
+    check(cfg_oc["deep_model"] == OR, cfg_oc)
+
+    # failed save leaves live cfg untouched; clearing both roles fills manifest defaults
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("{bad json")
+    cfg_atomic = {"fast_model": OR, "deep_model": "claude-sonnet-5-5"}
+    try:
+        tuning.apply(cfg_atomic, {"deep_model": ""}, path)
+        check(False, "expected ValueError on unreadable config.json")
+    except ValueError:
+        pass
+    check(cfg_atomic["deep_model"] == "claude-sonnet-5-5", cfg_atomic)
+    got = tuning.apply(dict(cfg_atomic), {"fast_model": "", "deep_model": ""}, None)
+    check(got == {"fast_model": settings.default("llm.fast_model"),
+                  "deep_model": settings.default("llm.deep_model")}, got)
 finally:
     shutil.rmtree(d, ignore_errors=True)
 print("OK")

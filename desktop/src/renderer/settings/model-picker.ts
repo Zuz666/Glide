@@ -26,6 +26,19 @@ let filterSession: { url: string | null; token: string; filters: Record<string, 
 const fullKey = (key: string) => `companion.llm.${key}`;
 const draft = (key: string): string => String((edits.has(fullKey(key)) ? edits.get(fullKey(key)) : getPath(live.config, fullKey(key))) ?? MANIFEST[`llm.${key}`].default);
 
+function rawModelDraft(role: "fast" | "deep"): string {
+  const key = `${role}_model`;
+  const val = edits.has(fullKey(key)) ? edits.get(fullKey(key)) : getPath(live.config, fullKey(key));
+  return val == null ? String(MANIFEST[`llm.${key}`].default) : String(val).trim();
+}
+
+function effectiveModelDraft(role: "fast" | "deep"): string {
+  const own = rawModelDraft(role);
+  if (own) return own;
+  const other = rawModelDraft(role === "fast" ? "deep" : "fast");
+  return other || String(MANIFEST[`llm.${role}_model`].default);
+}
+
 
 /** Live picks supersede only the same role's drafts; unrelated pending edits remain. */
 function modelSettingsSaved(applied: Obj): void {
@@ -123,7 +136,8 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
   const tuningSummary = host.querySelector<HTMLElement>("[data-thinking-selection]");
   const tuningSwitch = host.querySelector<HTMLInputElement>('[data-key="companion.llm.tune_thinking"] input');
   if (tuningSummary) tuningSummary.innerHTML = `<span data-thinking-role="fast"></span><span data-thinking-role="deep"></span>`;
-  for (const path of ["fast", "deep"]) {
+  const roleUpdaters = new Map<"fast" | "deep", () => void>();
+  for (const path of ["fast", "deep"] as const) {
     const modelKey = `${path}_model`, effortKey = `${path}_reasoning_effort`;
     const modelRow = host.querySelector<HTMLElement>(`[data-key="${fullKey(modelKey)}"]`);
     const row = host.querySelector<HTMLElement>(`[data-key="${fullKey(effortKey)}"]`);
@@ -138,7 +152,7 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
     }
     const syncModelReq = () => {
       if (!reqEl) return;
-      const html = modelRequirementHtml(draft(modelKey), live.config, configuredKeys);
+      const html = modelRequirementHtml(effectiveModelDraft(path), live.config, configuredKeys);
       reqEl.innerHTML = html;
       reqEl.hidden = !html;
     };
@@ -152,24 +166,25 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
     let lastKnown: { id: string; info: Obj } | undefined;
     const syncSummary = () => {
       if (!summary) return;
+      const modelId = effectiveModelDraft(path);
       const effort = draft(effortKey), tuning = tuningSwitch?.checked ?? draft("tune_thinking") === "true";
       const selected = effort !== "auto" ? `${effort} effort (${capability && !capability.levels.includes(effort) ? "unavailable; " : ""}explicit; switch has no effect)`
         : !tuning ? providerDefaultEffort("off")
         : !available ? `automatic level unavailable — ${providerDefaultEffort("unknown")}; connect the coach to resolve`
         : automatic?.source === "automatic" && automatic.effort ? `${automatic.effort} effort requested (Auto)`
         : providerDefaultEffort(automatic?.reason);
-      summary.textContent = `${path === "fast" ? "Fast" : "Deep"} · ${draft(modelKey)}: ${selected}.`;
+      summary.textContent = `${path === "fast" ? "Fast" : "Deep"} · ${modelId}: ${selected}.`;
       summary.title = automatic?.profile?.note || capability?.note || "";
       summary.classList.toggle("ok", effort === "auto" && tuning && available && automatic?.source === "automatic" && !!automatic.effort);
     };
     tuningSwitch?.addEventListener("change", syncSummary, { signal });
     select?.addEventListener("change", syncSummary, { signal });
     let revision = 0, timer: number | undefined;
-    let previousModel = draft(modelKey);
+    let previousModel = effectiveModelDraft(path);
     const load = async () => {
       syncModelReq();
-      const version = ++revision, id = draft(modelKey), url = live.engineUrl, token = live.engineToken, state = live.engineState;
-      const current = () => !signal.aborted && host.isConnected && version === revision && id === draft(modelKey) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
+      const version = ++revision, id = effectiveModelDraft(path), url = live.engineUrl, token = live.engineToken, state = live.engineState;
+      const current = () => !signal.aborted && host.isConnected && version === revision && id === effectiveModelDraft(path) && url === live.engineUrl && token === live.engineToken && state === live.engineState;
       const show = (info?: Obj) => {
         const levels: string[] = info?.levels || [], effort = draft(effortKey);
         capability = info;
@@ -205,10 +220,10 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
         if (current()) show({ ...(lastKnown?.id === id ? lastKnown.info : { levels: [] }), unavailable: true, retained: lastKnown?.id === id });
       }
     };
-    select?.addEventListener("model-capabilities-refresh", () => { void load(); }, { signal });
-    input?.addEventListener("input", () => {
-      if (previousModel === draft(modelKey)) return;
-      previousModel = draft(modelKey);
+    const handleModelChange = () => {
+      const nextModel = effectiveModelDraft(path);
+      if (previousModel === nextModel) return;
+      previousModel = nextModel;
       ++revision;
       clearTimeout(timer);
       syncModelReq();
@@ -228,6 +243,13 @@ export async function bindModelReasoning(host: HTMLElement, preloadedKeys?: Read
         bindReasoningTitle(note);
       }
       timer = window.setTimeout(() => { if (!signal.aborted && host.isConnected) void load(); }, 250);
+    };
+    roleUpdaters.set(path, handleModelChange);
+    select?.addEventListener("model-capabilities-refresh", () => { void load(); }, { signal });
+    input?.addEventListener("input", () => {
+      handleModelChange();
+      const other: "fast" | "deep" = path === "fast" ? "deep" : "fast";
+      if (!rawModelDraft(other)) roleUpdaters.get(other)?.();
     }, { signal });
     signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
     initialLoads.push(load());

@@ -6,7 +6,7 @@ import type { AppSettings, AppSettingsPatch, LogAttribution, Voice } from "../..
 import { speechFeatures } from "../speech-markup";
 import { usesAppWindowsVoice } from "../../shared/windows-process-voice.mjs";
 import { OPENAI_EXCLUSION_RULES } from "../openai-exclusions";
-import { defaultHome } from "../paths";
+import { defaultHome, shippedEngine } from "../paths";
 import { secretEnv } from "../secrets";
 import { effectiveWhisperModel, languageCode } from "../speech-language";
 import { appSettingsProblem, deepMerge, keepBadCopy, Obj, readJson, readJsonFile, unreadableMessage, writeJson } from "../store";
@@ -121,6 +121,36 @@ function excludedOpenAiReason(name: string, shutdownDate?: string): string | nul
   return null;
 }
 
+const DEFAULT_MODELS = { fast_model: "claude-haiku-4-5-20251001", deep_model: "claude-sonnet-5-5" } as const;
+
+function defaultModels(): { fast_model: string; deep_model: string } {
+  const manifest = readJson(path.join(shippedEngine, "companion", "settings_manifest.json"));
+  const entries = (manifest.settings as Obj | undefined) || {};
+  const fast = (entries["llm.fast_model"] as Obj | undefined)?.default;
+  const deep = (entries["llm.deep_model"] as Obj | undefined)?.default;
+  return {
+    fast_model: typeof fast === "string" && fast ? fast : DEFAULT_MODELS.fast_model,
+    deep_model: typeof deep === "string" && deep ? deep : DEFAULT_MODELS.deep_model,
+  };
+}
+
+/** Resolve empty/whitespace model ids the same way companion/settings.py:fill_models does, keeping omitted defaults. */
+function fillEmptyModels(next: Obj, patch: Obj): void {
+  const changes = (patch.companion as Obj | undefined)?.llm as Obj | undefined;
+  const after = (next.companion as Obj | undefined)?.llm as Obj | undefined;
+  if (!changes || !after) return;
+  const emptyFast = typeof after.fast_model === "string" && !after.fast_model.trim();
+  const emptyDeep = typeof after.deep_model === "string" && !after.deep_model.trim();
+  const editingFast = typeof changes.fast_model === "string" || emptyFast;
+  const editingDeep = typeof changes.deep_model === "string" || emptyDeep;
+  if (!editingFast && !editingDeep) return;
+  const defaults = defaultModels();
+  const fast = typeof after.fast_model === "string" ? after.fast_model.trim() : defaults.fast_model;
+  const deep = typeof after.deep_model === "string" ? after.deep_model.trim() : defaults.deep_model;
+  if (editingFast) after.fast_model = fast || deep || defaults.fast_model;
+  if (editingDeep) after.deep_model = deep || fast || defaults.deep_model;
+}
+
 function validateOfficialOpenAiPatch(next: Obj, patch: Obj): void {
   const changes = (patch.companion as Obj | undefined)?.llm as Obj | undefined;
   if (!changes) return;
@@ -136,7 +166,7 @@ function validateOfficialOpenAiPatch(next: Obj, patch: Obj): void {
   for (const role of ["fast_model", "deep_model"]) {
     const rawCandidate = changes[role];
     if (typeof rawCandidate !== "string") continue;
-    const candidate = rawCandidate.trim();
+    const candidate = (typeof after?.[role] === "string" ? (after[role] as string) : rawCandidate).trim();
     if (!candidate.startsWith("ep:")) continue;
     const rest = candidate.slice(3);
     const colon = rest.indexOf(":");
@@ -161,6 +191,7 @@ export function updateConfig(patch: Obj, note?: RunningEngine["note"]): Obj {
     throw new Error(unreadableMessage(p, cur.bad, keepBadCopy(p), "this change wasn't saved") + ", then try again.");
   }
   let next = deepMerge(cur.value, patch);
+  fillEmptyModels(next, patch);
   validateOfficialOpenAiPatch(next, patch);
   resetModelEfforts(cur.value, next, patch);
   const speechPatch = speechModelPatch(next);
@@ -256,8 +287,12 @@ async function saveConfigNow(patch: Obj, engine: RunningEngine, liveChanges: Obj
   const llmPatch = (patch.companion as Obj | undefined)?.llm as Obj | undefined;
   const explicitRoles = ["fast", "deep"].filter(role =>
     typeof llmPatch?.[`${role}_reasoning_effort`] === "string" && llmPatch[`${role}_reasoning_effort`] !== "auto");
-  const nextLlm = explicitRoles.length
-    ? (deepMerge(readConfig(), patch).companion as Obj | undefined)?.llm as Obj | undefined : undefined;
+  let nextLlm: Obj | undefined;
+  if (explicitRoles.length) {
+    const merged = deepMerge(readConfig(), patch);
+    fillEmptyModels(merged, patch);
+    nextLlm = (merged.companion as Obj | undefined)?.llm as Obj | undefined;
+  }
   const validatingOpenCode = explicitRoles.some(role => String(nextLlm?.[`${role}_model`] || "").startsWith("opencode:"));
   if (validatingOpenCode && (engine.state !== "running" || !engine.url)) {
     throw new Error("Connect the coach to validate explicit OpenCode effort before saving; your edits are kept.");

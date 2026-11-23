@@ -163,6 +163,63 @@ try:
     glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"fast_reasoning_effort": None}}}})
     assert "fast_reasoning_effort" not in glideconfig.read(tmp)[0]["companion"]["llm"]
 
+    # Save and restart with an empty model inherits the other role, resets stale effort,
+    # validates OpenAI exclusions and OpenCode effort against the inherited model, and preserves None deletion.
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": {
+            "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+            "fast_model": "ep:openai:gpt-6.1-sol",
+            "deep_model": "ep:openai:gpt-6-luna",
+            "deep_reasoning_effort": "none",
+        }}}, fh)
+    a_fill = fake_app(sim=False)
+    a_fill.coach.cfg.update(glideconfig.load(tmp)["llm"])
+    glide_app.App.on_settings(a_fill, {"save": {"companion": {"llm": {"deep_model": ""}}}})
+    restarted_fill = glideconfig.load(tmp)["llm"]
+    assert restarted_fill["deep_model"] == "ep:openai:gpt-6.1-sol", restarted_fill
+    assert restarted_fill["deep_reasoning_effort"] == "auto", restarted_fill
+    assert a_fill.coach.cfg["deep_model"] == "ep:openai:gpt-6-luna", "save-only changes apply at restart"
+
+    # Excluded OpenAI model on fast_model cannot be inherited via empty deep_model.
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": {
+            "endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+            "fast_model": "ep:openai:tts-1",
+            "deep_model": "ep:openai:gpt-6.1-sol",
+        }}}, fh)
+    a_fill.coach.cfg.update({"endpoints": [{"id": "openai", "base_url": "https://api.openai.com/v1"}],
+                             "fast_model": "ep:openai:tts-1", "deep_model": "ep:openai:gpt-6.1-sol"})
+    before_fill_ex = open(p, encoding="utf-8").read()
+    try:
+        glide_app.App.on_settings(a_fill, {"save": {"companion": {"llm": {"deep_model": ""}}}})
+        raise AssertionError("accepted empty deep_model inheriting excluded OpenAI model")
+    except ValueError as exc:
+        assert "speech synthesis" in str(exc), exc
+    assert open(p, encoding="utf-8").read() == before_fill_ex
+
+    # OpenCode explicit effort in Save and restart validates against the inherited model.
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"companion": {"llm": {"fast_model": gateway, "deep_model": "ep:openai:gpt-6.1-sol"}}}, fh)
+    a_gateway.coach.cfg.update(fast_model=gateway, deep_model="ep:openai:gpt-6.1-sol")
+    try:
+        glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"deep_model": "", "deep_reasoning_effort": "max"}}}})
+        raise AssertionError("accepted unsupported OpenCode effort on inherited model")
+    except ValueError as exc:
+        assert "max" in str(exc), exc
+    glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"deep_model": "", "deep_reasoning_effort": "high"}}}})
+    restarted_gw = glideconfig.load(tmp)["llm"]
+    assert restarted_gw["deep_model"] == gateway and restarted_gw["deep_reasoning_effort"] == "high", restarted_gw
+    glide_app.App.on_settings(a_gateway, {"save": {"companion": {"llm": {"deep_model": None}}}})
+    assert "deep_model" not in glideconfig.read(tmp)[0]["companion"]["llm"]
+
+    # Empty reasoning_model preview must not report unknown Claude model guidance.
+    empty_preview = glide_app.App.on_models(
+        types.SimpleNamespace(catalog=a_gateway.catalog, coach=types.SimpleNamespace(cfg=a_gateway.coach.cfg)),
+        reasoning_model="",
+    )
+    assert empty_preview["reasoning"]["transport"] is None and empty_preview["reasoning"]["levels"] == [], empty_preview
+    assert empty_preview["automatic"]["deep"]["reason"] == "unknown", empty_preview
+
     # A failed combined write leaves the running selection untouched too.
     a = fake_app(sim=False)
     running_before = dict(a.coach.cfg)
